@@ -1,7 +1,32 @@
-"""Official Python client SDK for IICP.
+"""iicp-client — Official Python client SDK for the IICP protocol."""
 
-Name reservation publication. Functional SDK arrives with IICP v1.5 stable.
-See https://iicp.network for project status.
-"""
+from iicp_client.client import IicpClient
+from iicp_client.errors import IicpError
+from iicp_client.types import (
+    ChatMessage,
+    ChatOptions,
+    ChatResponse,
+    ClientConfig,
+    DiscoverOptions,
+    NodeList,
+    TaskAuth,
+    TaskConstraints,
+    TaskRequest,
+    TaskResponse,
+)
 
-__version__ = "0.0.1-pre"
+__version__ = "0.1.0"
+__all__ = [
+    "IicpClient",
+    "IicpError",
+    "ClientConfig",
+    "TaskAuth",
+    "TaskConstraints",
+    "TaskRequest",
+    "TaskResponse",
+    "ChatMessage",
+    "ChatOptions",
+    "ChatResponse",
+    "DiscoverOptions",
+    "NodeList",
+]

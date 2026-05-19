@@ -1,0 +1,236 @@
+"""IicpClient — primary entrypoint for the IICP Python SDK (ADR-016 §1)."""
+from __future__ import annotations
+
+import asyncio
+import re
+import uuid
+from typing import Any
+
+from iicp_client._http import get_json, post_json
+from iicp_client.errors import IicpError
+from iicp_client.types import (
+    ChatChoice,
+    ChatMessage,
+    ChatOptions,
+    ChatResponse,
+    ChatUsage,
+    ClientConfig,
+    DiscoverOptions,
+    Node,
+    NodeList,
+    TaskAuth,
+    TaskConstraints,
+    TaskMetrics,
+    TaskRequest,
+    TaskResponse,
+)
+
+_INTENT_RE = re.compile(r"^urn:iicp:intent:[a-z0-9_:/-]+$")
+_MAX_TIMEOUT_MS = 120_000
+
+
+class IicpClient:
+    """Discover → select → submit client for the IICP protocol.
+
+    Implements ADR-016 §1 (SDK-01..SDK-06 conformance rules).
+    """
+
+    def __init__(self, config: ClientConfig | None = None) -> None:
+        self._cfg = config or ClientConfig()
+        if self._cfg.timeout_ms > _MAX_TIMEOUT_MS:
+            # SDK-04: reject oversized timeouts at construction time
+            raise ValueError(
+                f"timeout_ms must be ≤ {_MAX_TIMEOUT_MS}; got {self._cfg.timeout_ms}"
+            )
+
+    # ------------------------------------------------------------------
+    # Public async API
+    # ------------------------------------------------------------------
+
+    async def discover_async(
+        self,
+        intent: str,
+        options: DiscoverOptions | None = None,
+    ) -> NodeList:
+        """Discover nodes capable of handling *intent*."""
+        opts = options or DiscoverOptions()
+        params: dict[str, Any] = {"limit": min(opts.limit, 50)}
+        params["intent"] = intent
+        if opts.region or self._cfg.region:
+            params["region"] = opts.region or self._cfg.region
+        if opts.qos:
+            params["qos"] = opts.qos
+
+        import time
+        t0 = time.monotonic()
+        data = await get_json(
+            f"{self._cfg.directory_url}/v1/discover",
+            params=params,
+            timeout_ms=5_000,
+            component="directory",
+            tls_verify=self._cfg.tls_verify,
+        )
+        elapsed = int((time.monotonic() - t0) * 1000)
+
+        raw_nodes = data.get("nodes", [])
+        nodes = [
+            Node(
+                node_id=n["node_id"],
+                endpoint=n["endpoint"],
+                score=float(n.get("score", 0.0)),
+                available=bool(n.get("available", True)),
+                region=n.get("region", ""),
+                latency_estimate_ms=n.get("latency_estimate_ms"),
+                reputation_score=n.get("reputation_score"),
+            )
+            for n in raw_nodes
+        ]
+        return NodeList(nodes=nodes, query_ms=elapsed)
+
+    async def submit_async(self, request: TaskRequest) -> TaskResponse:
+        """Discover → select best node → submit task.
+
+        Retries up to max_retries on transient errors (SDK-01).
+        """
+        self._validate_intent(request.intent)
+        node_list = await self.discover_async(
+            request.intent,
+            DiscoverOptions(
+                region=request.constraints.region or self._cfg.region,
+                qos=request.constraints.qos,
+            ),
+        )
+        if not node_list.nodes:
+            raise IicpError(
+                code="IICP-E006",
+                message=f"No nodes available for intent {request.intent!r}",
+                component="directory",
+                retryable=True,
+            )
+
+        node = node_list.nodes[0]  # highest score first (directory sorts by score)
+        task_id = str(uuid.uuid4())
+        body: dict[str, Any] = {
+            "task_id": task_id,
+            "intent": request.intent,
+            "payload": request.payload,
+            "constraints": {
+                "timeout_ms": request.constraints.timeout_ms,
+                "qos": request.constraints.qos,
+            },
+        }
+        if request.auth.node_token:
+            body["auth"] = {"node_token": request.auth.node_token}
+
+        last_exc: IicpError | None = None
+        for attempt in range(self._cfg.max_retries):
+            try:
+                raw, elapsed = await post_json(
+                    f"{node.endpoint}/v1/task",
+                    body,
+                    timeout_ms=request.constraints.timeout_ms,
+                    component="adapter",
+                    tls_verify=self._cfg.tls_verify,
+                )
+                return TaskResponse(
+                    task_id=raw.get("task_id", task_id),
+                    status=raw.get("status", "success"),
+                    result=raw.get("result"),
+                    metrics=TaskMetrics(
+                        latency_ms=elapsed,
+                        tokens_used=raw.get("usage", {}).get("total_tokens"),
+                        node_id=node.node_id,
+                    ),
+                )
+            except IicpError as exc:
+                last_exc = exc
+                if not exc.retryable or attempt == self._cfg.max_retries - 1:
+                    raise
+                await asyncio.sleep(0.5 * (attempt + 1))
+
+        raise last_exc  # type: ignore[misc]
+
+    async def chat_async(
+        self,
+        messages: list[ChatMessage],
+        options: ChatOptions | None = None,
+    ) -> ChatResponse:
+        """OpenAI-compatible chat over urn:iicp:intent:llm:chat:v1 (SDK-02)."""
+        opts = options or ChatOptions()
+        payload: dict[str, Any] = {
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+        }
+        if opts.model:
+            payload["model"] = opts.model
+        if opts.max_tokens is not None:
+            payload["max_tokens"] = opts.max_tokens
+        if opts.temperature is not None:
+            payload["temperature"] = opts.temperature
+
+        response = await self.submit_async(
+            TaskRequest(
+                intent="urn:iicp:intent:llm:chat:v1",
+                payload=payload,
+                constraints=TaskConstraints(
+                    timeout_ms=self._cfg.timeout_ms,
+                    qos=opts.qos,
+                ),
+                auth=TaskAuth(node_token=opts.node_token),
+            )
+        )
+
+        result = response.result or {}
+        raw_choices = result.get("choices", [])
+        choices = [
+            ChatChoice(
+                message=ChatMessage(
+                    role=c.get("message", {}).get("role", "assistant"),
+                    content=c.get("message", {}).get("content", ""),
+                ),
+                finish_reason=c.get("finish_reason", "stop"),
+            )
+            for c in raw_choices
+        ]
+        raw_usage = result.get("usage", {})
+        return ChatResponse(
+            id=response.task_id,
+            choices=choices,
+            usage=ChatUsage(
+                prompt_tokens=raw_usage.get("prompt_tokens", 0),
+                completion_tokens=raw_usage.get("completion_tokens", 0),
+                total_tokens=raw_usage.get("total_tokens", 0),
+            ),
+            model=result.get("model", opts.model or ""),
+            iicp_node_id=response.metrics.node_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Sync wrappers (runs asyncio.run internally)
+    # ------------------------------------------------------------------
+
+    def discover(self, intent: str, options: DiscoverOptions | None = None) -> NodeList:
+        return asyncio.run(self.discover_async(intent, options))
+
+    def submit(self, request: TaskRequest) -> TaskResponse:
+        return asyncio.run(self.submit_async(request))
+
+    def chat(
+        self,
+        messages: list[ChatMessage],
+        options: ChatOptions | None = None,
+    ) -> ChatResponse:
+        return asyncio.run(self.chat_async(messages, options))
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _validate_intent(self, intent: str) -> None:
+        # SDK-03: validate URN format before sending
+        if not _INTENT_RE.match(intent):
+            raise IicpError(
+                code="IICP-E001",
+                message=f"Invalid intent URN: {intent!r}. Must match urn:iicp:intent:*",
+                component="proxy",
+                retryable=False,
+            )
