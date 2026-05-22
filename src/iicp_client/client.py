@@ -184,7 +184,7 @@ class IicpClient:
                 intent="urn:iicp:intent:llm:chat:v1",
                 payload=payload,
                 constraints=TaskConstraints(
-                    timeout_ms=self._cfg.timeout_ms,
+                    timeout_ms=opts.timeout_ms or self._cfg.timeout_ms,
                     qos=opts.qos,
                 ),
                 auth=TaskAuth(node_token=opts.node_token),

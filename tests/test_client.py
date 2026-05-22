@@ -1,22 +1,20 @@
 """Unit tests for IicpClient (ADR-016 SDK-01..SDK-06)."""
 from __future__ import annotations
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from iicp_client import (
-    IicpClient,
-    IicpError,
-    ClientConfig,
     ChatMessage,
     ChatOptions,
-    TaskRequest,
-    TaskConstraints,
-    TaskAuth,
+    ClientConfig,
     DiscoverOptions,
+    IicpClient,
+    IicpError,
+    TaskAuth,
+    TaskRequest,
 )
-
 
 DIRECTORY = "https://iicp.test"
 NODE = "https://node.iicp.test"
@@ -134,7 +132,10 @@ async def test_submit_sdk01_retries_transient(monkeypatch):
     respx.post(TASK_URL).mock(
         side_effect=[
             httpx.Response(503, json={"code": "IICP-E005", "message": "overload"}),
-            httpx.Response(200, json={"task_id": "t-2", "status": "success", "result": {}, "usage": {}}),
+            httpx.Response(
+                200,
+                json={"task_id": "t-2", "status": "success", "result": {}, "usage": {}},
+            ),
         ]
     )
     client = IicpClient(ClientConfig(directory_url=DIRECTORY, max_retries=3))
@@ -175,7 +176,10 @@ def test_chat_sdk02_openai_compat_shape():
                 "status": "success",
                 "result": {
                     "choices": [
-                        {"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}
+                        {
+                            "message": {"role": "assistant", "content": "Hello!"},
+                            "finish_reason": "stop",
+                        }
                     ],
                     "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
                     "model": "llama3",

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from iicp_client.errors import IicpError
 
 
 @dataclass
@@ -47,7 +50,7 @@ class TaskResponse:
     status: str
     result: dict[str, Any] | None
     metrics: TaskMetrics
-    error: "IicpError | None" = None
+    error: IicpError | None = None
 
 
 @dataclass
@@ -61,6 +64,7 @@ class ChatOptions:
     model: str | None = None
     max_tokens: int | None = None
     temperature: float | None = None
+    timeout_ms: int | None = None
     qos: str = "interactive"
     node_token: str | None = None
 
@@ -112,7 +116,3 @@ class NodeList:
     nodes: list[Node]
     query_ms: int
 
-
-# Forward reference resolution
-from iicp_client.errors import IicpError  # noqa: E402
-TaskResponse.__annotations__["error"] = "IicpError | None"

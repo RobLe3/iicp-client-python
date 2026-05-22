@@ -54,14 +54,14 @@ async def get_json(
             message=f"Request to {url} timed out after {timeout_ms}ms",
             component=component,
             retryable=True,
-        )
+        ) from None
     except httpx.RequestError as exc:
         raise IicpError(
             code="IICP-E004",
             message=f"Network error reaching {url}: {exc}",
             component=component,
             retryable=True,
-        )
+        ) from exc
     if not resp.is_success:
         raise from_http(resp.status_code, _safe_json(resp), component)
     return resp.json()
@@ -91,14 +91,14 @@ async def post_json(
             message=f"Request to {url} timed out after {timeout_ms}ms",
             component=component,
             retryable=True,
-        )
+        ) from None
     except httpx.RequestError as exc:
         raise IicpError(
             code="IICP-E004",
             message=f"Network error reaching {url}: {exc}",
             component=component,
             retryable=True,
-        )
+        ) from exc
     elapsed = int((time.monotonic() - t0) * 1000)
     if not resp.is_success:
         raise from_http(resp.status_code, _safe_json(resp), component)
