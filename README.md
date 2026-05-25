@@ -27,29 +27,28 @@ Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
 
 ```python
 import asyncio
-from iicp_client import IicpClient, ClientConfig
+from iicp_client import IicpClient, ChatMessage
 
 async def main():
-    client = IicpClient(ClientConfig(directory_url="https://iicp.network/api"))
+    client = IicpClient()
 
     # chat_async discovers, selects best node, and submits in one call
     response = await client.chat_async(
-        messages=[{"role": "user", "content": "Hello from IICP!"}],
+        messages=[ChatMessage(role="user", content="Hello from IICP!")],
     )
-    print(response.choices[0].message["content"])
+    print(response.choices[0].message.content)
 
 asyncio.run(main())
 ```
 
-A synchronous wrapper is available for scripts and notebooks:
+Synchronous wrapper for scripts and notebooks:
 
 ```python
-from iicp_client import IicpClient
+from iicp_client import IicpClient, ChatMessage
 
 client   = IicpClient()
-nodes    = client.discover("urn:iicp:intent:llm:chat:v1")
-response = client.chat(node=nodes.nodes[0], messages=[{"role": "user", "content": "Hi"}])
-print(response.choices[0].message["content"])
+response = client.chat([ChatMessage(role="user", content="Hello from IICP!")])
+print(response.choices[0].message.content)
 ```
 
 ---
@@ -60,19 +59,18 @@ print(response.choices[0].message["content"])
 from iicp_client import ClientConfig
 
 config = ClientConfig(
-    directory_url = "https://iicp.network/api",  # IICP directory
-    timeout_ms    = 30_000,                       # max 120 000 (SDK-04)
-    region        = "eu-central",                 # prefer nodes in region
-    node_token    = "your-token",                 # optional auth token
+    directory_url = "https://iicp.network",  # IICP directory
+    timeout_ms    = 30_000,                  # max 120 000 (SDK-04)
+    region        = "eu-central",            # prefer nodes in region
 )
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `directory_url` | `"https://iicp.network/api"` | IICP directory endpoint |
+| `directory_url` | `"https://iicp.network"` | IICP directory endpoint |
 | `timeout_ms` | `30000` | Request timeout — max 120 000 ms |
 | `region` | `None` | Preferred node region |
-| `node_token` | `None` | Bearer token for authenticated nodes |
+| `max_retries` | `3` | Retry count for transient errors |
 
 ---
 
@@ -81,7 +79,7 @@ config = ClientConfig(
 ```python
 from iicp_client import DiscoverOptions
 
-nodes = await client.discover_async(
+node_list = await client.discover_async(
     "urn:iicp:intent:llm:chat:v1",
     DiscoverOptions(
         region         = "eu-central",
@@ -90,6 +88,7 @@ nodes = await client.discover_async(
         limit          = 5,
     )
 )
+nodes = node_list.nodes  # list of Node objects
 ```
 
 ---
@@ -97,12 +96,13 @@ nodes = await client.discover_async(
 ## Error handling
 
 ```python
-from iicp_client import IicpError
+from iicp_client import IicpClient, IicpError, ChatMessage
 
+client = IicpClient()
 try:
-    response = await client.submit_async(node, request)
+    response = client.chat([ChatMessage(role="user", content="hi")])
 except IicpError as e:
-    print(f"[{e.code}] {e.message}  (HTTP {e.status_code})")
+    print(f"[{e.code}] {e.message}  (HTTP {e.http_status})")
 ```
 
 Error codes match the [IICP error reference](https://iicp.network/docs/error-reference) — e.g. `task_timeout`, `capacity_exceeded`, `no_nodes_available`.
