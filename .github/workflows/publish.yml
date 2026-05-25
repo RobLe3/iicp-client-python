@@ -8,25 +8,51 @@ on:
       version:
         description: "Version to publish (must match pyproject.toml)"
         required: true
+      fast_mode:
+        description: "Skip full test matrix — single Python version, no security audit (patch/doc-only releases)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 jobs:
   test:
     name: Tests (pre-publish gate)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ${{ fromJson(inputs.fast_mode == 'true' && '["3.12"]' || '["3.11", "3.12"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]" --quiet
       - run: python -m ruff check src tests
       - run: pytest tests/ -q
 
+  conformance:
+    name: Conformance Mark Coverage
+    if: inputs.fast_mode != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify conformance marks
+        run: |
+          FAIL=0
+          for f in tests/test_*.py; do
+            if ! grep -q "SDK-0[1-9]\|SDK-1[0-9]\|ADR-016" "$f"; then
+              echo "MISSING conformance mark: $f"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
   publish:
     name: Build and publish to PyPI
-    needs: test
+    needs: [test]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
