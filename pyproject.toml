@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iicp-client"
-version = "0.3.2"
+version = "0.4.0"
 description = "Official Python client SDK for the IICP protocol"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -42,6 +42,13 @@ metrics = [
 # minimal containers — HTTP-only nodes don't need it.
 iicp-tcp = [
     "cbor2>=5.4",
+]
+# ADR-041 UPnP NAT detection — auto-discover public endpoint on operator
+# networks behind a UPnP-capable router. Optional because upnpclient pulls in
+# lxml (C extension), which fails to build on some minimal containers.
+nat = [
+    "upnpclient>=1.0",
+    "ifaddr>=0.2",
 ]
 dev = [
     "pytest>=8.3",
