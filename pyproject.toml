@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iicp-client"
-version = "0.3.0"
+version = "0.3.1"
 description = "Official Python client SDK for the IICP protocol"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -37,12 +37,19 @@ Documentation = "https://iicp.network/docs"
 metrics = [
     "prometheus-client>=0.20",
 ]
+# Native IICP binary transport (port 9484, spec/iicp-framing.md). Optional
+# because cbor2 has a C-extension build that can fail on some musl-based
+# minimal containers — HTTP-only nodes don't need it.
+iicp-tcp = [
+    "cbor2>=5.4",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "respx>=0.21",
     "ruff>=0.8",
     "prometheus-client>=0.20",
+    "cbor2>=5.4",
 ]
 
 [tool.hatch.build.targets.wheel]
