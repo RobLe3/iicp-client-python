@@ -2,6 +2,7 @@
 
 from iicp_client.client import IicpClient
 from iicp_client.errors import IicpError
+from iicp_client.backends import openai_compat_handler
 from iicp_client.iicp_tcp import IicpTcpClient, IicpTcpClientError, IicpTcpServer, MsgType
 from iicp_client.nat_detection import NatProfile, detect_nat
 from iicp_client.node import IicpNode, NodeConfig
@@ -30,6 +31,7 @@ __all__ = [
     "NatProfile",
     "NodeConfig",
     "detect_nat",
+    "openai_compat_handler",
     "ClientConfig",
     "TaskAuth",
     "TaskConstraints",
