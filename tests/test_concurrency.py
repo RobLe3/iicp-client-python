@@ -1,3 +1,4 @@
+# ADR-016: IICP client SDK conformance
 """Unit tests for ConcurrencyGate + its wiring into IicpTcpServer CALLs."""
 
 from __future__ import annotations

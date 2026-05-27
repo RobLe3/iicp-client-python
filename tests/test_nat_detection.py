@@ -1,3 +1,4 @@
+# ADR-016: IICP client SDK conformance
 """Unit tests for nat_detection — ADR-041 tier-0 + tier-1 detection logic.
 
 UPnP-IGD discovery isn't reachable in CI so tier-1 success is exercised by

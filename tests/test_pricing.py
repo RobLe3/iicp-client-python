@@ -1,3 +1,4 @@
+# ADR-016: IICP client SDK conformance
 """Unit tests for ADR-019 pricing + HMAC signing.
 
 Wire-compat: the canonical signature body MUST match what PHP's

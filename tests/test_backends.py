@@ -1,3 +1,4 @@
+# ADR-016: IICP client SDK conformance
 """Unit tests for the openai_compat backend helper."""
 
 from __future__ import annotations
