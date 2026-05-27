@@ -52,6 +52,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class Ipv6Profile:
+    """IPv6-side qualification result (#342, ADR-043 §4).
+
+    Distinguishes the three orthogonal states from the spec doc:
+      1. global IPv6 address exists on a local interface
+      2. local IPv6 listener is actually bound (service code reachable)
+      3. external IPv6 reachability (return path from the internet)
+
+    'stable' tracks RFC 4941 privacy addresses vs. EUI-64 / manual.
+    A privacy address is NOT suitable for a long-lived server identity.
+    """
+    global_v6_available: bool = False
+    stable_v6_available: bool = False
+    addresses: list[str] = field(default_factory=list)
+    listener_v6_ok: bool = False  # the SDK's bind(0.0.0.0) is v4-only by default
+    external_v6_reachable: bool = False  # outbound v6 connectivity to probe target
+    error: str | None = None
+
+
+@dataclass
 class NatProfile:
     """Result of `detect_nat()` — describes what the SDK can advertise.
 
@@ -68,6 +88,9 @@ class NatProfile:
     internal_endpoint: str | None = None
     operator_guidance: str | None = None
     detection_log: list[str] = field(default_factory=list)
+    # ADR-043 §4 — IPv6 side of the qualification result (#342). Populated by
+    # detect_ipv6() when detect_nat is called with v6 detection enabled.
+    ipv6: Ipv6Profile | None = None
 
     def is_reachable(self) -> bool:
         return self.tier <= 3 and self.public_endpoint is not None
@@ -85,6 +108,7 @@ async def detect_nat(
     timeout_s: float = 5.0,
     external_ip_probe_url: str | None = None,
     transport_port: int | None = None,
+    detect_v6: bool = True,
 ) -> NatProfile:
     """Run ADR-041 tier-0 + tier-1 detection.
 
@@ -107,6 +131,20 @@ async def detect_nat(
     """
     profile = NatProfile(tier=4, transport_method="unreachable")
     profile.internal_endpoint = f"http://{bind_host}:{bind_port}"
+
+    # ADR-043 §4 — IPv6 qualification runs in parallel to the v4 NAT path.
+    # Side-effect free until the operator chooses to bind on `[::]`.
+    if detect_v6:
+        try:
+            profile.ipv6 = await detect_ipv6(bind_port, timeout_s=min(timeout_s, 3.0))
+            profile.detection_log.append(
+                f"ipv6: global={profile.ipv6.global_v6_available} "
+                f"stable={profile.ipv6.stable_v6_available} "
+                f"listener={profile.ipv6.listener_v6_ok} "
+                f"reachable_out={profile.ipv6.external_v6_reachable}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            profile.detection_log.append(f"ipv6: probe error — {exc}")
 
     # Tier 0 — operator-configured public endpoint
     if operator_public_endpoint:
@@ -181,6 +219,11 @@ async def detect_nat(
         cgnat_warning = _detect_cgnat(upnp.external_ip)
         if cgnat_warning:
             profile.detection_log.append(f"tier-1: {cgnat_warning}")
+            # CGNAT IPv4 unreachable — but if the host has a working IPv6 GUA,
+            # advertise that instead (ADR-043 §10 'ELSE IF IPv6 reachable').
+            v6_profile = _try_ipv6_fallback(profile, bind_port, transport_port)
+            if v6_profile is not None:
+                return v6_profile
             profile.operator_guidance = (
                 f"WARNING: your WAN IP {upnp.external_ip} appears to be inside a "
                 f"carrier-grade NAT pool (reverse-DNS suggests CGNAT). UPnP-mapped "
@@ -255,6 +298,13 @@ async def detect_nat(
                     "use a tunnel (Cloudflare Tunnel, ngrok)."
                 ),
             )
+
+    # IPv6 GUA fallback (ADR-043 §10): when v4 paths fail entirely but the
+    # host has a routable IPv6 + verified outbound v6 connectivity, the
+    # operator can host over v6 — bypasses CGNAT entirely.
+    v6_profile = _try_ipv6_fallback(profile, bind_port, transport_port)
+    if v6_profile is not None:
+        return v6_profile
 
     profile.operator_guidance = (
         "No automatic port mapping available. Options:\n"
@@ -577,3 +627,158 @@ def _detect_cgnat(external_ip: str) -> str | None:
             f"infrastructure — verify external reachability"
         )
     return None
+
+
+# ── IPv6 qualification (#342, ADR-043 §4) ────────────────────────────────────
+
+
+async def detect_ipv6(
+    bind_port: int,
+    *,
+    probe_url: str = "https://api6.ipify.org",
+    timeout_s: float = 3.0,
+) -> Ipv6Profile:
+    """Probe the IPv6 surface of the local host.
+
+    Three orthogonal checks per the maintainer-supplied service qualification
+    reference (§4 of the doc; ADR-043 §4):
+
+      1. Does any interface have a global IPv6 address (2000::/3 GUA)?
+      2. Is the SDK able to bind an IPv6 socket on ``bind_port``? The default
+         ``bind=0.0.0.0`` only listens on IPv4 — operators have to bind ``::``
+         (dual-stack) or ``::1`` (v6-only) to be reachable over v6.
+      3. Can we reach a known IPv6-only probe target on the internet?
+         (outbound connectivity test — does NOT prove inbound).
+
+    The result is purely advisory — the directory's Layer-2 dial-back
+    (#326 / iter-1458) remains the source of truth for inbound reachability.
+    """
+    profile = Ipv6Profile()
+    profile.addresses = _list_global_ipv6_addresses()
+    profile.global_v6_available = bool(profile.addresses)
+    profile.stable_v6_available = any(
+        not _is_privacy_v6(a) for a in profile.addresses
+    )
+
+    # Bind test — can we open a v6 socket on the requested port?
+    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("::", bind_port))
+        profile.listener_v6_ok = True
+    except OSError as exc:
+        profile.listener_v6_ok = False
+        profile.error = f"v6 bind failed: {exc}"
+    finally:
+        s.close()
+
+    # Outbound reachability test — does v6 routing actually work?
+    if profile.global_v6_available:
+        profile.external_v6_reachable = await _probe_outbound_ipv6(probe_url, timeout_s)
+
+    return profile
+
+
+def _list_global_ipv6_addresses() -> list[str]:
+    """Return all IPv6 GUA addresses bound to local interfaces.
+
+    Filters out link-local (fe80::/10), unique-local (fc00::/7), loopback,
+    multicast, and unspecified — only globally-routable 2000::/3 returned.
+    """
+    found: set[str] = []
+    try:
+        addrs = socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET6)
+    except OSError:
+        return []
+    for fam, _stype, _proto, _canon, sockaddr in addrs:
+        if fam != socket.AF_INET6:
+            continue
+        ip = sockaddr[0].split("%")[0]  # strip zone-id (fe80::1%en0)
+        try:
+            addr = ipaddress.IPv6Address(ip)
+        except ValueError:
+            continue
+        if addr.is_global and not addr.is_unspecified:
+            found.append(ip)
+    return sorted(set(found))
+
+
+def _is_privacy_v6(addr: str) -> bool:
+    """Heuristic: RFC 4941 privacy addresses use a random 64-bit interface
+    identifier (no `ff:fe` middle marker that EUI-64 has). This isn't strict
+    — operators can also have manual stable addresses without `ff:fe`. The
+    qualification result lists raw addresses; this helper is a hint, not a
+    proof. Per ADR-043 §7: 'IF IPv6 prefix changes frequently THEN use DDNS.'
+    """
+    try:
+        a = ipaddress.IPv6Address(addr)
+    except ValueError:
+        return False
+    # EUI-64 has the form xxxx:xxxx:xxxx:xxxx where bits 64..71 == 0xff and
+    # bits 72..79 == 0xfe in the interface identifier. Heuristic.
+    iface_id = int(a) & ((1 << 64) - 1)
+    eui64_marker = (iface_id >> 24) & 0xFFFF
+    return eui64_marker != 0xFFFE
+
+
+def _try_ipv6_fallback(
+    profile: NatProfile,
+    bind_port: int,
+    transport_port: int | None,
+) -> NatProfile | None:
+    """ADR-043 §10 — when the IPv4 path can't expose this node (CGNAT or
+    UPnP failure), advertise the host's IPv6 GUA instead. Returns a tier-1
+    NatProfile when v6 is usable, None otherwise so the caller falls back to
+    its existing tier-4 message.
+
+    Inbound v6 reachability isn't proven here — outbound connectivity to a v6
+    probe is the most we can verify locally. Router firewall pinholes for v6
+    inbound are tracked under #343. The directory's Layer-2 dial-back is the
+    truth test (assertLive over v6 hits IICP-E036 if the firewall is closed).
+    """
+    if not profile.ipv6:
+        return None
+    if not (profile.ipv6.global_v6_available and profile.ipv6.external_v6_reachable):
+        return None
+    v6_addr = profile.ipv6.addresses[0]
+    public_url = f"http://[{v6_addr}]:{bind_port}"
+    transport_url: str | None = None
+    if transport_port and transport_port != bind_port:
+        transport_url = f"iicp://[{v6_addr}]:{transport_port}"
+    profile.detection_log.append(
+        f"tier-1-ipv6: advertising {public_url} (verified outbound v6; "
+        "router firewall pinhole still required — covered by #343)"
+    )
+    return NatProfile(
+        tier=1,
+        transport_method="direct",  # IPv6 GUA is directly addressable
+        public_endpoint=public_url,
+        transport_endpoint=transport_url,
+        internal_endpoint=profile.internal_endpoint,
+        detection_log=profile.detection_log,
+        ipv6=profile.ipv6,
+        operator_guidance=(
+            f"Advertising IPv6 GUA {v6_addr}. Inbound IPv4 isn't available "
+            "(no UPnP success / CGNAT), but your IPv6 surface is routable. "
+            "For external clients to reach this node over IPv6, ensure your "
+            f"router's firewall allows inbound TCP on port {bind_port} → "
+            f"{v6_addr}. The directory will Layer-2 dial-back to verify."
+        ),
+    )
+
+
+async def _probe_outbound_ipv6(url: str, timeout_s: float) -> bool:
+    """Best-effort: try to reach an IPv6-only probe URL. Returns True iff the
+    request completed via IPv6 (httpx auto-selects family based on DNS, so a
+    v6-only hostname like api6.ipify.org is the right way to force v6).
+    """
+    try:
+        import httpx
+    except ImportError:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            resp = await client.get(url)
+        return resp.status_code == 200
+    except Exception:  # noqa: BLE001
+        return False

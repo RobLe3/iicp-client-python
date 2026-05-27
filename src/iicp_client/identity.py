@@ -26,14 +26,14 @@ import os
 import re
 import stat
 import uuid
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _chmod_600(path: Path) -> None:
@@ -71,7 +71,7 @@ class OperatorIdentity:
     contact: str = ""
 
     @classmethod
-    def generate(cls, *, display_name: str = "", contact: str = "") -> "OperatorIdentity":
+    def generate(cls, *, display_name: str = "", contact: str = "") -> OperatorIdentity:
         return cls(
             operator_id=f"op-{uuid.uuid4()}",
             created_at=_now_iso(),
@@ -133,7 +133,7 @@ class NodeIdentity:
     created_at: str = field(default_factory=_now_iso)
 
     @classmethod
-    def generate(cls, *, operator_id: str, name: str, **fields: Any) -> "NodeIdentity":
+    def generate(cls, *, operator_id: str, name: str, **fields: Any) -> NodeIdentity:
         return cls(
             node_id=str(uuid.uuid4()),
             operator_id=operator_id,

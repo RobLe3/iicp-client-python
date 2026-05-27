@@ -134,7 +134,9 @@ class TestDetectNatTier0:
     async def test_operator_endpoint_non_routable_falls_through(self):
         # localhost is non-routable; tier-0 should fall through, hit tier-1
         # UPnP which fails because we're in a test environment, then return
-        # tier 4 unreachable.
+        # tier 4 unreachable. detect_v6=False isolates the v4 path — the
+        # ADR-043 §10 IPv6 fallback (iter-1467) would otherwise upgrade
+        # this to tier-1 on any host with a working IPv6 GUA.
         with patch(
             "iicp_client.nat_detection._try_upnp_mapping",
             side_effect=ImportError("upnpclient not installed (test)"),
@@ -143,6 +145,7 @@ class TestDetectNatTier0:
                 "0.0.0.0",
                 8080,
                 operator_public_endpoint="http://localhost:8080",
+                detect_v6=False,
             )
         assert profile.tier == 4
         assert profile.transport_method == "unreachable"
@@ -154,7 +157,7 @@ class TestDetectNatTier0:
             "iicp_client.nat_detection._try_upnp_mapping",
             side_effect=ImportError("upnpclient not installed (test)"),
         ):
-            profile = await detect_nat("0.0.0.0", 8080)
+            profile = await detect_nat("0.0.0.0", 8080, detect_v6=False)
         assert profile.tier == 4
         # Operator guidance should be present so the user knows what to do
         assert profile.operator_guidance is not None
@@ -223,7 +226,10 @@ class TestDetectNatTier1Mocked:
                 "iicp_client.nat_detection._detect_cgnat",
                 return_value="reverse-DNS suggests CGNAT",
             ):
-                profile = await detect_nat("0.0.0.0", 8080)
+                # detect_v6=False — exercise the v4-only CGNAT path. With
+                # IPv6 enabled, ADR-043 §10 fallback would upgrade to tier-1
+                # on any host with a working IPv6 GUA (iter-1467 behaviour).
+                profile = await detect_nat("0.0.0.0", 8080, detect_v6=False)
         assert profile.tier == 4
         assert not profile.is_reachable()
         assert "CGNAT" in (profile.operator_guidance or "")
@@ -252,3 +258,79 @@ class TestDetectNatTier1Mocked:
                 )
         assert profile.tier == 1
         assert profile.public_endpoint == "http://8.8.8.99:8080"
+
+
+# ── ADR-043 §4/§10 — IPv6 fallback (iter-1467) ──────────────────────────────
+
+
+class TestIpv6Fallback:
+    """When the IPv4 path can't expose the node (CGNAT or UPnP failure) but the
+    host has a working IPv6 GUA + verified outbound v6 connectivity, detect_nat
+    advertises the v6 endpoint as tier-1 instead of returning tier-4."""
+
+    async def test_cgnat_v4_falls_back_to_v6(self):
+        from iicp_client.nat_detection import Ipv6Profile
+
+        fake_v4 = _UpnpResult(
+            success=True,
+            external_ip="89.1.216.20",
+            external_port=8080,
+            mapped_ports=[8080],
+            igd_device="FakeRouter",
+        )
+
+        async def fake_try(_ports, *, lease_seconds):
+            return fake_v4
+
+        async def fake_v6(_port, *, timeout_s=3.0):
+            return Ipv6Profile(
+                global_v6_available=True,
+                stable_v6_available=False,
+                addresses=["2a0a:a543:df54::1"],
+                listener_v6_ok=True,
+                external_v6_reachable=True,
+            )
+
+        with patch("iicp_client.nat_detection._try_upnp_mapping", fake_try):
+            with patch(
+                "iicp_client.nat_detection._detect_cgnat",
+                return_value="reverse-DNS suggests CGNAT",
+            ):
+                with patch("iicp_client.nat_detection.detect_ipv6", fake_v6):
+                    profile = await detect_nat("0.0.0.0", 8080)
+
+        assert profile.tier == 1
+        assert profile.transport_method == "direct"
+        assert profile.public_endpoint == "http://[2a0a:a543:df54::1]:8080"
+        assert profile.ipv6 is not None
+        assert profile.ipv6.global_v6_available
+        assert "IPv6 GUA" in (profile.operator_guidance or "")
+
+    async def test_v6_unreachable_keeps_tier_4(self):
+        """IPv6 GUA exists but outbound v6 fails → no fallback, stays tier-4."""
+        from iicp_client.nat_detection import Ipv6Profile
+
+        async def fake_v6(_port, *, timeout_s=3.0):
+            return Ipv6Profile(
+                global_v6_available=True,
+                addresses=["2a0a:a543:df54::1"],
+                listener_v6_ok=True,
+                external_v6_reachable=False,  # ← outbound v6 fails
+            )
+
+        with patch(
+            "iicp_client.nat_detection._try_upnp_mapping",
+            side_effect=ImportError("upnpclient missing"),
+        ):
+            with patch("iicp_client.nat_detection.detect_ipv6", fake_v6):
+                profile = await detect_nat("0.0.0.0", 8080)
+        assert profile.tier == 4
+        assert profile.transport_method == "unreachable"
+
+    async def test_v6_detection_can_be_disabled(self):
+        with patch(
+            "iicp_client.nat_detection._try_upnp_mapping",
+            side_effect=ImportError("upnpclient missing"),
+        ):
+            profile = await detect_nat("0.0.0.0", 8080, detect_v6=False)
+        assert profile.ipv6 is None
