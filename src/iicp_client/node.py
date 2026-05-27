@@ -186,6 +186,10 @@ class IicpNode:
         # on register() so subsequent re-registrations (after expiry) sign
         # with the directory-issued key.
         self._node_hmac_key: str = config.node_hmac_key
+        # #343 — UPnP IPv6 pinhole tracking. Set by apply_nat_profile() when
+        # detect_nat opened a firewall pinhole; consumed by _revoke_pinhole()
+        # on graceful shutdown to avoid leaving stale firewall rules.
+        self._pinhole_uid: int | None = None
 
     def apply_nat_profile(self, profile: Any) -> None:
         """Populate transport_endpoint + NAT observability fields from a
@@ -209,6 +213,13 @@ class IicpNode:
         if tm and tm != "unreachable":
             self._cfg.transport_method = tm
         self._cfg.nat_type = self._cfg.nat_type or "unknown"
+        # #343 — capture the IPv6 firewall pinhole UID if one was opened so
+        # serve()'s finally block can revoke it on shutdown.
+        ipv6 = getattr(profile, "ipv6", None)
+        if ipv6 is not None and getattr(ipv6, "pinhole_active", False):
+            uid = getattr(ipv6, "pinhole_unique_id", None)
+            if isinstance(uid, int):
+                self._pinhole_uid = uid
         # Surface a small dict of detection metadata so directory operators can
         # see what tier the SDK landed on without us shipping every detail.
         tier = getattr(profile, "tier", None)
@@ -544,10 +555,69 @@ class IicpNode:
             server.shutdown()
             for t in bg_tasks:
                 t.cancel()
+            # #343 — graceful pinhole revoke. Best-effort; failure here is
+            # never fatal because router lease auto-expires (3600s default).
+            self._revoke_pinhole_sync()
+            # Notify directory we're going away so it can flip our entry to
+            # dormant + free up the rate-limit slot the operator's IP holds.
+            if node_token:
+                try:
+                    await self.deregister(node_token)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("deregister on shutdown failed: %s", exc)
             await self._http.aclose()
+
+    async def deregister(self, node_token: str) -> None:
+        """Notify the directory this node is shutting down (DELETE /v1/register).
+
+        Returns silently on success; logs + raises on transport / 4xx errors so
+        callers can surface them. Bearer-authed.
+
+        Directory side: marks node status='dormant' + cascades a DEREGISTER
+        event to replicas (S.13 §5.1 federated event log).
+        """
+        url = self._cfg.directory_url.rstrip("/") + _REGISTER_PATH
+        resp = await self._http.request(
+            "DELETE",
+            url,
+            headers={"Authorization": f"Bearer {node_token}"},
+            json={"node_id": self._cfg.node_id},
+        )
+        resp.raise_for_status()
+        logger.info("deregistered node %s", self._cfg.node_id)
+
+    def _revoke_pinhole_sync(self) -> None:
+        """Close the UPnP IPv6 firewall pinhole if one is tracked (#343).
+
+        Runs synchronously inside serve()'s finally block. Best-effort: any
+        failure (router unreachable, UPnP service flapped, etc.) is logged
+        and ignored. Leases auto-expire after pinhole_lease_seconds so
+        nothing is left "permanently open" even if revoke fails.
+        """
+        uid = self._pinhole_uid
+        if uid is None:
+            return
+        try:
+            from iicp_client.nat_detection import delete_ipv6_pinhole
+            ok = delete_ipv6_pinhole(uid)
+            if ok:
+                logger.info("UPnP IPv6 pinhole uid=%s closed cleanly", uid)
+            else:
+                logger.info(
+                    "UPnP IPv6 pinhole uid=%s revoke attempted but no IGD "
+                    "responded — router lease will auto-expire",
+                    uid,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pinhole revoke (uid=%s) failed: %s", uid, exc)
+        finally:
+            self._pinhole_uid = None
 
     async def __aenter__(self) -> IicpNode:
         return self
 
     async def __aexit__(self, *_: Any) -> None:
+        # Belt-and-braces: cleanup pinholes here too in case the operator
+        # used the context-manager pattern outside of serve().
+        self._revoke_pinhole_sync()
         await self._http.aclose()
