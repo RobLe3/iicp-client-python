@@ -138,8 +138,15 @@ async def _serve(args: argparse.Namespace) -> int:
     )
     node = IicpNode(cfg)
 
+    # The handler expects base_url; the CLI's --backend-url is the OpenAI-
+    # compatible root. Append /v1 if not already present (Ollama serves at
+    # both /v1/chat/completions and the bare /api/chat, but the SDK helper
+    # talks the OpenAI dialect on /v1).
+    base_url = args.backend_url.rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url = base_url + "/v1"
     handler = openai_compat_handler(
-        backend_url=args.backend_url,
+        base_url=base_url,
         model=args.model,
     )
 
