@@ -8,6 +8,7 @@ from iicp_client.cip_policy import (
     configure_policy as configure_cip_policy,
     get_policy as get_cip_policy,
 )
+from iicp_client.conformance import ConformanceReport, ProbeResult, run_conformance_checks
 from iicp_client.iicp_tcp import IicpTcpClient, IicpTcpClientError, IicpTcpServer, MsgType
 from iicp_client.nat_detection import NatProfile, detect_nat
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
@@ -46,13 +47,16 @@ __all__ = [
     "ChatMessage",
     "ChatOptions",
     "ChatResponse",
+    "ConformanceReport",
     "CooperativeInferencePolicy",
     "DiscoverOptions",
     "NodeList",
     "PricingConfig",
+    "ProbeResult",
     "build_pricing_block",
     "configure_cip_policy",
     "get_cip_policy",
+    "run_conformance_checks",
     "sign_body",
     "verify_signature",
 ]
