@@ -62,12 +62,24 @@ class Ipv6Profile:
 
     'stable' tracks RFC 4941 privacy addresses vs. EUI-64 / manual.
     A privacy address is NOT suitable for a long-lived server identity.
+
+    Pinhole fields (#343, ADR-043 §5) populated when UPnP v6 firewall
+    pinhole automation succeeds:
+      - pinhole_active: True iff router accepted AddPinhole
+      - pinhole_unique_id: opaque handle returned by the IGD; use to
+        delete or renew the pinhole
+      - pinhole_lease_seconds: lease the IGD granted (may differ from
+        the request)
     """
     global_v6_available: bool = False
     stable_v6_available: bool = False
     addresses: list[str] = field(default_factory=list)
     listener_v6_ok: bool = False  # the SDK's bind(0.0.0.0) is v4-only by default
     external_v6_reachable: bool = False  # outbound v6 connectivity to probe target
+    pinhole_active: bool = False
+    pinhole_unique_id: int | None = None
+    pinhole_lease_seconds: int | None = None
+    pinhole_inbound_allowed: bool | None = None  # router reports firewall lets in pinholes
     error: str | None = None
 
 
@@ -721,6 +733,109 @@ def _is_privacy_v6(addr: str) -> bool:
     return eui64_marker != 0xFFFE
 
 
+def _try_upnp_ipv6_pinhole(
+    internal_v6: str,
+    internal_port: int,
+    *,
+    lease_seconds: int = 3600,
+    protocol: int = 6,  # TCP
+) -> tuple[int, int, bool] | None:
+    """Open an inbound IPv6 firewall pinhole via UPnP IGDv2
+    ``WANIPv6FirewallControl::AddPinhole`` (#343, ADR-043 §5).
+
+    Returns ``(unique_id, granted_lease_seconds, inbound_pinhole_allowed)`` on
+    success. Returns None when:
+      - upnpclient not installed
+      - no IGD found
+      - the IGD doesn't expose WANIPv6FirewallControl
+      - the IGD reports InboundPinholeAllowed=False
+      - AddPinhole errored
+
+    The pinhole authorises inbound TCP traffic to ``internal_v6:internal_port``
+    from any external host. Operators close the pinhole on shutdown via
+    ``delete_ipv6_pinhole(unique_id)`` to avoid leaving a stale open hole when
+    the node restarts with a different identity.
+    """
+    try:
+        import upnpclient  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    try:
+        devices = upnpclient.discover(timeout=3)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("v6 pinhole: UPnP discovery failed: %s", exc)
+        return None
+    for d in devices:
+        for svc in getattr(d, "services", []):
+            stype = getattr(svc, "service_type", "")
+            if "WANIPv6FirewallControl" not in stype:
+                continue
+            # Check the firewall policy first — some IGDs disable inbound
+            # pinholes by default even when the service exists.
+            try:
+                status = svc.GetFirewallStatus()
+                inbound_allowed = bool(status.get("InboundPinholeAllowed", False))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("v6 pinhole: GetFirewallStatus failed: %s", exc)
+                continue
+            if not inbound_allowed:
+                logger.info(
+                    "v6 pinhole: IGD %s reports InboundPinholeAllowed=False; "
+                    "router-side admin must enable inbound pinholes",
+                    getattr(d, "friendly_name", "?"),
+                )
+                return None
+            # Request the pinhole. RemoteHost="" means "any"; RemotePort=0
+            # means "any port". TCP protocol number = 6.
+            try:
+                result = svc.AddPinhole(
+                    RemoteHost="",
+                    RemotePort=0,
+                    InternalClient=internal_v6,
+                    InternalPort=internal_port,
+                    Protocol=protocol,
+                    LeaseTime=lease_seconds,
+                )
+                uid = int(result.get("UniqueID", 0))
+                return (uid, lease_seconds, True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "v6 pinhole: AddPinhole failed on %s: %s",
+                    getattr(d, "friendly_name", "?"),
+                    exc,
+                )
+                return None
+    return None
+
+
+def delete_ipv6_pinhole(unique_id: int) -> bool:
+    """Close a previously-opened IPv6 firewall pinhole via UPnP
+    ``WANIPv6FirewallControl::DeletePinhole``.
+
+    Returns True on success, False on any failure (including the IGD not
+    being reachable any more — best-effort cleanup, leases auto-expire).
+    """
+    try:
+        import upnpclient  # type: ignore[import-untyped]
+    except ImportError:
+        return False
+    try:
+        devices = upnpclient.discover(timeout=3)
+    except Exception:  # noqa: BLE001
+        return False
+    for d in devices:
+        for svc in getattr(d, "services", []):
+            if "WANIPv6FirewallControl" not in getattr(svc, "service_type", ""):
+                continue
+            try:
+                svc.DeletePinhole(UniqueID=unique_id)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("v6 pinhole: DeletePinhole(%s) failed: %s", unique_id, exc)
+                continue
+    return False
+
+
 def _try_ipv6_fallback(
     profile: NatProfile,
     bind_port: int,
@@ -745,10 +860,48 @@ def _try_ipv6_fallback(
     transport_url: str | None = None
     if transport_port and transport_port != bind_port:
         transport_url = f"iicp://[{v6_addr}]:{transport_port}"
+
+    # #343 — attempt the UPnP IPv6 firewall pinhole. Best-effort: when it
+    # succeeds the operator doesn't need to manually configure their router;
+    # when it fails the existing guidance still points them at it.
+    pinhole = _try_upnp_ipv6_pinhole(v6_addr, bind_port)
+    pinhole_log = ""
+    if pinhole is not None:
+        uid, lease, inbound_ok = pinhole
+        profile.ipv6.pinhole_active = True
+        profile.ipv6.pinhole_unique_id = uid
+        profile.ipv6.pinhole_lease_seconds = lease
+        profile.ipv6.pinhole_inbound_allowed = inbound_ok
+        pinhole_log = (
+            f" + UPnP pinhole opened (uid={uid}, lease={lease}s — "
+            "renew before expiry via UpdatePinhole, close on shutdown)"
+        )
+    else:
+        profile.ipv6.pinhole_active = False
+        pinhole_log = (
+            " (UPnP pinhole not opened — router didn't accept AddPinhole; "
+            "manual firewall rule still required)"
+        )
+
     profile.detection_log.append(
-        f"tier-1-ipv6: advertising {public_url} (verified outbound v6; "
-        "router firewall pinhole still required — covered by #343)"
+        f"tier-1-ipv6: advertising {public_url}{pinhole_log}"
     )
+    guidance = (
+        f"Advertising IPv6 GUA {v6_addr}. Inbound IPv4 isn't available "
+        "(no UPnP success / CGNAT), but your IPv6 surface is routable. "
+    )
+    if profile.ipv6.pinhole_active:
+        guidance += (
+            f"The SDK opened a UPnP firewall pinhole (port {bind_port} → "
+            f"{v6_addr}, lease {profile.ipv6.pinhole_lease_seconds}s); the "
+            "directory will Layer-2 dial-back to confirm reachability."
+        )
+    else:
+        guidance += (
+            f"For external clients to reach this node over IPv6, ensure your "
+            f"router's firewall allows inbound TCP on port {bind_port} → "
+            f"{v6_addr}. The directory will Layer-2 dial-back to verify."
+        )
     return NatProfile(
         tier=1,
         transport_method="direct",  # IPv6 GUA is directly addressable
@@ -757,13 +910,7 @@ def _try_ipv6_fallback(
         internal_endpoint=profile.internal_endpoint,
         detection_log=profile.detection_log,
         ipv6=profile.ipv6,
-        operator_guidance=(
-            f"Advertising IPv6 GUA {v6_addr}. Inbound IPv4 isn't available "
-            "(no UPnP success / CGNAT), but your IPv6 surface is routable. "
-            "For external clients to reach this node over IPv6, ensure your "
-            f"router's firewall allows inbound TCP on port {bind_port} → "
-            f"{v6_addr}. The directory will Layer-2 dial-back to verify."
-        ),
+        operator_guidance=guidance,
     )
 
 
