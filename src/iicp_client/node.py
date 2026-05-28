@@ -223,6 +223,8 @@ class IicpNode:
         # on register() so subsequent re-registrations (after expiry) sign
         # with the directory-issued key.
         self._node_hmac_key: str = config.node_hmac_key
+        # BUG-5: token stashed by register() so deregister()/heartbeat don't need it re-passed.
+        self._node_token: str = ""
         # #343 — UPnP IPv6 pinhole tracking. Set by apply_nat_profile() when
         # detect_nat opened a firewall pinhole; consumed by _revoke_pinhole()
         # on graceful shutdown and the renewal loop.
@@ -363,6 +365,9 @@ class IicpNode:
         token = data.get("node_token") or data.get("token")
         if not token:
             raise RuntimeError(f"Directory did not return node_token: {data}")
+        # BUG-5: stash the token so deregister()/heartbeat work without the caller
+        # re-passing it.
+        self._node_token = str(token)
         # ADR-019: capture the directory-issued HMAC key for subsequent
         # pricing signatures. Operator-provisioned key wins when set.
         if not self._node_hmac_key:
@@ -754,8 +759,11 @@ class IicpNode:
                     logger.warning("deregister on shutdown failed: %s", exc)
             await self._http.aclose()
 
-    async def deregister(self, node_token: str) -> None:
+    async def deregister(self, node_token: str | None = None) -> None:
         """Notify the directory this node is shutting down (DELETE /v1/register).
+
+        `node_token` defaults to the token stashed by register() (BUG-5) so callers
+        can simply `await node.deregister()`. Pass an explicit token to override.
 
         Returns silently on success; logs + raises on transport / 4xx errors so
         callers can surface them. Bearer-authed.
@@ -763,11 +771,14 @@ class IicpNode:
         Directory side: marks node status='dormant' + cascades a DEREGISTER
         event to replicas (S.13 §5.1 federated event log).
         """
+        token = node_token or self._node_token
+        if not token:
+            raise RuntimeError("deregister() requires a node_token (none stashed — call register() first)")
         url = self._cfg.directory_url.rstrip("/") + _REGISTER_PATH
         resp = await self._http.request(
             "DELETE",
             url,
-            headers={"Authorization": f"Bearer {node_token}"},
+            headers={"Authorization": f"Bearer {token}"},
             json={"node_id": self._cfg.node_id},
         )
         resp.raise_for_status()
