@@ -693,6 +693,11 @@ class IicpNode:
                         pass  # nonce check already completed above; span marks validation done
 
                     try:
+                        # BUG-3 guard: reject incoming tasks if the event loop is
+                        # already closed (interpreter shutdown race).
+                        if loop.is_closed():
+                            self.send_error(503, "node shutting down")
+                            return
                         with task_execute_span(task_id, intent):
                             result = asyncio.run_coroutine_threadsafe(handler(body), loop).result(
                                 timeout=60
@@ -709,6 +714,12 @@ class IicpNode:
                             }
                         ).encode()
                         self._json_response(200, resp_body)
+                    except RuntimeError as exc:
+                        if "shutdown" in str(exc).lower() or "closed" in str(exc).lower():
+                            logger.debug("Handler skipped during node shutdown: %s", exc)
+                            self.send_error(503, "node shutting down")
+                            return
+                        raise
                     except Exception as exc:
                         latency_ms = (time.monotonic() - t0) * 1000
                         node._metrics.observe("error", intent, qos, latency_ms)
@@ -744,9 +755,15 @@ class IicpNode:
         try:
             await loop.run_in_executor(None, server.serve_forever)
         finally:
-            server.shutdown()
+            # BUG-3 fix: cancel background tasks BEFORE server.shutdown() so the
+            # gossip/heartbeat coroutines stop scheduling futures onto the event
+            # loop during interpreter teardown — silences the "cannot schedule new
+            # futures after interpreter shutdown" noise on CTRL-C / normal exit.
             for t in bg_tasks:
                 t.cancel()
+            if bg_tasks:
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
+            server.shutdown()
             # #343 — graceful pinhole revoke. Best-effort; failure here is
             # never fatal because router lease auto-expires (3600s default).
             self._revoke_pinhole_sync()
