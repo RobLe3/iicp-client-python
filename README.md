@@ -137,62 +137,93 @@ asyncio.run(main())
 
 ---
 
-## NAT traversal — v0.7.0
+## NAT traversal — automatic (v0.7.3+)
 
-IICP nodes pick the best available NAT path automatically (ADR-041):
+Since v0.7.3, NAT detection runs automatically on every node startup — no flags needed.
+The SDK tries each path in order and picks the best one for your network:
 
-| Tier | Method | Requirement |
-|------|--------|-------------|
-| 0 | Direct — publicly routable | Open port 8020 |
-| 1 | UPnP/IGD port mapping | Home router with UPnP |
-| 2 | IPv6 firewall pinhole | IPv6 + UPnP/IGD2 |
-| 3 | **Relay-as-last-resort** | A relay operator in the mesh |
+| Tier | When | What happens |
+|------|------|-------------|
+| **0** | VPS/cloud (public IP on NIC) or `IICP_PUBLIC_ENDPOINT` set | Registers directly with that IP |
+| **1a** | Home router with UPnP, no CGNAT | Opens a port-forward via UPnP → registers WAN IP |
+| **1b** | CGNAT + IPv6 available + AddPinhole works | Registers IPv6 address with firewall rule |
+| **1c** | CGNAT + IPv6 + AddPinhole fails (e.g. FRITZ!Box error 606) | Registers IPv6 GUA anyway + logs guidance |
+| **3** | CGNAT + no usable IPv6 | Auto-elects relay from directory → registers via relay |
+| **4** | Nothing worked | Serves locally with operator guidance |
 
-**Relay-as-last-resort** lets a node behind CGNAT stay reachable by binding an outbound
-channel to a public relay node that forwards inbound tasks down it.
+### Environment-specific behaviour
 
-### Running a relay-capable node (relay operator)
+**VPS / bare metal** — no action needed. The SDK detects the public IP on the NIC (Tier 0).
+
+**Home router (no CGNAT)** — UPnP opens a port-forward automatically. One pinhole per port,
+so three nodes on ports 8020 / 8024 / 8025 open three pinholes.
+
+**CGNAT (carrier-grade NAT, e.g. NetCologne DSLite)** — IPv4 path is blocked by the ISP.
+The SDK tries IPv6 instead. If your FRITZ!Box rejects `AddPinhole` with error 606, the SDK
+still advertises your IPv6 address (many clients can reach it via stateful firewall) and logs:
+
+```
+WARNING: NAT: IPv6 endpoint http://[2a0a:...]:8020 advertised but firewall pinhole
+could not be opened. Open manually: FRITZ!Box → Network → Firewall → IPv6.
+Alternatively use IICP_RELAY_WORKER_ENDPOINT for relay-as-last-resort fallback.
+```
+
+**Docker bridge (`-p 8020:8020`)** — UPnP is skipped (it would reach the Docker NAT, not
+your home router). Set `IICP_PUBLIC_ENDPOINT` so the node knows its real address:
+
+```yaml
+# docker-compose.yml
+environment:
+  IICP_PUBLIC_ENDPOINT: "http://your-host-ip:8020"
+  IICP_BACKEND_URL: "http://host.docker.internal:11434"
+```
+
+Or run with `--network host` to let UPnP work as on bare metal.
+
+**Kubernetes** — set `IICP_PUBLIC_ENDPOINT` to the Service IP or external LoadBalancer:
+
+```yaml
+env:
+  - name: IICP_PUBLIC_ENDPOINT
+    value: "http://$(LOAD_BALANCER_IP):8020"
+```
+
+### CGNAT + no IPv6 → automatic relay
+
+When no direct path is possible, the SDK automatically finds a relay:
+
+```
+NAT tier=3: no direct or IPv6 endpoint available.
+Auto-electing relay from directory...
+Auto-elected relay: relay.example.com:9485
+```
+
+The node connects outbound to the elected relay, which forwards inbound tasks down the
+tunnel. Re-registration happens automatically when the relay bind succeeds.
+
+To use a specific relay instead of auto-electing:
+```bash
+IICP_RELAY_WORKER_ENDPOINT=relay.example.com:9485 python -m iicp_client.cli serve ...
+```
+
+### Running a relay-capable node (relay operators)
 
 ```python
 node = IicpNode(NodeConfig(
-    node_id="relay-eu-01",
     endpoint="http://relay.example.com:8020",
     intent="urn:iicp:intent:llm:chat:v1",
-    relay_capable=True,      # accept RELAY_BIND on port 9485
-    relay_accept_port=9485,  # TCP port for CGNAT workers
-    enable_mesh=True,        # gossip relay_capable=True to peers
+    relay_capable=True,      # accept RELAY_BIND on TCP port 9485
+    relay_accept_port=9485,
+    enable_mesh=True,        # advertise relay_capable=True in gossip
 ))
 ```
 
-### Node behind CGNAT (connects outbound to relay)
+### Opt-out / override
 
-```python
-node = IicpNode(NodeConfig(
-    node_id="cgnat-worker-001",
-    endpoint="http://placeholder",        # overwritten on bind
-    intent="urn:iicp:intent:llm:chat:v1",
-    relay_worker_endpoint="relay.example.com:9485",  # outbound target
-    # or: env IICP_RELAY_WORKER_ENDPOINT=relay.example.com:9485
-))
-```
-
-When the worker binds, it deregisters its placeholder endpoint and re-registers with the
-relay's public address (`transport_method=turn_relay`), making it discoverable.
-
-### Relay election (R3)
-
-When multiple relay-capable peers are known from gossip, the SDK elects the best one
-deterministically: lowest `relay_load`, with `SHA-256(workerId:relayId)` as a tiebreak
-so multiple workers spread uniformly across the relay pool.
-
-```python
-from iicp_client import PeerManager
-
-pm = PeerManager("https://iicp.network/api", enable_mesh=True)
-# elect_relay() is called automatically by node.serve() on tier-3 detection.
-elected = pm.elect_relay("my-worker-id")
-if elected:
-    print(f"Elected relay: {elected['_relay_host']}:{elected['_relay_port']}")
+```bash
+IICP_AUTO_DETECT_NAT=false   # disable NAT detection entirely
+IICP_PUBLIC_ENDPOINT=http://x.x.x.x:8020   # trust this endpoint, skip detection
+IICP_EXTERNAL_IP_PROBE_URL=https://api.ipify.org  # WAN IP probe (default)
 ```
 
 ---
