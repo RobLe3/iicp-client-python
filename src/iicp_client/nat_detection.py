@@ -1288,7 +1288,11 @@ def renew_ipv6_pinhole(unique_id: int, new_lease_seconds: int = 3600) -> bool:
                 continue
             try:
                 svc.UpdatePinhole(UniqueID=unique_id, NewLeaseTime=new_lease_seconds)
-                logger.debug("v6 pinhole: UpdatePinhole(%s) OK — lease extended %ss", unique_id, new_lease_seconds)
+                logger.debug(
+                    "v6 pinhole: UpdatePinhole(%s) OK — lease extended %ss",
+                    unique_id,
+                    new_lease_seconds,
+                )
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.debug("v6 pinhole: UpdatePinhole(%s) failed: %s", unique_id, exc)

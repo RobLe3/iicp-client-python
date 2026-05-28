@@ -773,7 +773,9 @@ class IicpNode:
         """
         token = node_token or self._node_token
         if not token:
-            raise RuntimeError("deregister() requires a node_token (none stashed — call register() first)")
+            raise RuntimeError(
+                "deregister() requires a node_token (none stashed — call register() first)"
+            )
         url = self._cfg.directory_url.rstrip("/") + _REGISTER_PATH
         resp = await self._http.request(
             "DELETE",
@@ -802,9 +804,16 @@ class IicpNode:
                 None, renew_ipv6_pinhole, uid, self._pinhole_lease_seconds
             )
             if ok:
-                logger.debug("UPnP IPv6 pinhole uid=%s renewed (lease=%ss)", uid, self._pinhole_lease_seconds)
+                logger.debug(
+                    "UPnP IPv6 pinhole uid=%s renewed (lease=%ss)",
+                    uid,
+                    self._pinhole_lease_seconds,
+                )
             else:
-                logger.warning("UPnP IPv6 pinhole uid=%s renewal failed — will retry at next interval", uid)
+                logger.warning(
+                    "UPnP IPv6 pinhole uid=%s renewal failed — will retry at next interval",
+                    uid,
+                )
 
     def _revoke_pinhole_sync(self) -> None:
         """Close the UPnP IPv6 firewall pinhole if one is tracked (#343).
