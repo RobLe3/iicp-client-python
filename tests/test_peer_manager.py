@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from iicp_client.peer_manager import PeerManager
 from iicp_client.pricing import sign_body
@@ -45,8 +46,10 @@ class TestPruneAndRelay:
     def test_prune_drops_stale(self):
         pm = _pm()
         pm.merge_peers([{"node_id": "a", "endpoint": "http://a"}])
-        # Force the peer's last_contact far into the past.
-        pm._peers["a"]["last_contact"] = 0.0
+        # Force last_contact well past the expiry window. Must be relative to
+        # time.monotonic() (NOT a hardcoded 0.0) — on a freshly-booted host
+        # monotonic() can be < the 90s window, making 0.0 look "fresh".
+        pm._peers["a"]["last_contact"] = time.monotonic() - 10_000
         pruned = pm.prune()
         assert pruned == 1
         assert pm.get_peers() == []
