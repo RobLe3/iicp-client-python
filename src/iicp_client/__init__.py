@@ -29,6 +29,12 @@ from iicp_client.nat_detection import (
     detect_nat,
     renew_ipv6_pinhole,
 )
+from iicp_client.qualify import (
+    EXPOSURE_MODES,
+    ServiceQualification,
+    qualify_service,
+    qualify_service_async,
+)
 from iicp_client.node import IicpNode, NodeConfig
 from iicp_client.otel_tracer import task_execute_span, task_validate_span
 from iicp_client.peer_manager import PeerManager
@@ -63,6 +69,10 @@ __all__ = [
     "delete_ipv6_pinhole",
     "detect_nat",
     "renew_ipv6_pinhole",
+    "EXPOSURE_MODES",
+    "ServiceQualification",
+    "qualify_service",
+    "qualify_service_async",
     "openai_compat_handler",
     "vllm_handler",
     "llamacpp_handler",
