@@ -34,6 +34,9 @@ GOOD_NODES = {
             "score": 0.95,
             "available": True,
             "region": "eu-west",
+            # ADR-044 / ADR-043 fields (directory v1.10.0+)
+            "health_label": "healthy",
+            "exposure_mode": "ipv4_public_direct",
         }
     ]
 }
@@ -78,6 +81,20 @@ def test_discover_returns_node_list():
     assert len(result.nodes) == 1
     assert result.nodes[0].node_id == "node-abc"
     assert result.nodes[0].score == 0.95
+    # ADR-044 — health_label + exposure_mode parsed from discover
+    assert result.nodes[0].health_label == "healthy"
+    assert result.nodes[0].exposure_mode == "ipv4_public_direct"
+
+
+@respx.mock
+def test_discover_health_fields_default_none_against_old_directory():
+    # A directory predating v1.10.0 omits the fields; parsing must not break.
+    legacy = {"nodes": [{"node_id": "n1", "endpoint": NODE, "score": 0.5, "available": True, "region": "eu"}]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=legacy))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    result = client.discover("urn:iicp:intent:llm:chat:v1")
+    assert result.nodes[0].health_label is None
+    assert result.nodes[0].exposure_mode is None
 
 
 @respx.mock

@@ -110,6 +110,11 @@ class Node:
     region: str
     latency_estimate_ms: int | None = None
     reputation_score: float | None = None
+    # ADR-044 — composed health label (healthy/degraded/impaired/critical/offline)
+    # and ADR-043 8-category network exposure. Both optional: present only when
+    # the directory is on v1.10.0+; None against older directories.
+    health_label: str | None = None
+    exposure_mode: str | None = None
 
 
 @dataclass

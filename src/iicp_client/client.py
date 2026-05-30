@@ -89,6 +89,8 @@ class IicpClient:
                 region=n.get("region", ""),
                 latency_estimate_ms=n.get("latency_estimate_ms"),
                 reputation_score=n.get("reputation_score"),
+                health_label=n.get("health_label"),
+                exposure_mode=n.get("exposure_mode"),
             )
             for n in raw_nodes
         ]
