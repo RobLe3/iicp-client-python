@@ -114,6 +114,7 @@ class IicpClient:
                     endpoint,
                 )
                 continue
+            cx_key = n.get("cx_public_key")
             nodes.append(Node(
                 node_id=n["node_id"],
                 endpoint=endpoint,
@@ -124,6 +125,7 @@ class IicpClient:
                 reputation_score=n.get("reputation_score"),
                 health_label=n.get("health_label"),
                 exposure_mode=n.get("exposure_mode"),
+                cx_public_key=cx_key if isinstance(cx_key, dict) else None,
             ))
         return NodeList(nodes=nodes, query_ms=elapsed)
 
@@ -157,7 +159,6 @@ class IicpClient:
         body: dict[str, Any] = {
             "task_id": task_id,
             "intent": request.intent,
-            "payload": request.payload,
             "constraints": {
                 "timeout_ms": request.constraints.timeout_ms,
                 "qos": request.constraints.qos,
@@ -165,6 +166,13 @@ class IicpClient:
         }
         if request.auth.node_token:
             body["auth"] = {"node_token": request.auth.node_token}
+
+        # IICP-CX S.16 §5: encrypt payload when use_confidentiality=True and node advertises a key
+        if self._cfg.use_confidentiality and node.cx_public_key:
+            from iicp_client._confidentiality import encrypt_payload
+            body["iicp_conf"] = encrypt_payload(request.payload, node.cx_public_key, task_id, request.intent)
+        else:
+            body["payload"] = request.payload
 
         last_exc: IicpError | None = None
         for attempt in range(self._cfg.max_retries):

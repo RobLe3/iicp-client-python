@@ -55,6 +55,10 @@ nat = [
     "upnpclient>=1.0",
     "ifaddr>=0.2",
 ]
+# IICP-CX S.16: E2E payload confidentiality (X25519-HKDF-SHA256 + AES-256-GCM)
+cx = [
+    "cryptography>=42",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -63,6 +67,7 @@ dev = [
     "ruff>=0.8",
     "prometheus-client>=0.20",
     "cbor2>=5.4",
+    "cryptography>=42",
 ]
 
 [tool.hatch.build.targets.wheel]

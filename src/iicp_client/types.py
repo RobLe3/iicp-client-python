@@ -16,6 +16,7 @@ class ClientConfig:
     timeout_ms: int = 30_000
     max_retries: int = 3
     tls_verify: bool = True
+    use_confidentiality: bool = False  # IICP-CX S.16: encrypt payloads when node advertises cx_public_key
 
 
 @dataclass
@@ -115,6 +116,9 @@ class Node:
     # the directory is on v1.10.0+; None against older directories.
     health_label: str | None = None
     exposure_mode: str | None = None
+    # IICP-CX S.16 §3.1 — X25519 public key for E2E payload confidentiality.
+    # Present only when the node registered with cx_public_key (v1.10.7+).
+    cx_public_key: dict[str, str] | None = None
 
 
 @dataclass
