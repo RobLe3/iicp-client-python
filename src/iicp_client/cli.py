@@ -389,6 +389,22 @@ async def _serve(args: argparse.Namespace) -> int:
             cfg.capabilities = extra
             logger.info("GAP-6: advertising %d additional models: %s", len(extra), extra[:6])
 
+    # NAT-4 guard: if endpoint is non-routable and no relay configured, skip
+    # registration to avoid a confusing 422 from the directory's RoutableEndpoint check.
+    _ep = public_endpoint.lower()
+    _ep_is_local = any(
+        _ep.startswith(p)
+        for p in ("http://localhost", "http://127.", "http://0.0.0.0", "http://192.168.", "http://10.")
+    )
+    if _ep_is_local and not relay_worker_ep and not args.skip_registration:
+        logger.warning(
+            "No routable endpoint detected and no relay configured — "
+            "skipping directory registration. Node will accept direct connections "
+            "but will not appear in discover results. "
+            "Set IICP_PUBLIC_ENDPOINT=<url> or IICP_RELAY_WORKER_ENDPOINT=<host>:<port> to register."
+        )
+        args.skip_registration = True
+
     token: str | None = None
     if not args.skip_registration:
         try:
