@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ClientConfig:
-    directory_url: str = "https://iicp.network"
+    directory_url: str = "https://iicp.network/api"
     region: str | None = None
     timeout_ms: int = 30_000
     max_retries: int = 3
