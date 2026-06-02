@@ -868,7 +868,9 @@ class IicpNode:
         logger.info("IICP node %s listening on %s:%d", self._cfg.node_id, host, port)
 
         bg_tasks: list[asyncio.Task] = []
-        if node_token:
+        # #404 — start the heartbeat loop when a token is present OR empty (register
+        # failed → loop self-heals via re-register on 401). None = --skip-registration.
+        if node_token is not None:
             bg_tasks.append(asyncio.create_task(self._heartbeat_loop(node_token)))
         if self._pinhole_uid is not None:
             bg_tasks.append(asyncio.create_task(self._pinhole_renewal_loop()))

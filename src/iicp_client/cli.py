@@ -481,15 +481,37 @@ async def _serve(args: argparse.Namespace) -> int:
         )
         args.skip_registration = True
 
+    # #404 — register with bounded backoff retry. On persistent failure, pass an
+    # empty token (NOT None) so the heartbeat loop still starts and re-registers on
+    # the first 401 (#399 path) once the directory is reachable — the self-healing
+    # watchdog, instead of the old "continuing without heartbeat" dead end.
+    # None is reserved for --skip-registration (no heartbeat by design).
     token: str | None = None
     if not args.skip_registration:
-        try:
-            token = await node.register()
-            logger.info("Registered as %s (token=%s…)", node_id, (token or "")[:8])
-            _log_event(node_id, "register_ok", f"endpoint={public_endpoint}", _log_dir_override)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Registration failed: %s — continuing without heartbeat", exc)
-            _log_event(node_id, "register_fail", f"error={exc}", _log_dir_override)
+        for attempt in range(1, 4):
+            try:
+                token = await node.register()
+                logger.info("Registered as %s (token=%s…)", node_id, (token or "")[:8])
+                _log_event(node_id, "register_ok", f"endpoint={public_endpoint}", _log_dir_override)
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= 3:
+                    logger.warning(
+                        "Registration failed after %d attempts: %s — starting heartbeat loop "
+                        "anyway; it will re-register on the first 401",
+                        attempt,
+                        exc,
+                    )
+                    _log_event(
+                        node_id, "register_fail", f"error={exc} attempts={attempt}", _log_dir_override
+                    )
+                    token = ""  # empty (not None) → heartbeat loop starts and self-heals
+                    break
+                backoff = 2**attempt
+                logger.warning(
+                    "Registration attempt %d failed: %s — retrying in %ds", attempt, exc, backoff
+                )
+                await asyncio.sleep(backoff)
 
     logger.info(
         "Serving %s on %s:%d — backend %s (model=%s, max_concurrent=%d)",
