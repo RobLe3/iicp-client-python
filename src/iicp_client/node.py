@@ -692,6 +692,31 @@ class IicpNode:
                     else "best_effort"
                 )
 
+                # #403 — CIP per-task admission gate (parity with the adapter
+                # cip_gate): reject tool-execution-domain intents unless the
+                # operator opted in via cip_policy.allow_tool_execution.
+                from iicp_client.cip_policy import CooperativeInferencePolicy, get_policy
+
+                _pol = node._cfg.cip_policy
+                if not isinstance(_pol, CooperativeInferencePolicy):
+                    _pol = get_policy()
+                _intent = body.get("intent", "")
+                if isinstance(_intent, str) and _intent and not _pol.permits_intent(_intent):
+                    err = json.dumps(
+                        {
+                            "error": {
+                                "code": "tool_execution_denied",
+                                "message": "Tool-execution intents are not permitted by this node's CIP policy",
+                            }
+                        }
+                    ).encode()
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err)))
+                    self.end_headers()
+                    self.wfile.write(err)
+                    return
+
                 # Availability gate (ADR-006) — reduced-capacity windows cap admissions
                 # below max_concurrent. This is a deliberate operator policy, so it
                 # rejects immediately (no QoS wait) when the window is full/closed.

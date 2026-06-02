@@ -28,6 +28,18 @@ class TestGatePredicates:
         assert p.check_coordinator() is False
         assert p.check_worker() is False
 
+    def test_permits_intent_tool_execution_gate(self):
+        # #403 — tool-execution-domain intents rejected unless allow_tool_execution.
+        p = CooperativeInferencePolicy()
+        assert p.allow_tool_execution is False
+        assert p.permits_intent("urn:iicp:intent:llm:chat:v1") is True  # non-tool always ok
+        assert p.permits_intent("urn:iicp:intent:tool:shell:v1") is False  # tool denied by default
+        allowed = CooperativeInferencePolicy(allow_tool_execution=True)
+        assert allowed.permits_intent("urn:iicp:intent:tool:shell:v1") is True
+        # register block surfaces the flag
+        en = CooperativeInferencePolicy(enabled=True, allow_tool_execution=True)
+        assert en.as_register_policy_block()["allow_tool_execution"] is True
+
     def test_enabled_alone_does_not_open_gates(self):
         # Both `enabled` AND the role flag must be on
         p = CooperativeInferencePolicy(enabled=True)

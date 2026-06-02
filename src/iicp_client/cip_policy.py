@@ -50,10 +50,14 @@ class CooperativeInferencePolicy:
         max_replicas: int = 3,
         max_worker_timeout_ms: int = 30_000,
         max_concurrent_remote: int = 2,
+        allow_tool_execution: bool = False,
     ) -> None:
         self.enabled = enabled
         self.allow_coordinator = allow_coordinator
         self.allow_worker = allow_worker
+        # #403 — per-task admission: tool-execution-domain intents are rejected
+        # unless the operator opts in (parity with the adapter cip_gate).
+        self.allow_tool_execution = allow_tool_execution
         self.max_replicas = max(1, max_replicas)
         # Bound max_worker_timeout_ms to a sane range. 60s upper limit matches
         # the adapter's gate so worker requests can't tie up provider slots
@@ -63,6 +67,16 @@ class CooperativeInferencePolicy:
         self._remote_sem = threading.BoundedSemaphore(self.max_concurrent_remote)
 
     # ── Gate predicates ──────────────────────────────────────────────────
+
+    def permits_intent(self, intent: str) -> bool:
+        """#403 — per-task admission: reject tool-execution-domain intents
+        unless the operator opted in via allow_tool_execution. Mirrors the
+        adapter cip_gate. Intent URN form: urn:iicp:intent:<domain>:... —
+        the domain is segment index 3."""
+        parts = intent.split(":")
+        domain = parts[3] if len(parts) > 3 else ""
+        return self.allow_tool_execution or domain != "tool"
+
 
     def check_coordinator(self) -> bool:
         """CIP-W01: returns True if this node may act as a CIP coordinator."""
@@ -130,6 +144,7 @@ class CooperativeInferencePolicy:
             return {}
         return {
             "allow_remote_inference": self.allow_worker,
+            "allow_tool_execution": self.allow_tool_execution,
             # The directory's CIP-D1 currently only flags worker-role acceptance.
             # Coordinator role is coordinator-internal — proxies don't need to
             # know which nodes coordinate; they just discover available workers.
