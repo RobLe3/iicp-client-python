@@ -44,6 +44,60 @@ async def test_chat_completion_happy_path():
     assert result["result"]["choices"][0]["message"]["content"] == "PONG"
 
 
+def test_cli_backend_api_key_flag_and_env(monkeypatch):
+    """#5 — the serve CLI exposes --backend-api-key, falling back to
+    IICP_BACKEND_API_KEY, defaulting to empty (local Ollama needs no key)."""
+    from iicp_client.cli import _build_parser
+
+    p = _build_parser()
+    monkeypatch.delenv("IICP_BACKEND_API_KEY", raising=False)
+    assert p.parse_args(["serve"]).backend_api_key == ""
+    assert p.parse_args(["serve", "--backend-api-key", "sk-lm-flag"]).backend_api_key == "sk-lm-flag"
+    monkeypatch.setenv("IICP_BACKEND_API_KEY", "sk-lm-env")
+    assert _build_parser().parse_args(["serve"]).backend_api_key == "sk-lm-env"
+
+
+@respx.mock
+async def test_backend_api_key_sets_bearer_header():
+    """#5 — an auth'd OpenAI-compat backend (LM Studio, hosted) requires a Bearer
+    key. When api_key is configured, the request must carry Authorization."""
+    route = respx.post("http://localhost:1234/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    handler = openai_compat_handler(
+        base_url="http://localhost:1234/v1",
+        model="qwen2.5-coder-14b-instruct-mlx",
+        api_key="sk-lm-test",
+    )
+    await handler(
+        {
+            "task_id": "t-key",
+            "intent": "urn:iicp:intent:llm:chat:v1",
+            "payload": {"messages": [{"role": "user", "content": "hi"}]},
+        }
+    )
+    assert route.called
+    assert route.calls.last.request.headers["Authorization"] == "Bearer sk-lm-test"
+
+
+@respx.mock
+async def test_no_api_key_sends_no_auth_header():
+    """Local Ollama path: no api_key → no Authorization header (back-compat)."""
+    route = respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    handler = openai_compat_handler(model="qwen2.5:0.5b")
+    await handler(
+        {
+            "task_id": "t-nokey",
+            "intent": "urn:iicp:intent:llm:chat:v1",
+            "payload": {"messages": [{"role": "user", "content": "hi"}]},
+        }
+    )
+    assert route.called
+    assert "Authorization" not in route.calls.last.request.headers
+
+
 @respx.mock
 async def test_factory_model_is_injected_when_payload_missing():
     """Operator instantiates handler with model='qwen2.5:0.5b'; task payload
@@ -176,9 +230,7 @@ async def test_upstream_429_rate_limit_is_surfaced():
 
 @respx.mock
 async def test_api_key_sets_authorization_header():
-    route = respx.post("http://localhost:11434/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={})
-    )
+    route = respx.post("http://localhost:11434/v1/chat/completions").mock(return_value=httpx.Response(200, json={}))
     handler = openai_compat_handler(model="q", api_key="sk-test-1234")
     await handler(
         {
@@ -192,9 +244,7 @@ async def test_api_key_sets_authorization_header():
 
 @respx.mock
 async def test_base_url_trailing_slash_normalized():
-    respx.post("http://localhost:11434/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={})
-    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(return_value=httpx.Response(200, json={}))
     handler = openai_compat_handler(base_url="http://localhost:11434/v1/", model="q")
     result = await handler(
         {
@@ -222,9 +272,7 @@ async def test_vllm_handler_defaults_to_port_8000():
         return_value=httpx.Response(200, json={"choices": []})
     )
     handler = vllm_handler(model="mistral-7b")
-    result = await handler(
-        {"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}}
-    )
+    result = await handler({"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}})
     assert route.calls.call_count == 1
     assert "error_code" not in result
 
@@ -235,9 +283,7 @@ async def test_llamacpp_handler_defaults_to_port_8080():
         return_value=httpx.Response(200, json={"choices": []})
     )
     handler = llamacpp_handler(model="gguf-model")
-    result = await handler(
-        {"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}}
-    )
+    result = await handler({"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}})
     assert route.calls.call_count == 1
     assert "error_code" not in result
 

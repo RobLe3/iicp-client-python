@@ -119,6 +119,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Inference backend engine. env: IICP_BACKEND_TYPE",
     )
     serve.add_argument(
+        "--backend-api-key",
+        # #5 — Bearer key for an auth-requiring OpenAI-compat backend (LM Studio,
+        # hosted providers). Empty = no Authorization header (local Ollama).
+        default=_env("IICP_BACKEND_API_KEY", ""),
+        help="Bearer API key for an auth'd backend (LM Studio, hosted). "
+        "env: IICP_BACKEND_API_KEY (default empty = none)",
+    )
+    serve.add_argument(
         "--model",
         default=_env("IICP_BACKEND_MODEL"),
         help="Backend model name (e.g. qwen2.5:0.5b). env: IICP_BACKEND_MODEL",
@@ -459,6 +467,8 @@ async def _serve(args: argparse.Namespace) -> int:
         args.backend_type,
         base_url=base_url,
         model=args.model,
+        # #5 — Bearer key for auth'd backends (LM Studio, hosted). Empty = no header.
+        api_key=getattr(args, "backend_api_key", "") or "",
     )
 
     # GAP-6: probe the backend for all available models and advertise them.
@@ -518,15 +528,11 @@ async def _serve(args: argparse.Namespace) -> int:
                         attempt,
                         exc,
                     )
-                    _log_event(
-                        node_id, "register_fail", f"error={exc} attempts={attempt}", _log_dir_override
-                    )
+                    _log_event(node_id, "register_fail", f"error={exc} attempts={attempt}", _log_dir_override)
                     token = ""  # empty (not None) → heartbeat loop starts and self-heals
                     break
                 backoff = 2**attempt
-                logger.warning(
-                    "Registration attempt %d failed: %s — retrying in %ds", attempt, exc, backoff
-                )
+                logger.warning("Registration attempt %d failed: %s — retrying in %ds", attempt, exc, backoff)
                 await asyncio.sleep(backoff)
 
     logger.info(
