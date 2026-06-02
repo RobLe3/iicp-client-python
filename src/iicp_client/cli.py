@@ -648,8 +648,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print("Checking dependencies …")
     issues = _check_dependencies(backend_url)
     _print_dep_status(issues)
-    if any(i.severity == "missing" and i.installable for i in issues):
-        ans = _prompt("Install missing optional deps now? (Y/n)", "y").lower()
+    if any(i.severity in ("optional", "missing") and i.installable for i in issues):
+        ans = _prompt("Enable optional deps now? (your node runs without them) (Y/n)", "y").lower()
         if ans.startswith("y"):
             _install_missing(issues)
     print()
@@ -668,7 +668,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
 @_dc
 class _DepIssue:
     name: str
-    severity: str  # "missing" | "warn" | "ok"
+    # "ok"       — present
+    # "optional" — opt-in capability not installed; node runs fine without it
+    # "warn"     — degraded runtime state (backend unreachable, no IPv6)
+    # "missing"  — required dependency absent
+    severity: str
     message: str
     installable: bool = False
     pip_extra: str = ""
@@ -704,8 +708,8 @@ def _check_dependencies(backend_url: str) -> list[_DepIssue]:
             out.append(
                 _DepIssue(
                     mod,
-                    "missing",
-                    f"{purpose} (not installed)",
+                    "optional",
+                    f"{purpose} (optional — not installed)",
                     installable=True,
                     pip_extra=extra,
                 )
@@ -742,14 +746,16 @@ def _check_dependencies(backend_url: str) -> list[_DepIssue]:
 
 
 def _print_dep_status(issues: list[_DepIssue]) -> None:
-    glyph = {"ok": "  ✓", "warn": "  !", "missing": "  ✗"}
+    glyph = {"ok": "  ✓", "optional": "  ○", "warn": "  !", "missing": "  ✗"}
     for i in issues:
         print(f"{glyph.get(i.severity, '  ?')} {i.name:18}  {i.message}")
 
 
 def _install_missing(issues: list[_DepIssue]) -> None:
     """Run `pip install iicp-client[<extras>]` for the missing-optional set."""
-    extras = sorted({i.pip_extra for i in issues if i.severity == "missing" and i.installable and i.pip_extra})
+    extras = sorted(
+        {i.pip_extra for i in issues if i.severity in ("optional", "missing") and i.installable and i.pip_extra}
+    )
     if not extras:
         return
     spec = f"iicp-client[{','.join(extras)}]"
