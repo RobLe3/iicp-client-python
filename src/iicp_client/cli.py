@@ -339,7 +339,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # Onboarding: if no --model given, auto-select the first model the backend advertises
     # so a bare `iicp-node serve` just works (parity with Rust/TS).
     if not args.model and args.backend_url:
-        _models = _ollama_models(args.backend_url)
+        _models = _ollama_models(args.backend_url, getattr(args, "backend_api_key", "") or "")
         if _models:
             args.model = _models[0]
             sys.stderr.write(f"no --model given — auto-selected '{args.model}' from {args.backend_url}\n")
@@ -481,7 +481,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # GAP-6: probe the backend for all available models and advertise them.
     # _ollama_models is best-effort; on any error it returns [] and we fall
     # back to the single configured model.
-    discovered = _ollama_models(args.backend_url)
+    discovered = _ollama_models(args.backend_url, getattr(args, "backend_api_key", "") or "")
     if discovered:
         extra = [m for m in discovered if m != args.model]
         if extra:
@@ -615,12 +615,34 @@ def _prompt(question: str, default: str = "") -> str:
     return line or default
 
 
-def _ollama_models(backend_url: str) -> list[str]:
-    """Best-effort: list models from a local Ollama. Empty list on any error."""
+def _ollama_models(backend_url: str, api_key: str = "") -> list[str]:
+    """Best-effort: list backend models. Empty list on any error.
+
+    #409 — strip a trailing /v1 to a root so the probe URLs are well-formed
+    whether the operator passed `http://host:11434` (Ollama) or
+    `http://host:1234/v1` (LM Studio / OpenAI-compat). Tries Ollama /api/tags
+    then OpenAI /v1/models, attaching the Bearer key (LM Studio /v1/models 401s
+    without it) so multi-intent discovery works against auth'd backends.
+    """
+    base = backend_url.rstrip("/")
+    root = base[:-3] if base.endswith("/v1") else base
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    # Ollama /api/tags ({"models":[{"name":...}]})
     try:
-        with urllib.request.urlopen(backend_url.rstrip("/") + "/api/tags", timeout=2) as resp:
+        req = urllib.request.Request(f"{root}/api/tags", headers=headers)
+        with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode())
-            return sorted({m["name"] for m in data.get("models", [])})
+            names = sorted({m["name"] for m in data.get("models", [])})
+            if names:
+                return names
+    except Exception:  # noqa: BLE001
+        pass
+    # OpenAI-compat /v1/models ({"data":[{"id":...}]})
+    try:
+        req = urllib.request.Request(f"{root}/v1/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode())
+            return [m["id"] for m in data.get("data", []) if m.get("id")]
     except Exception:  # noqa: BLE001
         return []
 
