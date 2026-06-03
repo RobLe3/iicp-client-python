@@ -364,6 +364,37 @@ def test_node_register_omits_operator_delegation_when_absent():
 
 
 @respx.mock
+def test_heartbeat_answers_liveness_challenge():
+    """ADR-047 Part A (#411) — the node HMACs the directory's nonce with its
+    node_hmac_key and returns it on the next beat (no challenge_response on the
+    first beat, since there's no prior nonce)."""
+    import hashlib
+    import hmac as _hmac
+
+    route = respx.post("https://iicp.test/v1/heartbeat").mock(
+        return_value=httpx.Response(200, json={"ok": True, "challenge": "nonce-abc"})
+    )
+    node = IicpNode(
+        NodeConfig(
+            node_id="n-1",
+            endpoint="https://p.example.com:8080",
+            intent="urn:iicp:intent:llm:chat:v1",
+            model="m",
+            directory_url="https://iicp.test",
+            node_hmac_key="secret-key",
+        )
+    )
+    asyncio.run(node.heartbeat("tok"))  # beat 1 → captures nonce, no answer yet
+    asyncio.run(node.heartbeat("tok"))  # beat 2 → answers the nonce
+
+    p1 = json.loads(route.calls[0].request.content)
+    p2 = json.loads(route.calls[1].request.content)
+    assert "challenge_response" not in p1
+    expected = _hmac.new(b"secret-key", b"nonce-abc", hashlib.sha256).hexdigest()
+    assert p2["challenge_response"] == expected
+
+
+@respx.mock
 def test_node_register_includes_transport_endpoint_when_set():
     """spec/iicp-dir.md v0.7.0: when transport_endpoint is configured, the SDK MUST
     advertise it so clients can prefer native IICP binary transport over HTTP."""

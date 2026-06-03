@@ -17,6 +17,8 @@ Endpoints served by ``IicpNode.serve()``:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import threading
@@ -297,6 +299,9 @@ class IicpNode:
         # on register() so subsequent re-registrations (after expiry) sign
         # with the directory-issued key.
         self._node_hmac_key: str = config.node_hmac_key
+        # ADR-047 Part A (#411) — latest liveness nonce from the heartbeat response,
+        # answered (HMAC) on the next beat. None until the first response.
+        self._liveness_challenge: str | None = None
         # BUG-5: token stashed by register() so deregister()/heartbeat don't need it re-passed.
         self._node_token: str = ""
         # #343 — UPnP IPv6 pinhole tracking. Set by apply_nat_profile() when
@@ -504,12 +509,25 @@ class IicpNode:
         }
         if ok > 0 or fail > 0:
             payload["metrics"] = {"tasks_success": ok, "tasks_failed": fail}
+        # ADR-047 Part A (#411) — answer the directory's liveness challenge from the
+        # previous beat by HMAC-ing the nonce with node_hmac_key. Proves we control
+        # the key (anti-replay) without any dial-back. No-op until we have both a
+        # stored challenge and a key (back-compat with pre-challenge directories).
+        if self._liveness_challenge and self._node_hmac_key:
+            payload["challenge_response"] = hmac.new(
+                self._node_hmac_key.encode(), self._liveness_challenge.encode(), hashlib.sha256
+            ).hexdigest()
         resp = await self._http.post(
             f"{self._cfg.directory_url.rstrip('/')}{_HEARTBEAT_PATH}",
             headers={"Authorization": f"Bearer {node_token}"},
             json=payload,
         )
         resp.raise_for_status()
+        # Capture the fresh nonce to answer on the next beat.
+        try:
+            self._liveness_challenge = resp.json().get("challenge") or self._liveness_challenge
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _heartbeat_loop(self, node_token: str) -> None:
         token = node_token
