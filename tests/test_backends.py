@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import json
 
 import httpx
 import respx
@@ -133,6 +134,39 @@ async def test_audio_speech_requires_input_field():
     )
     assert result["error_code"] == 400
     assert "input" in result["error_message"]
+
+
+# ── #414 safety:moderate (content moderation) — JSON in/out, model-optional ───
+
+
+@respx.mock
+async def test_safety_moderate_routes_without_model():
+    """safety:moderate:v1 routes to /moderations and does NOT require a model (the
+    backend supplies a fixed moderation model). Verified end-to-end against the
+    unitary/toxic-bert OpenAI-compat moderation backend (#414)."""
+    route = respx.post("http://localhost:11434/v1/moderations").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "flagged": True,
+                        "categories": {"harassment": True},
+                        "category_scores": {"harassment": 0.99},
+                    }
+                ]
+            },
+        )
+    )
+    handler = openai_compat_handler()  # NO model configured
+    result = await handler(
+        {"intent": "urn:iicp:intent:safety:moderate:v1", "payload": {"input": "bad text"}}
+    )
+    assert "error_code" not in result, result
+    assert result["result"]["results"][0]["flagged"] is True
+    body = json.loads(bytes(route.calls[0].request.content))
+    assert body["input"] == "bad text"
+    assert "model" not in body  # no model injected for moderation
 
 
 def test_cli_backend_url_default_is_empty_so_saved_config_applies(monkeypatch):

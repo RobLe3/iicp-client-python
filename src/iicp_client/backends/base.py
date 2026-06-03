@@ -31,6 +31,12 @@ AUDIO_TRANSCRIBE_INTENT = "urn:iicp:intent:audio:transcribe:v1"
 # #414 — text-to-speech. JSON request but a *binary* audio response, so it also
 # takes a distinct path (the audio bytes are base64-encoded into the result).
 AUDIO_SPEECH_INTENT = "urn:iicp:intent:audio:speech:v1"
+# #414 — content moderation. Plain JSON in/out (uses the shared JSON path), but the
+# model is optional (the backend has a fixed moderation model).
+SAFETY_MODERATE_INTENT = "urn:iicp:intent:safety:moderate:v1"
+
+# Intents whose request body does NOT require a `model` (the backend supplies it).
+MODEL_OPTIONAL_INTENTS = frozenset({SAFETY_MODERATE_INTENT})
 
 # Maps IICP intent URN → OpenAI-compatible HTTP path.
 INTENT_TO_PATH: dict[str, str] = {
@@ -39,6 +45,7 @@ INTENT_TO_PATH: dict[str, str] = {
     "urn:iicp:intent:llm:embedding:v1": "/embeddings",
     AUDIO_TRANSCRIBE_INTENT: "/audio/transcriptions",
     AUDIO_SPEECH_INTENT: "/audio/speech",
+    SAFETY_MODERATE_INTENT: "/moderations",
 }
 
 
@@ -180,8 +187,9 @@ def build_openai_dialect_handler(
 
         # Merge model: explicit task payload field wins; factory default fills in.
         body = dict(payload)
-        body.setdefault("model", model)
-        if not body.get("model"):
+        if not body.get("model") and model is not None:
+            body["model"] = model
+        if not body.get("model") and intent not in MODEL_OPTIONAL_INTENTS:
             return {
                 "error_code": 400,
                 "error_message": (
