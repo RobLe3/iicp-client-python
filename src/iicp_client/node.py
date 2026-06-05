@@ -200,6 +200,13 @@ class NodeConfig:
     # the verified operator identity. Key lifecycle (gen/store/backup) is the
     # wallet's concern (#307/ADR-030), kept out of the SDK transport layer.
     operator_delegation: dict | None = None
+    # #463/#464 — operator-identity attributes advertised at register (only bound when the
+    # delegation verifies). display_name is the public handle (node detail + leaderboard);
+    # created_at + integrity_hash are identity-integrity. NEVER the operator's contact/email
+    # or secret key (those stay local in the operator wallet).
+    operator_display_name: str | None = None
+    operator_created_at: str | None = None
+    operator_integrity_hash: str | None = None
     # Phase 3+ availability windows (ADR-006 / spec/iicp-dir.md §register
     # `availability`). Each entry: {"start": "HH:MM", "end": "HH:MM", "share": 0.0-1.0}
     # in local time. Shapes the effective capacity advertised to the directory and
@@ -456,6 +463,14 @@ class IicpNode:
         # this node_id). The directory verifies it offline and binds the operator.
         if self._cfg.operator_delegation:
             payload["operator_delegation"] = self._cfg.operator_delegation
+            # #463/#464 — operator-identity attributes ride with the delegation (the directory
+            # only binds them when the delegation verifies). Never contact/secret.
+            if self._cfg.operator_display_name:
+                payload["operator_display_name"] = self._cfg.operator_display_name
+            if self._cfg.operator_created_at:
+                payload["operator_created_at"] = self._cfg.operator_created_at
+            if self._cfg.operator_integrity_hash:
+                payload["operator_integrity_hash"] = self._cfg.operator_integrity_hash
 
         # SDK self-identification — directory surfaces these on /v1/discover
         # so dashboards can render a language badge. Free-form so future SDKs

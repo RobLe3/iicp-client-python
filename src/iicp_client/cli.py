@@ -574,6 +574,23 @@ async def _serve(args: argparse.Namespace) -> int:
         args.backend_url, getattr(args, "backend_api_key", "") or "", args.backend_type
     )
     sys.stderr.write(f"backend detected: {_backend_flavor}\n")
+    # #463/#464 — bind the operator identity: issue a delegation FROM the (key-backed) operator
+    # identity for this node and advertise the public display_name. The directory verifies the
+    # delegation (operator_pub == operator_id) and records the operator record. Never sends the
+    # operator's secret key or contact/email.
+    _op = load_operator()
+    _op_delegation = None
+    _op_display_name = None
+    _op_created_at = None
+    _op_integrity_hash = None
+    if _op is not None and _op.is_key_backed():
+        from iicp_client.delegation import issue_delegation
+
+        _op_delegation = issue_delegation(_op.signing_key(), node_id)
+        _op_display_name = _op.display_name or None
+        _op_created_at = _op.created_at
+        _op_integrity_hash = _op.operator_integrity_hash or None
+
     cfg = NodeConfig(
         node_id=node_id,
         endpoint=public_endpoint,
@@ -584,6 +601,10 @@ async def _serve(args: argparse.Namespace) -> int:
         directory_url=args.directory_url,
         max_concurrent=args.max_concurrent,
         relay_worker_endpoint=relay_worker_ep or None,
+        operator_delegation=_op_delegation,
+        operator_display_name=_op_display_name,
+        operator_created_at=_op_created_at,
+        operator_integrity_hash=_op_integrity_hash,
     )
     node = IicpNode(cfg)
 
