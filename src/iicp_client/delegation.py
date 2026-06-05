@@ -40,6 +40,30 @@ def canonical_bytes(node_id: str, operator_pub_b64: str, not_after: int) -> byte
     ).encode("utf-8")
 
 
+def canonical_rename_bytes(display_name: str, operator_pub_b64: str, ts: int) -> bytes:
+    """#460 — exact bytes the operator signs to rename their public ``display_name``.
+    Key-sorted (display_name < operator_pub < ts), no whitespace, unescaped
+    slashes/unicode. MUST be byte-identical to the directory's
+    ``OperatorController::canonicalBytes`` (PHP) / ``delegation::canonical_rename_bytes``
+    (Rust) and every other SDK signer. Do NOT reorder without re-pinning the KAT."""
+    return json.dumps(
+        {"display_name": display_name, "operator_pub": operator_pub_b64, "ts": ts},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def sign_rename(
+    operator_key: Ed25519PrivateKey, display_name: str, operator_pub_b64: str, ts: int
+) -> str:
+    """#460 — operator signs a display_name rename; returns base64 of the ed25519 signature.
+    Only the operator key-holder can produce this, so the directory authenticates the
+    mutation by the signature alone (no node token)."""
+    sig = operator_key.sign(canonical_rename_bytes(display_name, operator_pub_b64, ts))
+    return base64.b64encode(sig).decode()
+
+
 def operator_pub_b64(private_key: Ed25519PrivateKey) -> str:
     """Base64 of the operator's 32-byte ed25519 public key (as the directory stores)."""
     return base64.b64encode(private_key.public_key().public_bytes_raw()).decode()

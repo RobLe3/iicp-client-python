@@ -270,6 +270,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cryptographically audit each award against the directory's signed CREDIT_AWARD log.",
     )
 
+    # #460 — operator-identity management (mutable nickname over the immutable operator_id).
+    operator = sub.add_parser("operator", help="Manage your operator identity.")
+    op_sub = operator.add_subparsers(dest="op_cmd", required=True)
+    op_rename = op_sub.add_parser(
+        "rename",
+        help="Change your public display_name (signed by your operator key; reflected on "
+        "every node + the leaderboard).",
+    )
+    op_rename.add_argument("name", help="New display name (1-64 chars, no control characters).")
+    op_rename.add_argument(
+        "--directory-url",
+        default=None,
+        help="IICP directory base URL (defaults to env / iicp.network).",
+    )
+
     return p
 
 
@@ -373,6 +388,65 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
                 f"  · {free_tier:.3f} credits are free-tier allocation "
                 "(directory-granted, not signed task awards)"
             )
+    return 0
+
+
+async def _cmd_operator_rename_async(args: argparse.Namespace) -> int:
+    """`iicp-node operator rename <name>` (#460) — change the public, mutable display_name
+    over the immutable operator_id. The operator signs the canonical rename bytes with their
+    own key, so the directory authenticates the change by signature alone (no node token);
+    one signed call updates the single operator record, reflected on every node + the
+    leaderboard. Updates the local operator.json on success. Never sends the secret/contact."""
+    import time
+
+    import httpx
+
+    from iicp_client.delegation import sign_rename
+
+    op = load_operator()
+    if op is None:
+        sys.stderr.write("ERROR: no operator identity — run `iicp-node init` first.\n")
+        return 1
+    if not op.is_key_backed():
+        sys.stderr.write(
+            "ERROR: legacy keyless operator identity (operator_id is a UUID, not a key) — "
+            "cannot sign a rename. Regenerate with a key-backed identity (#464).\n"
+        )
+        return 1
+    new_name = args.name
+    if not new_name or len(new_name) > 64 or any(ord(c) < 0x20 or ord(c) == 0x7F for c in new_name):
+        sys.stderr.write("ERROR: display name must be 1-64 chars with no control characters.\n")
+        return 1
+
+    directory_url = args.directory_url or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
+    ts = int(time.time())
+    sig = sign_rename(op.signing_key(), new_name, op.operator_id, ts)
+    payload = {"operator_pub": op.operator_id, "display_name": new_name, "ts": ts, "sig": sig}
+    url = directory_url.rstrip("/") + "/v1/operator/rename"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"ERROR: request failed: {exc}\n")
+        return 1
+
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if resp.status_code >= 400:
+        msg = (
+            (body.get("error") or {}).get("message", "request rejected")
+            if isinstance(body, dict)
+            else "request rejected"
+        )
+        sys.stderr.write(f"ERROR: HTTP {resp.status_code}: {msg}\n")
+        return 1
+
+    # Persist the new name locally so the next `serve` re-asserts it at register.
+    op.display_name = body.get("display_name", new_name) if isinstance(body, dict) else new_name
+    save_operator(op)
+    print(f"Renamed operator display_name to {op.display_name!r}.")
     return 0
 
 
@@ -1166,6 +1240,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_cmd_query_async(args))
     if args.cmd == "credits":
         return asyncio.run(_cmd_credits_async(args))
+    if args.cmd == "operator":
+        if args.op_cmd == "rename":
+            return asyncio.run(_cmd_operator_rename_async(args))
+        parser.error(f"unknown operator subcommand: {args.op_cmd}")
     parser.error(f"unknown command: {args.cmd}")
     return 2
 
