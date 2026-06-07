@@ -150,6 +150,14 @@ def create_app(cfg: ProxyConfig) -> FastAPI:
 
     app = FastAPI(title="IICP Proxy", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def _identify_as_iicp_proxy(request, call_next):  # type: ignore[no-untyped-def]
+        """The proxy self-identifies as `iicp-proxy` on every response (overrides
+        uvicorn's default Server header) so clients/tools can tell what answered."""
+        response = await call_next(request)
+        response.headers["Server"] = "iicp-proxy"
+        return response
+
     @app.get("/metrics", include_in_schema=False)
     async def prometheus_metrics() -> Response:
         """ADR-014: Prometheus metrics endpoint — METRICS-01."""
