@@ -222,6 +222,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory for persistent log files (<node_id>.log + events.jsonl). "
         "Default: ~/.iicp/logs/. env: IICP_LOG_DIR",
     )
+    serve.add_argument(
+        "--with-proxy",
+        action="store_true",
+        help="Also run the local compat proxy gateway (loopback 127.0.0.1:9483) in this "
+        "process, supervised + crash-isolated from the node. Needs the [proxy] extra. "
+        "Port override: IICP_PROXY_PORT.",
+    )
 
     query = sub.add_parser(
         "query",
@@ -966,9 +973,14 @@ async def _serve(args: argparse.Namespace) -> int:
         f"port={args.port} model={args.model} intent={args.intent}",
         _log_dir_override,
     )
+    proxy_task: asyncio.Task | None = None
+    if getattr(args, "with_proxy", False):
+        proxy_task = asyncio.create_task(_run_cohosted_proxy())
     try:
         await node.serve(handler, host=args.host, port=args.port, node_token=token)
     finally:
+        if proxy_task is not None:
+            proxy_task.cancel()  # node exited → stop the co-hosted proxy
         _instance_lock.release()  # #405 — free the pidfile on shutdown
     return 0
 
@@ -1315,6 +1327,36 @@ def _cmd_list(_args: argparse.Namespace) -> int:
     for n in nodes:
         print(f"{n.name.ljust(width)}  {n.model[:20].ljust(20)} {n.backend_url[:48]}")
     return 0
+
+
+async def _run_cohosted_proxy() -> None:
+    """`serve --with-proxy` (2-C) — run the compat gateway on loopback alongside the
+    node, supervised so a proxy failure logs but never drops the network-facing node.
+    The proxy is forced to 127.0.0.1 when co-hosted (consumer trust boundary)."""
+    try:
+        import uvicorn
+
+        from iicp_client.proxy.config import ProxyConfig
+        from iicp_client.proxy.main import create_app
+    except ModuleNotFoundError as exc:
+        logger.error(
+            "--with-proxy needs the [proxy] extra (missing %s); the node continues "
+            "WITHOUT the proxy. Install: pip install 'iicp-client[proxy]'",
+            exc.name,
+        )
+        return
+    pcfg = ProxyConfig.from_toml("proxy.toml")
+    pcfg.host = "127.0.0.1"  # force loopback when co-hosted
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(pcfg), host="127.0.0.1", port=pcfg.port, log_level="warning")
+    )
+    try:
+        logger.info("co-hosted proxy → http://127.0.0.1:%d (OpenAI/Ollama/Anthropic compat)", pcfg.port)
+        await server.serve()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — supervise: proxy crash must not drop the node
+        logger.error("co-hosted proxy crashed (node keeps running): %s", exc)
 
 
 def _cmd_proxy(args: argparse.Namespace) -> int:
