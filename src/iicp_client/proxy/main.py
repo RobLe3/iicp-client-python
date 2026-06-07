@@ -193,4 +193,6 @@ def create_app(cfg: ProxyConfig) -> FastAPI:
 def run() -> None:
     cfg = ProxyConfig.from_toml()
     app = create_app(cfg)
-    uvicorn.run(app, host=cfg.host, port=cfg.port)
+    # server_header=False so our `Server: iicp-proxy` middleware header is not
+    # overridden by uvicorn's default `Server: uvicorn`.
+    uvicorn.run(app, host=cfg.host, port=cfg.port, server_header=False)

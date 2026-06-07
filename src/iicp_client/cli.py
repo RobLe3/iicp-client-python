@@ -1348,7 +1348,7 @@ async def _run_cohosted_proxy() -> None:
     pcfg = ProxyConfig.from_toml("proxy.toml")
     pcfg.host = "127.0.0.1"  # force loopback when co-hosted
     server = uvicorn.Server(
-        uvicorn.Config(create_app(pcfg), host="127.0.0.1", port=pcfg.port, log_level="warning")
+        uvicorn.Config(create_app(pcfg), host="127.0.0.1", port=pcfg.port, log_level="warning", server_header=False)
     )
     try:
         logger.info("co-hosted proxy → http://127.0.0.1:%d (OpenAI/Ollama/Anthropic compat)", pcfg.port)
@@ -1379,7 +1379,7 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
     cfg.host = args.host
     cfg.port = args.port
     print(f"iicp-node proxy → http://{cfg.host}:{cfg.port} (OpenAI/Ollama/Anthropic compat; no directory registration)")
-    uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port)
+    uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, server_header=False)
     return 0
 
 

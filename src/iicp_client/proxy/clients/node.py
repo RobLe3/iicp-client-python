@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import ssl
 from typing import Any
 from urllib.parse import urlparse
@@ -33,6 +34,11 @@ def _is_ssrf_safe(url: str) -> bool:
     host = (parsed.hostname or "").lower()
     if not host:
         return False
+    # Dev/test escape hatch (default OFF): allow loopback/private node endpoints so a
+    # node + proxy can run on one host (local mesh) and for E2E tests. NEVER enable in
+    # production — it re-opens the SSRF surface this guard exists to close.
+    if os.environ.get("IICP_PROXY_ALLOW_LOOPBACK_NODES", "").strip().lower() in ("1", "true", "yes"):
+        return True
     if host in {"localhost", "0.0.0.0", "::1", "::"}:
         return False
     blocked_suffixes = (".local", ".internal", ".lan", ".test", ".invalid", ".localhost")
