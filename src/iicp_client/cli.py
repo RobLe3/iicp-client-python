@@ -291,6 +291,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     op_sub.add_parser("decrypt", help="Remove at-rest encryption — restore the plaintext secret.")
 
+    # ── proxy (ADR-050) — local OpenAI/Ollama/Anthropic-compat gateway ────────────
+    proxy = sub.add_parser(
+        "proxy",
+        help="Run the local OpenAI/Ollama/Anthropic-compat gateway (consumer; loopback; "
+        "does NOT register with the directory). Needs the [proxy] extra.",
+    )
+    proxy.add_argument(
+        "--port", type=int, default=int(_env("IICP_PROXY_PORT", "9483") or "9483"),
+        help="Listen port (env IICP_PROXY_PORT, default 9483 — reserved IICP proxy band).",
+    )
+    proxy.add_argument(
+        "--host", default=_env("IICP_PROXY_HOST", "127.0.0.1") or "127.0.0.1",
+        help="Bind host (env IICP_PROXY_HOST, default 127.0.0.1 — loopback only).",
+    )
+    proxy.add_argument(
+        "--config", default="proxy.toml",
+        help="Optional proxy.toml path (env IICP_PROXY_* override individual fields).",
+    )
+
     return p
 
 
@@ -1298,11 +1317,37 @@ def _cmd_list(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_proxy(args: argparse.Namespace) -> int:
+    """`iicp-node proxy` (ADR-050) — run the compat gateway. Lazy-imports the
+    [proxy] extra so plain library / `serve` / `query` use never needs FastAPI."""
+    try:
+        import uvicorn
+
+        from iicp_client.proxy.config import ProxyConfig
+        from iicp_client.proxy.main import create_app
+    except ModuleNotFoundError as exc:
+        print(
+            f"The proxy gateway needs the optional [proxy] extra (missing: {exc.name}).\n"
+            "  Install:  pip install 'iicp-client[proxy]'  (or pipx install 'iicp-client[proxy]')",
+            file=sys.stderr,
+        )
+        return 2
+    cfg = ProxyConfig.from_toml(args.config)
+    # Flag/env precedence: explicit --host/--port override the TOML/env-loaded config.
+    cfg.host = args.host
+    cfg.port = args.port
+    print(f"iicp-node proxy → http://{cfg.host}:{cfg.port} (OpenAI/Ollama/Anthropic compat; no directory registration)")
+    uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "serve":
         return asyncio.run(_serve(args))
+    if args.cmd == "proxy":
+        return _cmd_proxy(args)
     if args.cmd == "init":
         return _cmd_init(args)
     if args.cmd == "list":

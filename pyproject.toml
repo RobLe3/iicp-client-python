@@ -59,6 +59,18 @@ nat = [
 cx = [
     "cryptography>=42",
 ]
+# ADR-050 unified client — the local OpenAI/Ollama/Anthropic-compat proxy gateway
+# (`iicp-node proxy`). Optional because it pulls FastAPI/uvicorn; plain library /
+# consumer use (IicpClient) and `iicp-node serve`/`query` do NOT need it. The
+# proxy subcommand lazy-imports these and errors clearly if the extra is absent.
+proxy = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "prometheus-client>=0.21",
+    "cryptography>=42",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -68,6 +80,11 @@ dev = [
     "prometheus-client>=0.20",
     "cbor2>=5.4",
     "cryptography>=42",
+    # ADR-050 proxy gateway — needed to exercise the moved iicp_client.proxy tests
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
 ]
 
 [tool.hatch.build.targets.wheel]
