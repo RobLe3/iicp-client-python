@@ -39,7 +39,7 @@ def test_cohosted_proxy_forces_loopback():
     async def _noop():
         return None
 
-    def _capture_config(app, host, port, log_level):  # noqa: ARG001
+    def _capture_config(app, host, port, **_kwargs):  # noqa: ARG001
         captured["host"] = host
         s = MagicMock()
         s.serve = _noop
