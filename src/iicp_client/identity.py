@@ -223,7 +223,7 @@ class NodeIdentity:
     backend_url: str
     model: str
     intent: str = "urn:iicp:intent:llm:chat:v1"
-    region: str = "eu-central"
+    region: str = "unknown"
     directory_url: str = "https://iicp.network/api"
     max_concurrent: int = 4
     port: int = 8020

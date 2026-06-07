@@ -450,7 +450,7 @@ class IicpNode:
 
         payload: dict[str, Any] = {
             "endpoint": self._cfg.endpoint,
-            "region": self._cfg.region or "eu-central",
+            "region": self._cfg.region or "unknown",
             # #409 — one capability object per intent the backend can serve
             # (e.g. chat + embedding), classified from the detected model set.
             "capabilities": _build_capabilities(models, self._cfg.intent, self._cfg.max_tokens),

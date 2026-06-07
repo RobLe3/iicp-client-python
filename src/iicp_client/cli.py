@@ -150,8 +150,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--region",
-        default=_env("IICP_REGION", "eu-central"),
-        help="Region tag. env: IICP_REGION",
+        default=_env("IICP_REGION"),
+        help="Region tag (e.g. us-east, eu-central). env: IICP_REGION. "
+        "If unset and none is saved, registers as 'unknown' (never assumes a region).",
     )
     serve.add_argument(
         "--intent",
@@ -1210,7 +1211,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     name_default = model.replace(":", "-").replace(".", "-").lower()
     name = _prompt("Local node name (used as ~/.iicp/nodes/<NAME>.json)", name_default)
     intent = _prompt("Intent URN", "urn:iicp:intent:llm:chat:v1")
-    region = _prompt("Region tag", "eu-central")
+    region = _prompt("Region tag (e.g. us-east, eu-central; blank = unknown)", "unknown")
     directory_url = _prompt("Directory URL", "https://iicp.network/api")
     port_str = _prompt("Local HTTP port", "9484")
     port = int(port_str)
