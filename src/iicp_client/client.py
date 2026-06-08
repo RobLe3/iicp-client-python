@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
+import random
 import re
 import uuid
 from typing import Any
@@ -68,6 +70,13 @@ class IicpClient:
         if self._cfg.timeout_ms > _MAX_TIMEOUT_MS:
             # SDK-04: reject oversized timeouts at construction time
             raise ValueError(f"timeout_ms must be ≤ {_MAX_TIMEOUT_MS}; got {self._cfg.timeout_ms}")
+        # IICP_ROUTING_EPSILON overrides config; clamp to [0.0, 1.0]
+        _env_eps = os.environ.get("IICP_ROUTING_EPSILON")
+        if _env_eps is not None:
+            try:
+                self._cfg.routing_epsilon = max(0.0, min(1.0, float(_env_eps)))
+            except ValueError:
+                pass
 
     # ------------------------------------------------------------------
     # Public async API
@@ -161,9 +170,17 @@ class IicpClient:
             )
 
         task_id = str(uuid.uuid4())
-        # Try up to max_retries nodes total (fallback on connection/network errors).
-        # For server-side 5xx on the same node, retry that node before falling through.
-        candidates = node_list.nodes[:max(1, self._cfg.max_retries)]
+        # ε-greedy provider selection (R4): with probability ε pick a random node
+        # from the full discovered set; otherwise use the directory-sorted top pick.
+        # Remaining fallback candidates always come from the directory-sorted list.
+        all_nodes = node_list.nodes
+        top_n = max(1, self._cfg.max_retries)
+        if len(all_nodes) > 1 and random.random() < self._cfg.routing_epsilon:
+            explore_node = random.choice(all_nodes)
+            rest = [n for n in all_nodes[:top_n] if n.node_id != explore_node.node_id][: top_n - 1]
+            candidates = [explore_node] + rest
+        else:
+            candidates = all_nodes[:top_n]
         last_exc: IicpError | None = None
 
         for node in candidates:

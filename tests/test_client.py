@@ -612,3 +612,87 @@ def test_sdk06_traceparent_shared_across_submit():
     task_tp = task_route.calls[0].request.headers.get("traceparent", "")
     # both must have the same trace-id (index 1)
     assert disc_tp.split("-")[1] == task_tp.split("-")[1], f"trace-id mismatch: discover={disc_tp!r} task={task_tp!r}"
+
+
+# ---------------------------------------------------------------------------
+# ε-greedy provider selection (R4 / #486)
+# ---------------------------------------------------------------------------
+
+_MULTI_NODE_IPS = ["1.2.3.1", "1.2.3.2", "1.2.3.3", "1.2.3.4", "1.2.3.5"]
+_MULTI_NODES = {
+    "nodes": [
+        {"node_id": f"node-{i:02d}", "endpoint": f"https://{ip}:9484",
+         "score": round(1.0 - (i - 1) * 0.1, 1), "available": True, "region": "eu-west"}
+        for i, ip in enumerate(_MULTI_NODE_IPS, start=1)
+    ]
+}
+
+
+def _make_multi_node_mock():
+    """Build respx node mocks for all 5 test nodes."""
+    return [
+        respx.post(f"https://{ip}:9484/v1/task").mock(
+            return_value=httpx.Response(200, json={"task_id": "t1", "status": "success", "result": {}})
+        )
+        for ip in _MULTI_NODE_IPS
+    ]
+
+
+@respx.mock
+def test_epsilon_greedy_explore_picks_non_top_node():
+    """With ε=1.0 (always explore), first candidate is NOT always node-01 (R4 / #486).
+
+    This test fails without the ε-greedy implementation because with ε=0 the client
+    always picks node-01 (directory-sorted top), never exploring lower-ranked nodes.
+    """
+    respx.get(f"{DIRECTORY}/v1/discover").mock(return_value=httpx.Response(200, json=_MULTI_NODES))
+    task_routes = _make_multi_node_mock()
+    cfg = ClientConfig(directory_url=DIRECTORY, routing_epsilon=1.0)  # always explore
+    client = IicpClient(cfg)
+
+    # With ε=1.0 and 5 nodes, run 20 submits; statistically >99% chance we hit a non-top-1 node.
+    for _ in range(20):
+        client.submit(TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={}))
+
+    hit_node_ids = {f"node-{i+1:02d}" for i, r in enumerate(task_routes) if r.call_count > 0}
+
+    # With 20 draws from 5 nodes at ε=1.0, probability of hitting only node-01 = (1/5)^20 ≈ 10^-14
+    assert len(hit_node_ids) > 1, (
+        f"ε-greedy not working: only called {hit_node_ids} — exploration never fired"
+    )
+
+
+@respx.mock
+def test_epsilon_zero_always_picks_top_node():
+    """With ε=0.0 (no exploration), always picks the directory-sorted top node (R4 / #486).
+
+    This test verifies the greedy (non-explore) path works correctly.
+    """
+    respx.get(f"{DIRECTORY}/v1/discover").mock(return_value=httpx.Response(200, json=_MULTI_NODES))
+    task_routes = _make_multi_node_mock()
+    cfg = ClientConfig(directory_url=DIRECTORY, routing_epsilon=0.0)
+    client = IicpClient(cfg)
+
+    for _ in range(5):
+        client.submit(TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={}))
+
+    # node-01 (highest score) should have been called 5 times; others 0
+    assert task_routes[0].call_count == 5, f"top node call_count={task_routes[0].call_count}, expected 5"
+    for r in task_routes[1:]:
+        assert r.call_count == 0, f"lower-ranked node called {r.call_count} times with ε=0.0"
+
+
+@respx.mock
+def test_epsilon_env_override(monkeypatch):
+    """IICP_ROUTING_EPSILON env var overrides config default (R4 / #486)."""
+    monkeypatch.setenv("IICP_ROUTING_EPSILON", "0.0")
+    respx.get(f"{DIRECTORY}/v1/discover").mock(return_value=httpx.Response(200, json=_MULTI_NODES))
+    task_routes = _make_multi_node_mock()
+    # Default config — epsilon=0.05, but env sets 0.0
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    assert client._cfg.routing_epsilon == 0.0
+
+    for _ in range(5):
+        client.submit(TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={}))
+
+    assert task_routes[0].call_count == 5, "env IICP_ROUTING_EPSILON=0.0 should force top-only selection"

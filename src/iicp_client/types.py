@@ -17,6 +17,7 @@ class ClientConfig:
     max_retries: int = 3
     tls_verify: bool = True
     use_confidentiality: bool = False  # IICP-CX S.16: encrypt payloads when node advertises cx_public_key
+    routing_epsilon: float = 0.05  # ε-greedy exploration probability (R4); 0.0 disables
 
 
 @dataclass
