@@ -170,6 +170,35 @@ def test_credits_default_node_preferred_among_many(iicp_home, monkeypatch):
     assert rc == 1
 
 
+def test_credits_default_no_token_falls_back_to_sole_token_node(iicp_home, monkeypatch):
+    # Regression: `default.json` exists but has no cached token; exactly one other
+    # node has a token. `credits` must auto-select that node rather than failing with
+    # "no node_token — run serve" on a node that was never served.
+    _make_node("default", token=None)
+    _make_node("ollama", token="tok-ollama")
+    rc, err = _run_credits(monkeypatch)
+    # Should NOT fail at token check — it found "ollama" and used it.
+    assert "no cached token" in err  # hint about the fallback printed to stderr
+    assert "ollama" in err
+    # The token check passes → fails at the network call (which is forbidden), but
+    # the resolution error is gone — this proves the right branch was taken.
+    assert "node_id required" not in err
+    assert rc == 1  # fails at token (since tok-ollama is accepted), or mock-network
+
+
+def test_credits_default_no_token_multiple_token_nodes_lists_them(iicp_home, monkeypatch):
+    # `default.json` exists but has no token; multiple other nodes do → ambiguous error
+    # listing the nodes with tokens so the operator knows exactly what to pass.
+    _make_node("default", token=None)
+    _make_node("ollama", token="tok-a")
+    _make_node("lmstudio", token="tok-b")
+    rc, err = _run_credits(monkeypatch)
+    assert rc == 1
+    assert "no cached token" in err
+    assert "ollama" in err
+    assert "lmstudio" in err
+
+
 def test_credits_ambiguous_lists_node_names(iicp_home, monkeypatch):
     _make_node("alpha", token=None)
     _make_node("beta", token=None)

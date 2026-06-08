@@ -355,14 +355,33 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
     # UX: with no --node / --node-id, fall back to a saved config so a bare
     # `iicp-node credits` just works for the common single-node setup. Prefer an
     # explicit `default.json`; otherwise use the sole saved node if exactly one
-    # exists. Ambiguity (≥2 nodes) is left to the clear error below.
+    # exists. If 'default' exists but has no cached token, auto-fall-through to the
+    # single node that does have a token rather than failing with a confusing error.
     if saved is None and not args.node_id:
         all_nodes = list_nodes()
         default_node = next((n for n in all_nodes if n.name == "default"), None)
-        if default_node is not None:
-            saved = default_node
-        elif len(all_nodes) == 1:
+        if len(all_nodes) == 1:
             saved = all_nodes[0]
+        elif default_node is not None:
+            if default_node.node_token:
+                saved = default_node
+            else:
+                with_token = [n for n in all_nodes if n.node_token]
+                if len(with_token) == 1:
+                    sys.stderr.write(
+                        f"[iicp-node] '{default_node.name}' has no cached token"
+                        f" — using '{with_token[0].name}' instead\n"
+                    )
+                    saved = with_token[0]
+                elif len(with_token) > 1:
+                    names = ", ".join(n.name for n in with_token)
+                    sys.stderr.write(
+                        f"ERROR: '{default_node.name}' has no cached token."
+                        f" Pass --node <NAME>.\n  Nodes with a cached token: {names}\n"
+                    )
+                    return 1
+                else:
+                    saved = default_node  # no tokens anywhere; "run serve" fires below
     node_id = args.node_id or (saved.node_id if saved else None)
     token = args.token or (saved.node_token if saved else None)
     directory_url = (
