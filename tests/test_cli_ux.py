@@ -186,17 +186,37 @@ def test_credits_default_no_token_falls_back_to_sole_token_node(iicp_home, monke
     assert rc == 1  # fails at token (since tok-ollama is accepted), or mock-network
 
 
-def test_credits_default_no_token_multiple_token_nodes_lists_them(iicp_home, monkeypatch):
-    # `default.json` exists but has no token; multiple other nodes do → ambiguous error
-    # listing the nodes with tokens so the operator knows exactly what to pass.
+def test_credits_default_no_token_multiple_token_nodes_shows_all(iicp_home, monkeypatch):
+    # 0.7.44 fix: when multiple nodes have tokens, the command shows credits for ALL
+    # of them rather than emitting a listing error. Behavior test: if the fix is
+    # reverted, "showing credits for all" disappears and "no cached token" reappears.
     _make_node("default", token=None)
     _make_node("ollama", token="tok-a")
     _make_node("lmstudio", token="tok-b")
-    rc, err = _run_credits(monkeypatch)
-    assert rc == 1
-    assert "no cached token" in err
-    assert "ollama" in err
-    assert "lmstudio" in err
+
+    import iicp_client.cli as cli_mod
+
+    fetched_for: list[str] = []
+
+    async def _mock_fetch(directory_url, node_id, token, label, as_json, verify):
+        fetched_for.append(label)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_fetch_and_display_credits", _mock_fetch)
+
+    captured_err: list[str] = []
+    monkeypatch.setattr(cli_mod.sys.stderr, "write", lambda s: captured_err.append(s) or len(s))
+
+    parser = cli_mod._build_parser()
+    args = parser.parse_args(["credits"])
+    rc = asyncio.run(cli_mod._cmd_credits_async(args))
+
+    err = "".join(captured_err)
+    assert rc == 0
+    assert "showing credits for all" in err  # new routing message
+    assert "ollama" in fetched_for
+    assert "lmstudio" in fetched_for
+    assert "no cached token" not in err  # old listing behavior must be gone
 
 
 def test_credits_ambiguous_lists_node_names(iicp_home, monkeypatch):

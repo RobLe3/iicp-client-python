@@ -374,12 +374,26 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
                     )
                     saved = with_token[0]
                 elif len(with_token) > 1:
-                    names = ", ".join(n.name for n in with_token)
-                    sys.stderr.write(
-                        f"ERROR: '{default_node.name}' has no cached token."
-                        f" Pass --node <NAME>.\n  Nodes with a cached token: {names}\n"
+                    # Multiple nodes have tokens — show all of them.
+                    directory_url = (
+                        args.directory_url
+                        or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
                     )
-                    return 1
+                    sys.stderr.write(
+                        f"[iicp-node] no --node given — showing credits for all"
+                        f" {len(with_token)} nodes:\n"
+                    )
+                    for idx, n in enumerate(with_token):
+                        if idx > 0:
+                            print()
+                        rc = await _fetch_and_display_credits(
+                            n.directory_url or directory_url,
+                            n.node_id, n.node_token, n.name,
+                            args.json, args.verify,
+                        )
+                        if rc != 0:
+                            return rc
+                    return 0
                 else:
                     saved = default_node  # no tokens anywhere; "run serve" fires below
     node_id = args.node_id or (saved.node_id if saved else None)
@@ -412,6 +426,23 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
         )
         return 1
 
+    label = args.node or node_id
+    return await _fetch_and_display_credits(
+        directory_url, node_id, token, label, args.json, args.verify
+    )
+
+
+async def _fetch_and_display_credits(
+    directory_url: str,
+    node_id: str,
+    token: str,
+    label: str,
+    as_json: bool,
+    verify: bool,
+) -> int:
+    """Shared fetch+display logic for one node's credits summary."""
+    import httpx
+
     url = directory_url.rstrip("/") + "/v1/credits/summary"
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -436,7 +467,7 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
         sys.stderr.write(f"ERROR: HTTP {resp.status_code}: {msg}\n")
         return 1
 
-    if args.json:
+    if as_json:
         print(json.dumps(body, indent=2))
         return 0
 
@@ -446,7 +477,6 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
     tx = int(body.get("tx_count", 0))
     reconciles = bool(body.get("reconciles", False))
     tpc = int(body.get("tokens_per_credit", 1000))
-    label = args.node or node_id
     print(f"IICP credits — {label}")
     print(f"  Earned (income)   {earned:>12.3f}")
     print(f"  Spent             {spent:>12.3f}")
@@ -459,7 +489,7 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
             "[iicp-node] WARNING: balance != earned − spent — the ledger does not "
             "reconcile; do not trust these figures.\n"
         )
-    if args.verify:
+    if verify:
         try:
             vsum, vcount, vfailed = await _verify_credit_awards(directory_url, node_id)
         except Exception as exc:  # noqa: BLE001
