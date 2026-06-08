@@ -696,3 +696,48 @@ def test_epsilon_env_override(monkeypatch):
         client.submit(TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={}))
 
     assert task_routes[0].call_count == 5, "env IICP_ROUTING_EPSILON=0.0 should force top-only selection"
+
+
+@respx.mock
+def test_node_register_payload_includes_relay_capable():
+    """relay_capable=True must appear in the register payload (0.7.45).
+    Pre-fix: relay_capable was never sent to the directory → it wouldn't show
+    up in /v1/discover, making the flag useless. Post-fix: it's included."""
+    route = respx.post("https://iicp.test/v1/register").mock(
+        return_value=httpx.Response(201, json={"node_token": "tok-1", "node_id": "n-1"})
+    )
+    node = IicpNode(
+        NodeConfig(
+            node_id="n-1",
+            endpoint="https://relay.example.com:9484",
+            intent="urn:iicp:intent:llm:chat:v1",
+            model="llama-3-8b",
+            directory_url="https://iicp.test",
+            relay_capable=True,
+            relay_accept_port=9490,
+        )
+    )
+    asyncio.run(node.register())
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["relay_capable"] is True, "relay_capable must be in register payload"
+    assert payload["relay_accept_port"] == 9490, "relay_accept_port must be in register payload"
+
+
+@respx.mock
+def test_node_register_payload_omits_relay_capable_when_false():
+    """relay_capable=False (default) must NOT add relay_capable to the payload."""
+    route = respx.post("https://iicp.test/v1/register").mock(
+        return_value=httpx.Response(201, json={"node_token": "tok-1", "node_id": "n-1"})
+    )
+    node = IicpNode(
+        NodeConfig(
+            node_id="n-1",
+            endpoint="https://provider.example.com:9484",
+            intent="urn:iicp:intent:llm:chat:v1",
+            model="llama-3-8b",
+            directory_url="https://iicp.test",
+        )
+    )
+    asyncio.run(node.register())
+    payload = json.loads(route.calls[0].request.content)
+    assert "relay_capable" not in payload, "relay_capable must not appear when not set"

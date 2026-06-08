@@ -498,6 +498,9 @@ class IicpNode:
         payload["sdk_version"] = _iicp_client_version
         if self._cfg.backend:
             payload["backend"] = self._cfg.backend
+        if self._cfg.relay_capable:
+            payload["relay_capable"] = True
+            payload["relay_accept_port"] = self._cfg.relay_accept_port
 
         # S.12 §2.1 — CIP-D1 policy block. Use the per-config policy if set,
         # otherwise fall back to the module-level cip_policy.get_policy().
