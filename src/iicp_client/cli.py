@@ -907,6 +907,8 @@ async def _serve(args: argparse.Namespace) -> int:
         operator_display_name=_op_display_name,
         operator_created_at=_op_created_at,
         operator_integrity_hash=_op_integrity_hash,
+        # TC-9c — pre-load saved HMAC key so receipts work immediately on restart.
+        node_hmac_key=saved.node_hmac_key or "" if saved else "",
     )
     node = IicpNode(cfg)
 
@@ -1063,12 +1065,16 @@ async def _serve(args: argparse.Namespace) -> int:
                 token = await node.register()
                 logger.info("Registered as %s (token=%s…)", node_id, (token or "")[:8])
                 _log_event(node_id, "register_ok", f"endpoint={public_endpoint}", _log_dir_override)
-                # #456 — cache the token in the saved config so `iicp-node credits` can
-                # authenticate later without re-registering (best-effort).
+                # #456 / TC-9c — cache token + HMAC key in the saved config so
+                # `iicp-node credits` can authenticate and CIPWorkerReceipts work
+                # immediately on restart (best-effort).
                 if getattr(args, "node", None) and token:
                     saved = load_node(args.node)
                     if saved is not None:
                         saved.node_token = token
+                        hmac_key = node.node_hmac_key()
+                        if hmac_key:
+                            saved.node_hmac_key = hmac_key
                         try:
                             save_node(saved)
                         except OSError:
