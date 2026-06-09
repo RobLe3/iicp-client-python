@@ -360,7 +360,6 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
     reconcile-checked GET /v1/credits/summary (#456). Figures come authenticated
     from the directory (not the local config), so editing the saved file cannot
     inflate them; `reconciles` flags a ledger that does not add up."""
-    import httpx
 
     saved = load_node(args.node) if args.node else None
     if args.node and saved is None:
