@@ -11,9 +11,9 @@ import re
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
-from urllib.parse import urlparse
 
 from iicp_client._http import _traceparent, get_json, post_json
 from iicp_client.errors import IicpError
