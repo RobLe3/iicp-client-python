@@ -404,6 +404,9 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
                         f"[iicp-node] no --node given — showing credits for all"
                         f" {len(with_token)} nodes:\n"
                     )
+                    # One node failing must not hide the others — show every
+                    # node, then exit non-zero if any failed (2026-06-11).
+                    failed = 0
                     for idx, n in enumerate(with_token):
                         if idx > 0:
                             print()
@@ -413,7 +416,16 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
                             args.json, args.verify,
                         )
                         if rc != 0:
-                            return rc
+                            sys.stderr.write(
+                                f"ERROR: credits fetch failed for node '{n.name}'"
+                                " — continuing with remaining nodes\n"
+                            )
+                            failed += 1
+                    if failed:
+                        sys.stderr.write(
+                            f"ERROR: {failed}/{len(with_token)} node(s) failed\n"
+                        )
+                        return 1
                     return 0
                 else:
                     saved = default_node  # no tokens anywhere; "run serve" fires below
@@ -465,19 +477,41 @@ async def _fetch_and_display_credits(
     import httpx
 
     url = directory_url.rstrip("/") + f"/v1/credits/summary?node_id={node_id}"
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                url, headers={"Authorization": f"Bearer {token}"}
-            )
-    except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(f"ERROR: request failed: {exc}\n")
-        return 1
+    # Transient failures (network error, 5xx, undecodable body) get ONE retry
+    # after a short pause — shared-hosting blips and deploy windows otherwise
+    # surface as one-shot CLI errors (observed 2026-06-11).
+    resp = None
+    body = None
+    last_err = ""
+    for attempt in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(
+                    url, headers={"Authorization": f"Bearer {token}"}
+                )
+        except Exception as exc:  # noqa: BLE001
+            last_err = f"request failed: {exc}"
+            resp = None
+        if resp is not None:
+            try:
+                body = resp.json()
+            except Exception:  # noqa: BLE001
+                last_err = f"bad response (HTTP {resp.status_code})"
+                body = None
+            if body is not None and resp.status_code < 500:
+                break  # success or definitive 4xx — no retry
+            if body is not None:
+                msg = (
+                    (body.get("error") or {}).get("message", "request rejected")
+                    if isinstance(body, dict)
+                    else "request rejected"
+                )
+                last_err = f"HTTP {resp.status_code}: {msg}"
+        if attempt == 1:
+            await asyncio.sleep(2.0)
 
-    try:
-        body = resp.json()
-    except Exception:  # noqa: BLE001
-        sys.stderr.write(f"ERROR: bad response (HTTP {resp.status_code})\n")
+    if resp is None or body is None or resp.status_code >= 500:
+        sys.stderr.write(f"ERROR: {last_err}\n")
         return 1
     if resp.status_code >= 400:
         msg = (

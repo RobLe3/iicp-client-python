@@ -315,3 +315,100 @@ def test_post_cip_receipt_omits_querying_node_id_when_not_provided():
     assert received, "directory must receive a POST"
     assert "querying_node_id" not in received[0], \
         "querying_node_id must be absent when not provided (backwards compat)"
+
+
+# --- 2026-06-11: transient-failure retry + all-nodes continue-on-error ---
+from iicp_client.identity import NodeIdentity, save_node  # noqa: E402
+
+
+def _serve_sequence(responses):
+    """Mock server answering successive requests from `responses` [(status, body)…].
+
+    Stays up for len(responses) requests, then closes.
+    """
+
+    class Handler(BaseHTTPRequestHandler):
+        calls = []
+
+        def do_GET(self):  # noqa: N802
+            idx = min(len(Handler.calls), len(responses) - 1)
+            Handler.calls.append(self.path)
+            status, body = responses[idx]
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, *_args):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return port, Handler
+
+
+_OK_BODY = (
+    '{"node_id":"n1","total_earned":5.0,"total_spent":0.0,"balance":5.0,'
+    '"tx_count":1,"reconciles":true,"unit":"credit","tokens_per_credit":1000}'
+)
+
+
+def test_credits_retries_once_on_transient_500(capsys):
+    """A single 5xx (deploy window / shared-hosting blip) must not surface as a
+    CLI error — the fetch retries once. Fails if the retry is removed."""
+    err_body = '{"error":{"code":"server_error","message":"An internal error occurred"}}'
+    port, handler = _serve_sequence([(500, err_body), (200, _OK_BODY)])
+
+    rc = main(
+        ["credits", "--node-id", "n1", "--token", "t",
+         "--directory-url", f"http://127.0.0.1:{port}", "--json"]
+    )
+    assert rc == 0, "transient 500 followed by 200 must succeed via retry"
+    assert len(handler.calls) == 2
+    assert '"balance": 5.0' in capsys.readouterr().out
+
+
+def test_credits_no_retry_on_definitive_4xx():
+    """4xx is definitive — exactly one request, no retry."""
+    body = '{"error":{"code":"unauthorized","message":"invalid node_token"}}'
+    port, handler = _serve_sequence([(401, body), (401, body)])
+
+    rc = main(
+        ["credits", "--node-id", "n1", "--token", "bad",
+         "--directory-url", f"http://127.0.0.1:{port}"]
+    )
+    assert rc == 1
+    assert len(handler.calls) == 1, "definitive 4xx must not be retried"
+
+
+def test_credits_all_nodes_continues_past_failing_node(tmp_path, monkeypatch, capsys):
+    """With no --node, one node's persistent failure must not hide the others:
+    every node is shown, exit is non-zero. Fails if the loop aborts early."""
+    monkeypatch.setenv("IICP_HOME", str(tmp_path))
+
+    err_body = '{"error":{"code":"server_error","message":"An internal error occurred"}}'
+    bad_port, _bad = _serve_sequence([(500, err_body), (500, err_body)])
+    good_port, _good = _serve_sequence([(200, _OK_BODY), (200, _OK_BODY)])
+
+    # The all-nodes path triggers when 'default' has no cached token and ≥2
+    # other nodes do (the common multi-node operator layout).
+    save_node(NodeIdentity(
+        node_id="n-def", operator_id="op", name="default", backend_url="http://b",
+        model="m",
+    ))
+    save_node(NodeIdentity(
+        node_id="n-bad", operator_id="op", name="aaa-bad", backend_url="http://b",
+        model="m", directory_url=f"http://127.0.0.1:{bad_port}", node_token="t1",
+    ))
+    save_node(NodeIdentity(
+        node_id="n-good", operator_id="op", name="zzz-good", backend_url="http://b",
+        model="m", directory_url=f"http://127.0.0.1:{good_port}", node_token="t2",
+    ))
+
+    rc = main(["credits"])
+
+    out = capsys.readouterr().out
+    assert "zzz-good" in out, "the healthy node must still be displayed"
+    assert rc == 1, "exit must be non-zero when any node failed"
