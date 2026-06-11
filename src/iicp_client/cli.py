@@ -250,7 +250,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(_env("IICP_RELAY_ACCEPT_PORT", "9485")),
         help="TCP port for the relay accept server (only used with --relay-capable). "
-        "Default: 9485. env: IICP_RELAY_ACCEPT_PORT",
+        "Default: 9485. Note: relay bind authentication is pending (#510) — only "
+        "run a relay accept port on networks you trust until the signed-bind "
+        "mechanism ships. env: IICP_RELAY_ACCEPT_PORT",
     )
     serve.add_argument(
         "--log-dir",

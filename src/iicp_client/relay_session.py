@@ -108,6 +108,14 @@ class RelayWorkerSession:
         finally:
             self._pending.pop(call_id, None)
 
+    def is_alive(self) -> bool:
+        """Whether the underlying worker transport is still alive/writable.
+
+        #510 interim hardening: an alive bound session must not be displaced
+        by a new RELAY_BIND for the same worker_id (unauthenticated bind).
+        """
+        return not self._writer.is_closing()
+
     def on_response(self, call_id: str, result: dict) -> None:
         """Called by the relay-worker loop when a RESPONSE arrives."""
         fut = self._pending.get(call_id)
@@ -245,6 +253,33 @@ class RelayAcceptServer:
             logger.warning("Relay accept: RELAY_BIND missing worker_id")
             return
 
+        # #510 interim hardening: RELAY_BIND is unauthenticated, so refuse to
+        # displace an existing session whose socket is still alive (mid-session
+        # hijack). Rebind after socket death (legitimate reconnect) still works.
+        existing = self.registry.get(worker_id)
+        if existing is not None and existing.is_alive():
+            peer = writer.get_extra_info("peername")
+            logger.warning(
+                "Relay accept: rejected RELAY_BIND for worker=%s from %s: "
+                "worker_id already bound to an alive session (#510)",
+                worker_id,
+                peer,
+            )
+            writer.write(
+                _make_frame(
+                    _MT_RELAY_ACK,
+                    _enc(
+                        {
+                            1: "error",
+                            2: worker_id,
+                            3: "worker_id already bound to an alive session",
+                        }
+                    ),
+                )
+            )
+            await writer.drain()
+            return
+
         session = RelayWorkerSession(worker_id=worker_id, writer=writer)
         self.registry.bind(worker_id, session)
         logger.info("Relay: worker=%s bound (intent=%s models=%s)", worker_id, intent, models)
@@ -256,7 +291,10 @@ class RelayAcceptServer:
         try:
             await self._relay_worker_loop(session, reader, writer)
         finally:
-            self.registry.unbind(worker_id)
+            # Only remove the registry entry if it is still ours — a legitimate
+            # reconnect may already have bound a newer session for this worker_id.
+            if self.registry.get(worker_id) is session:
+                self.registry.unbind(worker_id)
             logger.info("Relay: session ended for worker=%s", worker_id)
 
     async def _relay_worker_loop(

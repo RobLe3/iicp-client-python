@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import struct
 from unittest.mock import AsyncMock, MagicMock
+
+import cbor2
 
 from iicp_client.iicp_tcp import (
     MsgType,
@@ -14,7 +18,11 @@ from iicp_client.iicp_tcp import (
     encode_relay_bind,
     encode_relay_call,
 )
-from iicp_client.relay_session import RelaySessionRegistry, RelayWorkerSession
+from iicp_client.relay_session import (
+    RelayAcceptServer,
+    RelaySessionRegistry,
+    RelayWorkerSession,
+)
 
 # ── encode/decode helpers ──────────────────────────────────────────────────────
 
@@ -137,3 +145,128 @@ class TestRelayWorkerSessionOnResponse:
         session = RelayWorkerSession("w-001", writer)
         # Should not raise
         session.on_response("unknown-call", {"result": "ok"})
+
+
+# ── RelayAcceptServer bind hardening (#510) ───────────────────────────────────
+# Behavior tests: these fail if the alive-session rebind rejection is reverted.
+
+_HEADER = struct.Struct("!4sBBBBI")
+_MT_INIT = 0x01
+_MT_ACK = 0x02
+_MT_CALL = 0x05
+_MT_RESPONSE = 0x06
+_MT_RELAY_BIND = 0x0B
+_MT_RELAY_ACK = 0x0C
+
+
+def _frame(msg_type: int, payload: bytes) -> bytes:
+    return _HEADER.pack(b"IICP", 0x01, msg_type, 0, 0, len(payload)) + payload
+
+
+async def _read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
+    header = await reader.readexactly(12)
+    _, _, mt, _, _, plen = _HEADER.unpack(header)
+    payload = await reader.readexactly(plen) if plen else b""
+    return mt, payload
+
+
+async def _start_server(registry: RelaySessionRegistry) -> tuple[RelayAcceptServer, int]:
+    srv = RelayAcceptServer(registry, host="127.0.0.1", port=0)
+    await srv.start()
+    port = srv._server.sockets[0].getsockname()[1]
+    return srv, port
+
+
+async def _bind_worker(
+    port: int, worker_id: str
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, dict]:
+    """Wire-level worker: INIT/ACK + RELAY_BIND; returns the RELAY_ACK body."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(_frame(_MT_INIT, cbor2.dumps({1: 0x01})))
+    await writer.drain()
+    mt, _ = await asyncio.wait_for(_read_frame(reader), timeout=5.0)
+    assert mt == _MT_ACK
+    writer.write(
+        _frame(
+            _MT_RELAY_BIND,
+            cbor2.dumps({1: worker_id, 2: "urn:iicp:intent:llm:chat:v1", 3: []}),
+        )
+    )
+    await writer.drain()
+    mt, payload = await asyncio.wait_for(_read_frame(reader), timeout=5.0)
+    assert mt == _MT_RELAY_ACK
+    return reader, writer, cbor2.loads(payload)
+
+
+class TestRelayBindHardening:
+    """#510 interim hardening: alive-session rebind rejection + reconnect."""
+
+    def test_hijack_bind_of_alive_session_is_rejected(self):
+        async def _run():
+            reg = RelaySessionRegistry()
+            srv, port = await _start_server(reg)
+            try:
+                reader_a, writer_a, ack_a = await _bind_worker(port, "w-hijack")
+                assert ack_a[1] == "ok"
+                session_a = reg.get("w-hijack")
+                assert session_a is not None
+
+                # Attacker on socket B binds the same worker_id while A is alive.
+                _reader_b, writer_b, ack_b = await _bind_worker(port, "w-hijack")
+                assert ack_b[1] == "error", "second bind of an alive worker must be rejected"
+
+                # A's session remains installed and still receives dispatches.
+                assert reg.get("w-hijack") is session_a
+                assert session_a.is_alive()
+
+                dispatch = asyncio.ensure_future(
+                    session_a.forward_task({"ping": 1}, timeout=5.0)
+                )
+                mt, payload = await asyncio.wait_for(_read_frame(reader_a), timeout=5.0)
+                assert mt == _MT_CALL, "dispatch must arrive on worker A's socket"
+                body = cbor2.loads(payload)
+                call_id = body[15]
+                writer_a.write(
+                    _frame(
+                        _MT_RESPONSE,
+                        cbor2.dumps({15: call_id, 5: json.dumps({"pong": True}).encode()}),
+                    )
+                )
+                await writer_a.drain()
+                result = await asyncio.wait_for(dispatch, timeout=5.0)
+                assert result == {"pong": True}
+
+                writer_a.close()
+                writer_b.close()
+            finally:
+                await srv.stop()
+
+        asyncio.run(_run())
+
+    def test_rebind_after_socket_death_succeeds(self):
+        async def _run():
+            reg = RelaySessionRegistry()
+            srv, port = await _start_server(reg)
+            try:
+                _reader_a, writer_a, ack_a = await _bind_worker(port, "w-reconnect")
+                assert ack_a[1] == "ok"
+
+                writer_a.close()
+                # Wait until the relay observes the dead socket
+                # (unbound, or bound-but-dead).
+                for _ in range(200):
+                    s = reg.get("w-reconnect")
+                    if s is None or not s.is_alive():
+                        break
+                    await asyncio.sleep(0.01)
+
+                _reader_b, writer_b, ack_b = await _bind_worker(port, "w-reconnect")
+                assert ack_b[1] == "ok", "rebind after socket death must succeed"
+                assert reg.is_bound("w-reconnect")
+                assert reg.get("w-reconnect").is_alive()
+
+                writer_b.close()
+            finally:
+                await srv.stop()
+
+        asyncio.run(_run())
