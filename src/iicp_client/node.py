@@ -435,6 +435,8 @@ class IicpNode:
         self._liveness_challenge: str | None = None
         # BUG-5: token stashed by register() so deregister()/heartbeat don't need it re-passed.
         self._node_token: str = ""
+        # #494 — models registered at last register(); used for drift detection in heartbeat.
+        self._registered_models: frozenset[str] = frozenset()
         # #343 — UPnP IPv6 pinhole tracking. Set by apply_nat_profile() when
         # detect_nat opened a firewall pinhole; consumed by _revoke_pinhole()
         # on graceful shutdown and the renewal loop.
@@ -623,6 +625,12 @@ class IicpNode:
             if hk:
                 self._node_hmac_key = str(hk)
         logger.info("Registered node %s, token acquired", self._cfg.node_id)
+        # #494 — track the model set registered so heartbeat can detect drift.
+        _reg = [self._cfg.model] if self._cfg.model else []
+        for _cap in self._cfg.capabilities:
+            if _cap not in _reg:
+                _reg.append(_cap)
+        self._registered_models = frozenset(_reg)
         return str(token)
 
     @property
@@ -716,6 +724,34 @@ class IicpNode:
             pass
         return None
 
+    async def _maybe_reregister_on_model_drift(self) -> None:
+        """#494 — re-register when the backend's live model set diverges from registered.
+
+        Only fires when the live list is non-empty (avoids spurious re-registration during
+        transient backend downtime where /api/tags returns nothing). Soft: failure is logged
+        and retried on the next heartbeat tick.
+        """
+        if not self._cfg.backend_url or not self._registered_models:
+            return
+        live = await self._probe_health_models()
+        if live is None or not live:
+            return
+        live_set = frozenset(live)
+        if live_set == self._registered_models:
+            return
+        logger.info(
+            "Model list drifted: registered=%s live=%s — re-registering",
+            sorted(self._registered_models), sorted(live_set),
+        )
+        live_sorted = sorted(live_set)
+        self._cfg.model = live_sorted[0]
+        self._cfg.capabilities = live_sorted[1:]
+        try:
+            await self.register()
+            logger.info("Re-registered %s with updated models: %s", self._cfg.node_id, live_sorted)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Model-drift re-registration failed: %s", exc)
+
     async def _heartbeat_loop(self, node_token: str) -> None:
         token = node_token
         while True:
@@ -723,6 +759,8 @@ class IicpNode:
             try:
                 await self.heartbeat(token)
                 logger.debug("Heartbeat sent for %s", self._cfg.node_id)
+                # #494 — detect model list drift and re-register if needed.
+                await self._maybe_reregister_on_model_drift()
             except httpx.HTTPStatusError as exc:
                 # #399 — the directory dropped the node (deregistered on a prior
                 # shutdown, TTL-expired after a heartbeat gap, or the directory
