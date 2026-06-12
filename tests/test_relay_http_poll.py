@@ -52,7 +52,7 @@ class _ServerHandle:
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
-    def start(self) -> "_ServerHandle":
+    def start(self) -> _ServerHandle:
         self._thread.start()
         self._ready.wait(timeout=5)
         for _ in range(40):
