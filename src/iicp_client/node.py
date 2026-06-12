@@ -981,6 +981,14 @@ class IicpNode:
                     ).encode()
                     self._json_response(409, err, cors=True)
                     return
+                # Red-team F5: reject new binds past the session cap (bind-flood
+                # DoS). A rebind of an existing worker_id is exempt.
+                if node._relay_sessions.at_capacity(worker_id):
+                    err = json.dumps(
+                        {"error": {"code": "IICP-E039", "message": "relay at session capacity — try another relay"}}
+                    ).encode()
+                    self._json_response(503, err, cors=True)
+                    return
                 from iicp_client.relay_session import HttpPollWorkerSession
 
                 models = payload.get("models") if isinstance(payload.get("models"), list) else []

@@ -198,12 +198,29 @@ class HttpPollWorkerSession:
 RelaySession = RelayWorkerSession | HttpPollWorkerSession
 
 
+# Red-team F5 (2026-06-12): cap concurrent relay sessions so a bind-flood
+# can't exhaust relay memory / starve legitimate workers. Re-binding an
+# existing worker_id never counts against the cap (it replaces, not adds).
+MAX_RELAY_SESSIONS = 256
+
+
 class RelaySessionRegistry:
     """Thread-safe mapping worker_id → relay session (TCP or HTTP-poll)."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_sessions: int = MAX_RELAY_SESSIONS) -> None:
         self._sessions: dict[str, RelaySession] = {}
         self._lock = threading.Lock()
+        self._max = max_sessions
+
+    def at_capacity(self, worker_id: str) -> bool:
+        """True if a NEW worker_id can't be admitted (cap reached). A rebind
+        of an already-bound worker_id is always allowed (F5)."""
+        with self._lock:
+            return worker_id not in self._sessions and len(self._sessions) >= self._max
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._sessions)
 
     def bind(self, worker_id: str, session: RelaySession) -> None:
         with self._lock:
@@ -366,6 +383,14 @@ class RelayAcceptServer:
                     ),
                 )
             )
+            await writer.drain()
+            return
+
+        # Red-team F5: cap concurrent sessions (bind-flood DoS). Rebind exempt.
+        if self.registry.at_capacity(worker_id):
+            logger.warning("Relay: at session capacity — rejecting bind for %s", worker_id)
+            nack = _enc({1: "error", 2: worker_id, 3: "relay at session capacity"})
+            writer.write(_make_frame(_MT_RELAY_ACK, nack))
             await writer.drain()
             return
 
