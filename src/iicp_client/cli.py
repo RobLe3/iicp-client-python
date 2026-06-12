@@ -104,6 +104,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="List node configs saved under ~/.iicp/nodes/.",
     )
 
+    update = sub.add_parser(
+        "update",
+        help="Check whether a newer iicp-client release is available.",
+    )
+    update.add_argument(
+        "--check",
+        action="store_true",
+        help="Report current vs latest published version (read-only — never installs).",
+    )
+
     serve = sub.add_parser("serve", help="Register and serve a node.")
     serve.add_argument(
         "--node",
@@ -1901,6 +1911,32 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_update(args: object) -> int:
+    """`iicp-node update [--check]` — P1: read-only version check (#521).
+
+    Always read-only in this phase; prints current vs latest + the upgrade
+    command. Exit 0 = up to date / unknown, 10 = a newer release exists (so
+    scripts/cron can act on it without parsing text)."""
+    from iicp_client import __version__
+    from iicp_client.updater import check_update, latest_pypi_version
+
+    latest = latest_pypi_version()
+    verdict = check_update(__version__, latest)
+    if latest is None:
+        sys.stdout.write(
+            f"iicp-client {verdict['current']} — could not reach PyPI to check for updates.\n"
+        )
+        return 0
+    if verdict["outdated"]:
+        sys.stdout.write(
+            f"iicp-client {verdict['current']} — a newer release is available: "
+            f"{verdict['latest']}\n  upgrade:  {verdict['command']}\n"
+        )
+        return 10
+    sys.stdout.write(f"iicp-client {verdict['current']} — up to date (latest: {verdict['latest']}).\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     raw_argv = sys.argv[1:] if argv is None else argv
@@ -1927,6 +1963,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(args)
     if args.cmd == "list":
         return _cmd_list(args)
+    if args.cmd == "update":
+        return _cmd_update(args)
     if args.cmd == "query":
         return asyncio.run(_cmd_query_async(args))
     if args.cmd == "credits":
