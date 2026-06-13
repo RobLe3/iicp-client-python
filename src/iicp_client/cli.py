@@ -1072,36 +1072,45 @@ async def _serve(args: argparse.Namespace) -> int:
                 getattr(profile, "public_endpoint", None) or "(none)",
             )
             node.apply_nat_profile(profile)
-            # Tier ≥ 3 (unreachable/CGNAT with no IPv6 fallback) and no relay
-            # configured → auto-elect a relay from the directory and configure it.
-            # This is the fully automatic relay-as-last-resort path.
+            # Tier ≥ 3 (unreachable/CGNAT with no IPv6 fallback), no relay configured →
+            # TUNNEL-FIRST, relay = last resort (maintainer 2026-06-13 choreography:
+            # tunnel → relay → gossip). A zero-account Quick Tunnel gives the node its OWN
+            # public https endpoint — more autonomous than depending on a third-party relay
+            # (which sees routing metadata; relay-bind auth is #510) and one less hop. The
+            # tunnel-URL rotation risk is mitigated by the self-healing watchdog (#538).
+            # --no-tunnel / IICP_TUNNEL=0 opts out of the tunnel → relay becomes first again.
             if getattr(profile, "tier", 0) >= 3 and not relay_worker_ep:
-                logger.info(
-                    "NAT tier=%d: no direct or IPv6 endpoint available — querying directory for relay-capable peers.",
-                    profile.tier,
-                )
-                elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
-                if elected_relay:
-                    relay_host, relay_port = elected_relay
-                    relay_worker_ep = f"{relay_host}:{relay_port}"
-                    cfg.relay_worker_endpoint = relay_worker_ep
+                # (1) Quick Tunnel (rung 5) — the autonomous public endpoint.
+                if _tunnel_pref is not False:
                     logger.info(
-                        "NAT: auto-elected relay %s:%d — node will register via relay when connection is established.",
-                        relay_host,
-                        relay_port,
+                        "NAT tier=%d: no direct or IPv6 endpoint — opening Quick Tunnel (rung 5) "
+                        "for an autonomous public endpoint.",
+                        profile.tier,
                     )
-                else:
-                    # #520 rung 5: no relay anywhere → Quick Tunnel (unless
-                    # the operator disabled it with --no-tunnel/IICP_TUNNEL=0).
-                    if _tunnel_pref is not False:
-                        _tunnel = _open_tunnel_rung(node, args.port, forced=False)
-                        if _tunnel is not None:
-                            public_endpoint = _tunnel.url
-                    if _tunnel is None:
+                    _tunnel = _open_tunnel_rung(node, args.port, forced=False)
+                    if _tunnel is not None:
+                        public_endpoint = _tunnel.url
+                # (2) Relay = last resort — only if no tunnel (disabled or unavailable).
+                if _tunnel is None:
+                    logger.info(
+                        "NAT tier=%d: no tunnel — querying directory for a relay-capable peer (last resort).",
+                        profile.tier,
+                    )
+                    elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
+                    if elected_relay:
+                        relay_host, relay_port = elected_relay
+                        relay_worker_ep = f"{relay_host}:{relay_port}"
+                        cfg.relay_worker_endpoint = relay_worker_ep
+                        logger.info(
+                            "NAT: auto-elected relay %s:%d (last resort) — node will register via relay.",
+                            relay_host,
+                            relay_port,
+                        )
+                    else:
+                        # (3) No tunnel + no relay → mesh gossip to discover relays.
                         logger.warning(
-                            "NAT tier=%d: no relay-capable peers found in directory "
-                            "and no tunnel available. Enabling mesh to discover "
-                            "relays via gossip. Set IICP_RELAY_WORKER_ENDPOINT="
+                            "NAT tier=%d: no tunnel and no relay-capable peers found. Enabling mesh "
+                            "to discover relays via gossip. Set IICP_RELAY_WORKER_ENDPOINT="
                             "<host>:<port> to specify a relay manually.",
                             profile.tier,
                         )
