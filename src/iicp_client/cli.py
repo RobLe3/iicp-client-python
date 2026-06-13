@@ -1229,7 +1229,7 @@ async def _serve(args: argparse.Namespace) -> int:
                     saved = load_node(args.node)
                     if saved is not None:
                         saved.node_token = token
-                        hmac_key = node.node_hmac_key()
+                        hmac_key = node.node_hmac_key
                         if hmac_key:
                             saved.node_hmac_key = hmac_key
                         try:
