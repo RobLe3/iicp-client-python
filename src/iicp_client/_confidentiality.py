@@ -128,3 +128,45 @@ def decrypt_payload(iicp_conf: dict[str, Any], private_key_bytes: bytes) -> dict
 
     plaintext = AESGCM(key).decrypt(nonce, _b64url_decode(iicp_conf["encrypted_body"]), aad_bytes)
     return json.loads(plaintext)
+
+
+# ── Tier-2 §5a.3: bidirectional (response) encryption ────────────────────────
+# Byte-identical to the adapter (CX-Provider) so a node's encrypt_response interops
+# with this decrypt_response. Sealed under the request's session shared secret with a
+# distinct HKDF label so request/response keys differ. Pure primitives; wiring later.
+_RESP_INFO_PREFIX = b"IICP-CX-RESP-v1"
+
+
+def encrypt_response(response: dict[str, Any], shared_secret: bytes, task_id: str) -> dict[str, Any]:
+    """Seal a RESPONSE under the request's session shared secret (IICP-CX §5a.3)."""
+    import os
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.hashes import SHA256
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    nonce = os.urandom(12)
+    key = HKDF(algorithm=SHA256(), length=32, salt=nonce, info=_RESP_INFO_PREFIX + task_id.encode()).derive(
+        shared_secret
+    )
+    aad = (task_id + "|resp").encode()
+    ciphertext = AESGCM(key).encrypt(nonce, json.dumps(response).encode(), aad)
+    return {"version": 1, "nonce": _b64url_encode(nonce), "encrypted_body": _b64url_encode(ciphertext)}
+
+
+def decrypt_response(iicp_conf_resp: dict[str, Any], shared_secret: bytes, task_id: str) -> dict[str, Any]:
+    """Open a node's encrypted RESPONSE (CX-Consumer side, IICP-CX §5a.3)."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.hashes import SHA256
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    missing = {"nonce", "encrypted_body"} - set(iicp_conf_resp)
+    if missing:
+        raise ValueError(f"iicp_conf_resp missing fields: {missing}")
+    nonce = _b64url_decode(iicp_conf_resp["nonce"])
+    key = HKDF(algorithm=SHA256(), length=32, salt=nonce, info=_RESP_INFO_PREFIX + task_id.encode()).derive(
+        shared_secret
+    )
+    aad = (task_id + "|resp").encode()
+    plaintext = AESGCM(key).decrypt(nonce, _b64url_decode(iicp_conf_resp["encrypted_body"]), aad)
+    return json.loads(plaintext)

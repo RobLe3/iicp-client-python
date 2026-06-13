@@ -94,3 +94,16 @@ def test_unsupported_algorithm_raises():
     bad_key = {"algorithm": "RSA", "key": "abc", "key_id": "00000000"}
     with pytest.raises(ValueError, match="Unsupported"):
         encrypt_payload({}, bad_key, "t1", "urn:iicp:intent:llm:chat:v1")
+
+
+def test_response_roundtrip():
+    """Tier-2 §5a.3: response sealing round-trips under a shared secret."""
+    import os
+
+    from iicp_client._confidentiality import decrypt_response, encrypt_response
+
+    shared = os.urandom(32)
+    resp = {"choices": [{"message": {"role": "assistant", "content": "answer"}}]}
+    env = encrypt_response(resp, shared, "task-resp-1")
+    assert set(env) == {"version", "nonce", "encrypted_body"}
+    assert decrypt_response(env, shared, "task-resp-1") == resp
