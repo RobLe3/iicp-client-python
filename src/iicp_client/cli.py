@@ -1954,7 +1954,11 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         if not auto_update_enabled():
             return
         interval = auto_update_interval_s()
-        while not stop_event.wait(interval):
+        # First check soon after startup (≤5 min) so a freshly-published release propagates
+        # fast + observably, instead of waiting a full interval (default 6h); then the cadence.
+        wait = min(interval, 300)
+        while not stop_event.wait(wait):
+            wait = interval
             try:
                 auto_update_tick(
                     _ver,
