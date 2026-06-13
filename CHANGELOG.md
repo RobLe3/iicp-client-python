@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 within the scope of the IICP Software axis (see [`VERSIONING.md`](https://github.com/RobLe3/iicp.network/blob/main/project/VERSIONING.md)
 in the main repo).
 
+## [0.7.62] — 2026-06-13
+
+### Fixed
+- **#10 (serve goes offline):** `cli.py` called `node.node_hmac_key()` but it's a `@property` →
+  `'str' object is not callable` on 0.7.61, failing serve registration across all retries so the
+  node never reached a registered state (heartbeats stopped, directory marked it offline) though
+  the server-side register succeeded. Now read as the property attribute. Regression-tested.
+
+### Changed — privacy-first (mandatory E2E, no opt-out)
+- IICP-CX payload encryption is now **on by default with no opt-out**: the client always encrypts
+  to a node advertising a `cx_public_key` (the `use_confidentiality` flag is a deprecated no-op).
+  The directory, relays, and network see only ciphertext. A node not yet advertising a key gets a
+  transitional plaintext warning during rollout. The executing node still decrypts to run the model
+  (run locally for full privacy).
+- Added Tier-2 response-encryption primitives (`encrypt_response`/`decrypt_response`) — not yet
+  wired into the task flow.
+
 ## [0.7.61] — 2026-06-13
 
 ### Fixed — self-healing tunnel (resilience, #538)
