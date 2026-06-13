@@ -16,7 +16,9 @@ class ClientConfig:
     timeout_ms: int = 30_000
     max_retries: int = 3
     tls_verify: bool = True
-    use_confidentiality: bool = False  # IICP-CX S.16: encrypt payloads when node advertises cx_public_key
+    # DEPRECATED/no-op (#360): IICP-CX encryption is mandatory — the client always
+    # encrypts when the node advertises a cx_public_key, regardless of this flag.
+    use_confidentiality: bool = True
     routing_epsilon: float = 0.05  # ε-greedy exploration probability (R4); 0.0 disables
     # Phase 2 (#496): caller's JWT from directory registration; used to acquire consumer tokens.
     node_token: str | None = None

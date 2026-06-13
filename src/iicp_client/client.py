@@ -239,11 +239,20 @@ class IicpClient:
             if request.source_node_id:
                 body["source_node_id"] = request.source_node_id
 
-            # IICP-CX S.16 §5: encrypt payload when use_confidentiality=True and node advertises a key
-            if self._cfg.use_confidentiality and node.cx_public_key:
+            # IICP-CX S.16: encryption is MANDATORY (privacy-first #360) — there is no
+            # opt-out. Always encrypt when the node advertises a cx_public_key. During the
+            # migration window (#532) a node that advertises no key yet gets a loud warning
+            # and plaintext; once the mesh is key-ready this path becomes fail-closed (P0b).
+            # `use_confidentiality` is retained for back-compat but no longer gates anything.
+            if node.cx_public_key:
                 from iicp_client._confidentiality import encrypt_payload
                 body["iicp_conf"] = encrypt_payload(request.payload, node.cx_public_key, task_id, request.intent)
             else:
+                logging.getLogger(__name__).warning(
+                    "IICP-CX: node %s advertises no encryption key — sending UNENCRYPTED. "
+                    "This is transitional; it will be refused once the mesh is key-ready.",
+                    node.node_id,
+                )
                 body["payload"] = request.payload
 
             # Phase 2 (#496): acquire consumer token if configured
