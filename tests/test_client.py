@@ -215,6 +215,58 @@ def test_chat_sdk02_openai_compat_shape():
 
 
 # ---------------------------------------------------------------------------
+# P0a (#360): mandatory encryption — no opt-out
+# ---------------------------------------------------------------------------
+
+def _cx_key():
+    import base64
+
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    pub = X25519PrivateKey.generate().public_key().public_bytes_raw()
+    return {"algorithm": "X25519", "key": base64.urlsafe_b64encode(pub).rstrip(b"=").decode(), "key_id": "cx-1"}
+
+
+_OK_TASK = {
+    "task_id": "t", "status": "success",
+    "result": {"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+               "usage": {"total_tokens": 1}, "model": "m"},
+    "usage": {"total_tokens": 1},
+}
+
+
+@respx.mock
+def test_p0a_always_encrypts_even_with_optout_off():
+    """The client encrypts whenever the node advertises a cx_public_key — even with
+    use_confidentiality=False. The opt-out no longer disables encryption (no opt-out)."""
+    import json
+
+    nodes = {"nodes": [dict(GOOD_NODES["nodes"][0], cx_public_key=_cx_key())]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    # use_confidentiality=False MUST NOT turn encryption off.
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY, use_confidentiality=False))
+    client.chat([ChatMessage(role="user", content="secret")], ChatOptions(model="m"))
+    body = json.loads(route.calls.last.request.content)
+    assert "iicp_conf" in body, "client must encrypt when the node advertises a key"
+    assert "payload" not in body, "plaintext payload must be absent when encrypting"
+    assert body["iicp_conf"]["recipient_key_id"] == "cx-1"
+
+
+@respx.mock
+def test_p0a_no_key_is_transitional_plaintext():
+    """A node advertising no key → plaintext during the migration window (fail-closed at P0b)."""
+    import json
+
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=GOOD_NODES))  # no cx key
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    client.chat([ChatMessage(role="user", content="hi")], ChatOptions(model="m"))
+    body = json.loads(route.calls.last.request.content)
+    assert "payload" in body and "iicp_conf" not in body
+
+
+# ---------------------------------------------------------------------------
 # SDK-06: node_token must not appear in IicpError message
 # ---------------------------------------------------------------------------
 
