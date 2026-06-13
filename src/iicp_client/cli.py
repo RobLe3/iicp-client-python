@@ -252,10 +252,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="#520 NAT-ladder rung 5: expose this node via a zero-account "
-        "Cloudflare Quick Tunnel (requires cloudflared on PATH; never "
-        "auto-installed). Default: automatic — used only when every other "
-        "NAT path fails (tier ≥ 3, no relay found). --tunnel forces it on; "
-        "--no-tunnel disables the automatic escalation. env: IICP_TUNNEL=1/0",
+        "Cloudflare Quick Tunnel for its OWN public endpoint (requires cloudflared "
+        "on PATH; never auto-installed). Default: automatic — on tier ≥ 3 "
+        "(CGNAT/unreachable) the node tries a tunnel FIRST, falling back to a relay "
+        "only if the tunnel fails. --tunnel forces it on regardless of tier; "
+        "--no-tunnel disables it (relay becomes first). env: IICP_TUNNEL=1/0",
     )
     serve.add_argument(
         "--relay-capable",
