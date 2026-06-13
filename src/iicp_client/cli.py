@@ -1072,26 +1072,25 @@ async def _serve(args: argparse.Namespace) -> int:
                 getattr(profile, "public_endpoint", None) or "(none)",
             )
             node.apply_nat_profile(profile)
-            # Tier ≥ 3 (unreachable/CGNAT with no IPv6 fallback), no relay configured →
-            # TUNNEL-FIRST, relay = last resort (maintainer 2026-06-13 choreography:
-            # tunnel → relay → gossip). A zero-account Quick Tunnel gives the node its OWN
-            # public https endpoint — more autonomous than depending on a third-party relay
-            # (which sees routing metadata; relay-bind auth is #510) and one less hop. The
-            # tunnel-URL rotation risk is mitigated by the self-healing watchdog (#538).
-            # --no-tunnel / IICP_TUNNEL=0 opts out of the tunnel → relay becomes first again.
-            if getattr(profile, "tier", 0) >= 3 and not relay_worker_ep:
-                # (1) Quick Tunnel (rung 5) — the autonomous public endpoint.
-                if _tunnel_pref is not False:
+            # Reachability escalation for a tier-≥3 (CGNAT/unreachable, no IPv6) node with no
+            # operator-configured relay. Order comes from the pure, unit-tested planner
+            # plan_reachability() (tunnel-FIRST, relay = last resort; maintainer 2026-06-13):
+            # a self-hosted Quick Tunnel is more autonomous than a third-party relay (no relay
+            # metadata/#510, one less hop; rotation mitigated by #538). --no-tunnel/IICP_TUNNEL=0
+            # → relay-first. Following the planner here keeps the tested order = the used order.
+            for _step in plan_reachability(
+                getattr(profile, "tier", 0), bool(relay_worker_ep), _tunnel_pref is not False
+            ):
+                if _step == "tunnel":
                     logger.info(
-                        "NAT tier=%d: no direct or IPv6 endpoint — opening Quick Tunnel (rung 5) "
-                        "for an autonomous public endpoint.",
+                        "NAT tier=%d: opening Quick Tunnel (rung 5) for an autonomous public endpoint.",
                         profile.tier,
                     )
                     _tunnel = _open_tunnel_rung(node, args.port, forced=False)
                     if _tunnel is not None:
                         public_endpoint = _tunnel.url
-                # (2) Relay = last resort — only if no tunnel (disabled or unavailable).
-                if _tunnel is None:
+                        break
+                elif _step == "relay":
                     logger.info(
                         "NAT tier=%d: no tunnel — querying directory for a relay-capable peer (last resort).",
                         profile.tier,
@@ -1106,15 +1105,15 @@ async def _serve(args: argparse.Namespace) -> int:
                             relay_host,
                             relay_port,
                         )
-                    else:
-                        # (3) No tunnel + no relay → mesh gossip to discover relays.
-                        logger.warning(
-                            "NAT tier=%d: no tunnel and no relay-capable peers found. Enabling mesh "
-                            "to discover relays via gossip. Set IICP_RELAY_WORKER_ENDPOINT="
-                            "<host>:<port> to specify a relay manually.",
-                            profile.tier,
-                        )
-                        cfg.enable_mesh = True
+                        break
+                elif _step == "gossip":
+                    logger.warning(
+                        "NAT tier=%d: no tunnel and no relay-capable peers found. Enabling mesh "
+                        "to discover relays via gossip. Set IICP_RELAY_WORKER_ENDPOINT="
+                        "<host>:<port> to specify a relay manually.",
+                        profile.tier,
+                    )
+                    cfg.enable_mesh = True
         except Exception as exc:  # noqa: BLE001
             logger.warning("NAT detection failed: %s — continuing without it", exc)
     else:
@@ -1288,6 +1287,22 @@ async def _serve(args: argparse.Namespace) -> int:
             _tunnel.close()  # #520 — tear the Quick Tunnel down with the node
         _instance_lock.release()  # #405 — free the pidfile on shutdown
     return 0
+
+
+def plan_reachability(tier: int, relay_configured: bool, tunnel_enabled: bool) -> list[str]:
+    """Pure reachability escalation planner (tunnel-FIRST, relay = last resort; maintainer
+    2026-06-13). Returns the ordered attempt sequence for a tier-≥3 node with no explicitly
+    configured relay; empty for tier<3 or an operator-configured relay (no auto-escalation).
+
+    Tunnel-first because a self-hosted Quick Tunnel gives the node its OWN public endpoint —
+    more autonomous than a third-party relay (no relay metadata/#510, one less hop). Disabling
+    the tunnel (--no-tunnel / IICP_TUNNEL=0 → tunnel_enabled=False) restores relay-first.
+
+    Parity: identical order in the TS/Rust SDKs. Unit-tested so the reorder can't silently break.
+    """
+    if tier < 3 or relay_configured:
+        return []
+    return (["tunnel"] if tunnel_enabled else []) + ["relay", "gossip"]
 
 
 def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
