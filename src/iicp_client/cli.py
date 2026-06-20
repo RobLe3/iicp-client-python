@@ -1945,6 +1945,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         from iicp_client import __version__ as _ver
         from iicp_client.updater import (
             auto_update_enabled,
+            auto_update_initial_delay_s,
             auto_update_interval_s,
             auto_update_tick,
             latest_pypi_version,
@@ -1956,7 +1957,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         interval = auto_update_interval_s()
         # First check soon after startup (≤5 min) so a freshly-published release propagates
         # fast + observably, instead of waiting a full interval (default 6h); then the cadence.
-        wait = min(interval, 300)
+        wait = auto_update_initial_delay_s(interval)
         while not stop_event.wait(wait):
             wait = interval
             try:

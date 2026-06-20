@@ -112,6 +112,11 @@ def auto_update_interval_s(default: int = 21600) -> int:
         return default
 
 
+def auto_update_initial_delay_s(interval: int) -> int:
+    """Delay before the first background check; never later than five minutes."""
+    return min(interval, 300)
+
+
 def auto_update_tick(
     current: str,
     latest: str | None,

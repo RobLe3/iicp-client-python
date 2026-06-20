@@ -8,7 +8,7 @@ import pytest
 
 from iicp_client import updater
 from iicp_client.cli import _build_parser, main
-from iicp_client.updater import auto_update_tick
+from iicp_client.updater import auto_update_initial_delay_s, auto_update_tick
 
 
 class TestVersionCompare:
@@ -119,3 +119,11 @@ def test_auto_update_tick_failed_upgrade_does_not_reexec():
     )
     assert result == "upgrade-failed"
     assert reexec_calls == []  # no restart on a failed upgrade
+
+
+@pytest.mark.parametrize(
+    ("interval", "expected"),
+    [(300, 300), (900, 300), (21600, 300)],
+)
+def test_auto_update_initial_delay_is_at_most_five_minutes(interval, expected):
+    assert auto_update_initial_delay_s(interval) == expected
