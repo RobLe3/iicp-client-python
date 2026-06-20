@@ -446,6 +446,16 @@ class IicpNode:
         self._liveness_challenge: str | None = None
         # BUG-5: token stashed by register() so deregister()/heartbeat don't need it re-passed.
         self._node_token: str = ""
+        try:
+            from iicp_client._confidentiality import load_or_create_node_cx_key
+
+            self._cx_public_key, self._cx_private_key = load_or_create_node_cx_key(
+                config.node_id, config.endpoint
+            )
+        except Exception as exc:
+            logger.warning("IICP-CX provider key unavailable; node will not advertise CX: %s", exc)
+            self._cx_public_key = None
+            self._cx_private_key = None
         # #494 — models registered at last register(); used for drift detection in heartbeat.
         self._registered_models: frozenset[str] = frozenset()
         # #343 — UPnP IPv6 pinhole tracking. Set by apply_nat_profile() when
@@ -614,6 +624,8 @@ class IicpNode:
 
         payload["sdk_language"] = "python"
         payload["sdk_version"] = _iicp_client_version
+        if self._cx_public_key:
+            payload["cx_public_key"] = self._cx_public_key
         if self._cfg.backend:
             payload["backend"] = self._cfg.backend
         if self._cfg.relay_capable:
@@ -1360,6 +1372,25 @@ class IicpNode:
                         self.end_headers()
                         self.wfile.write(err)
                         return
+
+                    if isinstance(body.get("iicp_conf"), dict) and "payload" not in body:
+                        if not node._cx_private_key:
+                            err = json.dumps(
+                                {"error": {"code": "IICP-CX-01", "message": "node has no CX private key"}}
+                            ).encode()
+                            self._json_response(400, err)
+                            return
+                        try:
+                            from iicp_client._confidentiality import decrypt_payload
+
+                            body["payload"] = decrypt_payload(body["iicp_conf"], node._cx_private_key)
+                            body["_cx_encrypted"] = True
+                        except Exception as exc:
+                            err = json.dumps(
+                                {"error": {"code": "IICP-CX-02", "message": f"iicp_conf decrypt failed: {exc}"}}
+                            ).encode()
+                            self._json_response(400, err)
+                            return
 
                     # W3C traceparent propagation
                     traceparent = self.headers.get("traceparent")

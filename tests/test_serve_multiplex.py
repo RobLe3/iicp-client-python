@@ -10,11 +10,13 @@ IICP CALL would hit the HTTP parser and never get a RESPONSE.
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 from http.client import HTTPConnection
 from typing import Any
 
 from iicp_client import IicpNode, NodeConfig
+from iicp_client._confidentiality import encrypt_payload
 from iicp_client.iicp_tcp import IicpTcpClient
 from iicp_client.node import derive_native_endpoint
 
@@ -39,6 +41,17 @@ def _http_health(port: int) -> int:
     status = conn.getresponse().status
     conn.close()
     return status
+
+
+def _http_task(port: int, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    raw = json.dumps(body).encode()
+    conn = HTTPConnection("127.0.0.1", port, timeout=3)
+    conn.request("POST", "/v1/task", body=raw, headers={"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    data = json.loads(resp.read().decode())
+    status = resp.status
+    conn.close()
+    return status, data
 
 
 async def _wait_port(port: int) -> None:
@@ -91,3 +104,42 @@ def test_derive_native_endpoint() -> None:
     assert derive_native_endpoint("http://203.0.113.5:9484") == "iicp://203.0.113.5:9484"
     assert derive_native_endpoint("https://node.example:9484") == "iicpsec://node.example:9484"
     assert derive_native_endpoint("not-a-url") is None
+
+
+async def test_http_task_decrypts_iicp_conf(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("IICP_CX_KEY_DIR", str(tmp_path / "cx"))
+    cfg = NodeConfig(
+        node_id="cx-node",
+        endpoint="http://cx-node.local",
+        intent=CHAT,
+        region="test-region",
+        model="test-model",
+        max_concurrent=4,
+    )
+    node = IicpNode(cfg)
+    captured: dict[str, Any] = {}
+
+    async def handler(task: dict[str, Any]) -> dict[str, Any]:
+        captured.update(task)
+        return {"result": {"ok": True, "payload": task.get("payload")}}
+
+    port = _free_port()
+    serve_task = asyncio.create_task(node.serve(handler, host="127.0.0.1", port=port, node_token=None))
+    try:
+        await _wait_port(port)
+        payload = {"messages": [{"role": "user", "content": "secret"}]}
+        env = encrypt_payload(payload, node._cx_public_key, "cx-task-1", CHAT)
+        status, body = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: _http_task(port, {"task_id": "cx-task-1", "intent": CHAT, "iicp_conf": env}),
+        )
+        assert status == 200
+        assert body["status"] == "completed"
+        assert captured["payload"] == payload
+        assert captured["_cx_encrypted"] is True
+    finally:
+        serve_task.cancel()
+        try:
+            await serve_task
+        except asyncio.CancelledError:
+            pass

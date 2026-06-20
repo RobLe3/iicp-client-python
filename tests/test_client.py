@@ -327,12 +327,13 @@ def test_sdk06_traceparent_sent_on_discover():
 
 
 @respx.mock
-def test_node_register_payload_spec_compliant():
+def test_node_register_payload_spec_compliant(monkeypatch, tmp_path):
     """iter-1411: register payload matches spec/iicp-dir.md §3.1 — capabilities is an
     array of {intent, models, max_tokens} objects, not a flat intent string."""
     route = respx.post("https://iicp.test/v1/register").mock(
         return_value=httpx.Response(201, json={"node_token": "tok-1", "node_id": "n-1"})
     )
+    monkeypatch.setenv("IICP_CX_KEY_DIR", str(tmp_path / "cx"))
     node = IicpNode(
         NodeConfig(
             node_id="n-1",
@@ -362,6 +363,9 @@ def test_node_register_payload_spec_compliant():
         }
     ]
     assert "transport_endpoint" not in payload  # not set → not sent
+    assert payload["cx_public_key"]["algorithm"] == "X25519"
+    assert payload["cx_public_key"]["encoding"] == "base64url"
+    assert payload["cx_public_key"]["key_id"].startswith("cx-")
     assert "intent" not in payload  # spec rejects flat intent at top level
 
 
