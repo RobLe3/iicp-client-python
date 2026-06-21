@@ -8,7 +8,12 @@ import pytest
 
 from iicp_client import updater
 from iicp_client.cli import _build_parser, main
-from iicp_client.updater import auto_update_initial_delay_s, auto_update_tick
+from iicp_client.updater import (
+    auto_update_enabled,
+    auto_update_initial_delay_s,
+    auto_update_interval_s,
+    auto_update_tick,
+)
 
 
 class TestVersionCompare:
@@ -127,3 +132,24 @@ def test_auto_update_tick_failed_upgrade_does_not_reexec():
 )
 def test_auto_update_initial_delay_is_at_most_five_minutes(interval, expected):
     assert auto_update_initial_delay_s(interval) == expected
+
+
+def test_auto_update_enabled_env_opt_out(monkeypatch):
+    monkeypatch.delenv("IICP_AUTO_UPDATE", raising=False)
+    assert auto_update_enabled() is True
+    for value in ("0", "false", "no", "off"):
+        monkeypatch.setenv("IICP_AUTO_UPDATE", value)
+        assert auto_update_enabled() is False
+    monkeypatch.setenv("IICP_AUTO_UPDATE", "1")
+    assert auto_update_enabled() is True
+
+
+def test_auto_update_interval_env_floor_and_bad_value(monkeypatch):
+    monkeypatch.delenv("IICP_AUTO_UPDATE_INTERVAL_S", raising=False)
+    assert auto_update_interval_s() == 21600
+    monkeypatch.setenv("IICP_AUTO_UPDATE_INTERVAL_S", "42")
+    assert auto_update_interval_s() == 300
+    monkeypatch.setenv("IICP_AUTO_UPDATE_INTERVAL_S", "900")
+    assert auto_update_interval_s() == 900
+    monkeypatch.setenv("IICP_AUTO_UPDATE_INTERVAL_S", "not-a-number")
+    assert auto_update_interval_s() == 21600
