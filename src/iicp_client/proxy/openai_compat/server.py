@@ -85,6 +85,7 @@ def create_compat_app() -> FastAPI:
         cip_config = getattr(request.app.state, "cip_config", None)
         session_tracker = getattr(request.app.state, "cip_budget_tracker", None)
         node_token = getattr(request.app.state, "node_token", None)
+        source_node_id = getattr(request.app.state, "node_id", None)
 
         task_id, intent, payload = to_iicp_task(body)
         timeout_ms = int(body.get("timeout_ms", 30000))
@@ -124,7 +125,9 @@ def create_compat_app() -> FastAPI:
 
             # Phase 3.4: parallel redundancy for realtime QoS
             if qos in REALTIME_QOS and aggregator is not None and len(nodes) > 1:
-                response = await aggregator.execute(nodes, task_id, intent, payload, timeout_ms)
+                response = await aggregator.execute(
+                    nodes, task_id, intent, payload, timeout_ms, source_node_id=source_node_id,
+                )
             else:
                 response = await fallback_chain.execute(
                     nodes, task_id, intent, payload, timeout_ms,
@@ -132,6 +135,7 @@ def create_compat_app() -> FastAPI:
                     cip_policy=cip_block.get("policy", "best_of_n"),
                     cip_replicas=int(cip_block.get("replicas", 1)),
                     cip_quorum=cip_block.get("quorum"),
+                    source_node_id=source_node_id,
                 )
 
         return _format_completion_response(response, body)

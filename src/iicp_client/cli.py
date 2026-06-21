@@ -113,6 +113,32 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report current vs latest published version (read-only — never installs).",
     )
+    service = sub.add_parser(
+        "service",
+        help="Generate/install OS supervisor units for unattended node serving.",
+    )
+    svc_sub = service.add_subparsers(dest="service_cmd", required=True)
+    svc_install = svc_sub.add_parser("install", help="Install or print a launchd/systemd user service.")
+    svc_install.add_argument(
+        "--node",
+        required=True,
+        help="Saved node name to serve (runs: iicp-node serve --node <NAME>).",
+    )
+    svc_install.add_argument("--name", help="Override service label/unit name.")
+    svc_install.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
+    svc_install.add_argument("--dry-run", action="store_true", help="Print the generated unit and do not write files.")
+    svc_status = svc_sub.add_parser("status", help="Print the OS command to inspect service status.")
+    svc_status.add_argument("--node", required=True)
+    svc_status.add_argument("--name")
+    svc_status.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
+    svc_restart = svc_sub.add_parser("restart", help="Print the OS command to restart the service.")
+    svc_restart.add_argument("--node", required=True)
+    svc_restart.add_argument("--name")
+    svc_restart.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
+    svc_uninstall = svc_sub.add_parser("uninstall", help="Print the OS command to uninstall the service.")
+    svc_uninstall.add_argument("--node", required=True)
+    svc_uninstall.add_argument("--name")
+    svc_uninstall.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
 
     serve = sub.add_parser("serve", help="Register and serve a node.")
     serve.add_argument(
@@ -2013,6 +2039,48 @@ def _cmd_update(args: object) -> int:
     return 0
 
 
+def _cmd_service(args: object) -> int:
+    """`iicp-node service ...` — OS-supervisor helper (#551).
+
+    The service runs the normal foreground `serve --node <name>` command.
+    Generated units default managed nodes to hourly updater checks while
+    respecting existing IICP_AUTO_UPDATE* environment overrides.
+    """
+    from iicp_client.service import render_unit
+
+    node = args.node
+    name = getattr(args, "name", None)
+    platform = getattr(args, "platform", "auto")
+    unit = render_unit(node, name=name, platform=platform)
+    cmd = args.service_cmd
+
+    if cmd == "install":
+        if getattr(args, "dry_run", False):
+            sys.stdout.write(f"# {unit.platform} service: {unit.name}\n# path: {unit.path}\n")
+            sys.stdout.write(unit.content)
+        else:
+            unit.path.parent.mkdir(parents=True, exist_ok=True)
+            unit.path.write_text(unit.content)
+            sys.stdout.write(f"Installed {unit.platform} service unit: {unit.path}\n")
+        sys.stdout.write(f"status:   {unit.status_hint}\n")
+        sys.stdout.write(f"restart:  {unit.restart_hint}\n")
+        sys.stdout.write(f"logs:     {unit.log_hint}\n")
+        sys.stdout.write(
+            "Note: no classic --daemon fork is used; "
+            "the OS supervisor runs foreground `iicp-node serve`.\n"
+        )
+        return 0
+    if cmd == "status":
+        sys.stdout.write(unit.status_hint + "\n")
+        return 0
+    if cmd == "restart":
+        sys.stdout.write(unit.restart_hint + "\n")
+        return 0
+    if cmd == "uninstall":
+        sys.stdout.write(unit.uninstall_hint + "\n")
+        return 0
+    raise ValueError(f"unknown service subcommand: {cmd}")
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     raw_argv = sys.argv[1:] if argv is None else argv
@@ -2041,6 +2109,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_list(args)
     if args.cmd == "update":
         return _cmd_update(args)
+    if args.cmd == "service":
+        return _cmd_service(args)
     if args.cmd == "query":
         return asyncio.run(_cmd_query_async(args))
     if args.cmd == "credits":

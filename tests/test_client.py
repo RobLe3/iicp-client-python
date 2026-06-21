@@ -254,6 +254,22 @@ def test_p0a_always_encrypts_even_with_optout_off():
 
 
 @respx.mock
+def test_p0a_encrypts_with_directory_public_key_alias():
+    """Deprecated directory public_key alias still encrypts as cx_public_key."""
+    import json
+
+    nodes = {"nodes": [dict(GOOD_NODES["nodes"][0], public_key=_cx_key())]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    client.chat([ChatMessage(role="user", content="secret")], ChatOptions(model="m"))
+    body = json.loads(route.calls.last.request.content)
+    assert "iicp_conf" in body, "client must encrypt when directory exposes deprecated public_key alias"
+    assert "payload" not in body
+    assert body["iicp_conf"]["recipient_key_id"] == "cx-1"
+
+
+@respx.mock
 def test_p0a_no_key_is_transitional_plaintext():
     """A node advertising no key → plaintext during the migration window (fail-closed at P0b)."""
     import json

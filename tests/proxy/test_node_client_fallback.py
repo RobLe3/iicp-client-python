@@ -4,6 +4,7 @@ Tests the fallback chain when HTTP endpoint fails and transport_endpoint is avai
 """
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import httpx
@@ -177,3 +178,27 @@ async def test_http_status_error_triggers_fallback():
 
     assert result["status"] == "success"
     assert result["result"]["text"] == "recovered"
+
+@respx.mock
+async def test_submit_task_forwards_source_node_id_for_self_query_neutrality():
+    """#525/G1b: proxy/coordinator dispatch identifies the querying node for credit neutrality."""
+    node_token = "test-token"
+    endpoint = "http://node1:8080"
+    task_id = uuid4()
+
+    route = respx.post(f"{endpoint}/v1/task").mock(
+        return_value=Response(200, json={"status": "success", "result": {"text": "ok"}})
+    )
+
+    client = NodeClient(endpoint, node_token)
+    result = await client.submit_task(
+        task_id,
+        "urn:iicp:intent:llm:chat:v1",
+        {"messages": []},
+        5000,
+        source_node_id="consumer-node-1",
+    )
+
+    assert result["status"] == "success"
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["source_node_id"] == "consumer-node-1"

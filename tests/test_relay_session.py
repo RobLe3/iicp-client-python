@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import struct
 from unittest.mock import AsyncMock, MagicMock
 
 import cbor2
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from iicp_client.iicp_tcp import (
     MsgType,
@@ -170,15 +173,15 @@ async def _read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
     return mt, payload
 
 
-async def _start_server(registry: RelaySessionRegistry) -> tuple[RelayAcceptServer, int]:
-    srv = RelayAcceptServer(registry, host="127.0.0.1", port=0)
+async def _start_server(registry: RelaySessionRegistry, **opts) -> tuple[RelayAcceptServer, int]:
+    srv = RelayAcceptServer(registry, host="127.0.0.1", port=0, **opts)
     await srv.start()
     port = srv._server.sockets[0].getsockname()[1]
     return srv, port
 
 
 async def _bind_worker(
-    port: int, worker_id: str
+    port: int, worker_id: str, bind_ticket: str | None = None
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, dict]:
     """Wire-level worker: INIT/ACK + RELAY_BIND; returns the RELAY_ACK body."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
@@ -186,16 +189,28 @@ async def _bind_worker(
     await writer.drain()
     mt, _ = await asyncio.wait_for(_read_frame(reader), timeout=5.0)
     assert mt == _MT_ACK
-    writer.write(
-        _frame(
-            _MT_RELAY_BIND,
-            cbor2.dumps({1: worker_id, 2: "urn:iicp:intent:llm:chat:v1", 3: []}),
-        )
-    )
+    bind = {1: worker_id, 2: "urn:iicp:intent:llm:chat:v1", 3: []}
+    if bind_ticket:
+        bind[4] = bind_ticket
+    writer.write(_frame(_MT_RELAY_BIND, cbor2.dumps(bind)))
     await writer.drain()
     mt, payload = await asyncio.wait_for(_read_frame(reader), timeout=5.0)
     assert mt == _MT_RELAY_ACK
     return reader, writer, cbor2.loads(payload)
+
+
+def _signed_ticket(worker_id: str, relay_id: str) -> tuple[str, str]:
+    private = Ed25519PrivateKey.generate()
+    public_hex = private.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    ).hex()
+    payload = base64.urlsafe_b64encode(json.dumps({
+        "v": 1, "typ": "relay-bind-ticket", "iss": "test",
+        "sub": worker_id, "aud": relay_id, "iat": 1, "exp": 9_999_999_999,
+    }, separators=(",", ":")).encode()).decode().rstrip("=")
+    sig = private.sign(b"iicp:relay-bind-ticket:v1\n" + payload.encode()).hex()
+    return f"{payload}.{sig}", public_hex
 
 
 class TestRelayBindHardening:
@@ -265,6 +280,37 @@ class TestRelayBindHardening:
                 assert reg.is_bound("w-reconnect")
                 assert reg.get("w-reconnect").is_alive()
 
+                writer_b.close()
+            finally:
+                await srv.stop()
+
+        asyncio.run(_run())
+
+    def test_strict_bind_ticket_accepts_valid_and_rejects_wrong_worker(self):
+        async def _run():
+            reg = RelaySessionRegistry()
+            good_ticket, pub_hex = _signed_ticket("w-ticket", "relay-test")
+            bad_ticket, _ = _signed_ticket("attacker", "relay-test")
+            srv, port = await _start_server(
+                reg,
+                require_bind_ticket=True,
+                bind_ticket_public_key_hex=pub_hex,
+                relay_node_id="relay-test",
+            )
+            try:
+                _reader_a, writer_a, ack_a = await _bind_worker(port, "w-ticket", good_ticket)
+                assert ack_a[1] == "ok"
+                writer_a.close()
+                await writer_a.wait_closed()
+                for _ in range(200):
+                    s = reg.get("w-ticket")
+                    if s is None or not s.is_alive():
+                        break
+                    await asyncio.sleep(0.01)
+
+                _reader_b, writer_b, ack_b = await _bind_worker(port, "w-ticket", bad_ticket)
+                assert ack_b[1] == "error"
+                assert ack_b[3] == "relay bind ticket invalid"
                 writer_b.close()
             finally:
                 await srv.stop()

@@ -92,7 +92,7 @@ async def test_fallback_passes_cip_envelope_to_router():
     node = {"node_id": "n-cip", "endpoint": "http://cip-worker", "region": "eu-central",
             "available": True}
 
-    async def capturing_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def capturing_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         captured.append({"cip_envelope": cip_envelope})
         # Echo back the session key so CIP-BIND-01 check passes
         sk = (cip_envelope or {}).get("cip_session_key")
@@ -123,7 +123,7 @@ async def test_cip_agg_present_on_success():
     cip_env = {"cip_role": "worker", "cip_session_key": "sess-agg-test"}
     node = {"node_id": "worker-agg-01", "endpoint": "http://worker1", "region": "eu-central", "available": True}
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         sk = (cip_envelope or {}).get("cip_session_key")
         return {"status": "success", "task_id": str(tid), "result": {}, "metrics": {"latency_ms": 5},
                 "trace": {"cip_session_key": sk}}
@@ -152,7 +152,7 @@ async def test_cip_agg_zero_responded_when_all_fail():
     cip_env = {"cip_role": "worker", "cip_session_key": "sess-fail-test"}
     node = {"node_id": "worker-fail", "endpoint": "http://fail-worker", "region": "eu-central", "available": True}
 
-    async def failing_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def failing_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         raise RuntimeError("worker down")
 
     chain = make_chain()
@@ -202,7 +202,7 @@ async def test_cip_agg_majority_vote_includes_vote_fields():
     cip_env = {"cip_role": "worker", "cip_session_key": "sess-mv"}
     node = {"node_id": "worker-mv", "endpoint": "http://mv-worker", "region": "eu-central", "available": True}
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         sk = (cip_envelope or {}).get("cip_session_key")
         return {"status": "success", "task_id": str(tid), "result": {}, "metrics": {"latency_ms": 5},
                 "trace": {"cip_session_key": sk}}
@@ -237,7 +237,7 @@ async def test_cip_bind_matching_key_accepted():
     cip_env = {"cip_role": "worker", "cip_session_key": session_key}
     node = {"node_id": "worker-1", "endpoint": "http://worker1", "region": "eu-central", "available": True}
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         return {
             "status": "success",
             "task_id": str(tid),
@@ -267,7 +267,7 @@ async def test_cip_bind_wrong_key_discarded_tries_next():
     n2 = {"node_id": "worker-good", "endpoint": "http://worker2", "region": "eu-central", "available": True}
     calls: list[str] = []
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         nid = n.get("node_id", "")
         calls.append(nid)
         if nid == "worker-bad":
@@ -306,7 +306,7 @@ async def test_cip_bind_missing_key_discarded():
     cip_env = {"cip_role": "worker", "cip_session_key": session_key}
     node = {"node_id": "worker-1", "endpoint": "http://worker1", "region": "eu-central", "available": True}
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         # No trace at all — key is missing
         return {"status": "success", "task_id": str(tid), "result": {}, "metrics": {"latency_ms": 5}}
 
@@ -329,7 +329,7 @@ async def test_cip_bind_no_check_without_cip_envelope():
 
     node = {"node_id": "worker-1", "endpoint": "http://worker1", "region": "eu-central", "available": True}
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         # Response with no trace — should be fine when not CIP
         return {"status": "success", "task_id": str(tid), "result": {}, "metrics": {"latency_ms": 5}}
 
@@ -389,7 +389,7 @@ async def test_cip_cr1_wire_submit_award_called_on_cip_receipt():
         "response_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     }
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         sk = (cip_envelope or {}).get("cip_session_key")
         return {
             "status": "success", "task_id": str(tid), "result": {}, "metrics": {"latency_ms": 5},
@@ -422,7 +422,7 @@ async def test_cip_cr1_wire_no_award_without_cip_receipt():
             "available": True, "load": 0.1, "active_jobs": 0, "max_concurrent": 4}
     cip_env = {"cip_session_key": "sess_TEST02", "cip_role": "worker"}
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         sk = (cip_envelope or {}).get("cip_session_key")
         return {
             "status": "success", "task_id": str(tid), "result": {}, "metrics": {"latency_ms": 5},
@@ -459,7 +459,7 @@ async def test_cip_cr1_wire_no_award_when_no_replay_cache():
         "response_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     }
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         sk = (cip_envelope or {}).get("cip_session_key")
         return {
             "status": "success", "task_id": str(tid), "result": {}, "metrics": {"latency_ms": 5},
@@ -497,7 +497,7 @@ async def test_cip_response_hash_mismatch_discards_retries_next():
 
     correct_hash = __import__("hashlib").sha256(b'{"answer":"hi"}').hexdigest()
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         nid = n.get("node_id", "")
         calls.append(nid)
         sk = (cip_envelope or {}).get("cip_session_key")
@@ -536,7 +536,7 @@ async def test_cip_response_hash_missing_discards_node():
     cip_env = {"cip_role": "worker", "cip_session_key": "sess-e2e04b"}
     node = {"node_id": "worker-no-hash", "endpoint": "http://n1", "region": "eu-central", "available": True}
 
-    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None):
+    async def mock_route(n, tid, intent, payload, tms, cip_envelope=None, **_kwargs):
         sk = (cip_envelope or {}).get("cip_session_key")
         return {
             "status": "success", "task_id": str(tid), "result": {},

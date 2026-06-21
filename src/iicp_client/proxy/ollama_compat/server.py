@@ -75,6 +75,7 @@ async def _execute_iicp(request: Request, body: dict[str, Any]) -> dict[str, Any
     cip_config = getattr(request.app.state, "cip_config", None)
     session_tracker = getattr(request.app.state, "cip_budget_tracker", None)
     node_token = getattr(request.app.state, "node_token", None)
+    source_node_id = getattr(request.app.state, "node_id", None)
 
     task_id, intent, payload = to_iicp_task(body)
     timeout_ms = int(body.get("timeout_ms", 30000))
@@ -104,6 +105,7 @@ async def _execute_iicp(request: Request, body: dict[str, Any]) -> dict[str, Any
             cip_policy=cip_block.get("policy", "best_of_n"),
             cip_replicas=int(cip_block.get("replicas", 1)),
             cip_quorum=cip_block.get("quorum"),
+            source_node_id=source_node_id,
         )
 
     return response

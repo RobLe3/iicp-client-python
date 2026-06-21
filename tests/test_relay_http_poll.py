@@ -14,6 +14,7 @@ Covers (fails if the #450 implementation is reverted):
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import json
 import socket
@@ -23,6 +24,8 @@ from http.client import HTTPConnection
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from iicp_client import IicpNode, NodeConfig
 from iicp_client.relay_session import (
@@ -31,6 +34,18 @@ from iicp_client.relay_session import (
 )
 
 # ── helpers (same harness pattern as test_serve.py) ──────────────────────────
+
+
+def _signed_ticket(worker_id: str, relay_id: str) -> tuple[str, str]:
+    sk = Ed25519PrivateKey.generate()
+    pub_hex = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+    payload = json.dumps({
+        "v": 1, "typ": "relay-bind-ticket", "iss": "test", "sub": worker_id, "aud": relay_id,
+        "iat": 1, "exp": 9999999999,
+    }, separators=(",", ":")).encode()
+    b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    sig = sk.sign(b"iicp:relay-bind-ticket:v1\n" + b64.encode()).hex()
+    return f"{b64}.{sig}", pub_hex
 
 
 def _free_port() -> int:
@@ -184,13 +199,15 @@ class TestHttpPollWorkerSession:
 
 
 class TestRelayHttpPollEndpoints:
-    def _bind(self, relay, worker_id="w-e2e", models=None):
-        status, body, headers = relay.request(
-            "POST",
-            "/v1/relay/bind",
-            {"worker_id": worker_id, "intent": "urn:iicp:intent:llm:chat:v1",
-             "models": models or ["tinyllama-1.1b"]},
-        )
+    def _bind(self, relay, worker_id="w-e2e", models=None, extra=None):
+        payload = {
+            "worker_id": worker_id,
+            "intent": "urn:iicp:intent:llm:chat:v1",
+            "models": models or ["tinyllama-1.1b"],
+        }
+        if extra:
+            payload.update(extra)
+        status, body, headers = relay.request("POST", "/v1/relay/bind", payload)
         return status, body, headers
 
     def test_bind_returns_token_and_cors(self, relay):
@@ -206,6 +223,21 @@ class TestRelayHttpPollEndpoints:
         status2, body2, _ = self._bind(relay, worker_id="w-rebind")
         assert status2 == 409
         assert body2["error"]["code"] == "IICP-E038"
+
+    def test_strict_bind_ticket_mode_accepts_valid_and_rejects_wrong_workers(self, relay, monkeypatch):
+        good_ticket, pub_hex = _signed_ticket("w-http-ticket", "relay-node")
+        bad_ticket, _ = _signed_ticket("attacker", "relay-node")
+        monkeypatch.setenv("IICP_RELAY_BIND_TICKET_PUBLIC_KEY", pub_hex)
+        monkeypatch.setenv("IICP_RELAY_REQUIRE_BIND_TICKET", "1")
+
+        status, _, _ = self._bind(relay, worker_id="w-http-ticket", models=[], extra={"bind_ticket": good_ticket})
+        assert status == 200
+        status, body, _ = self._bind(relay, worker_id="w-http-ticket-2", models=[], extra={"bind_ticket": bad_ticket})
+        assert status == 401
+        assert body["error"]["code"] == "IICP-E040"
+        status, body, _ = self._bind(relay, worker_id="w-http-ticket-missing", models=[])
+        assert status == 401
+        assert body["error"]["code"] == "IICP-E040"
 
     def test_bind_requires_worker_id(self, relay):
         status, body, _ = relay.request("POST", "/v1/relay/bind", {"intent": "x"})

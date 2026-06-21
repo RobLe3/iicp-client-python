@@ -46,6 +46,7 @@ class ResultAggregator:
         intent: str,
         payload: dict,
         timeout_ms: int,
+        source_node_id: str | None = None,
     ) -> dict:
         """Race up to `fan_out` nodes; cancel losers as soon as one wins.
 
@@ -82,7 +83,7 @@ class ResultAggregator:
         targets = nodes[: self._fan_out]
         tasks = [
             asyncio.create_task(
-                self._router.route(node, task_id, intent, payload, timeout_ms),
+                self._router.route(node, task_id, intent, payload, timeout_ms, source_node_id=source_node_id),
                 name=f"redundant-{node.get('node_id', '')[:8]}",
             )
             for node in targets

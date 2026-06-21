@@ -73,6 +73,7 @@ class NodeClient:
         timeout_ms: int,
         trace_id: str | None = None,
         cip_envelope: dict[str, Any] | None = None,
+        source_node_id: str | None = None,
     ) -> dict[str, Any]:
         """Submit a task with HTTP→native IICP fallback (spec v0.7.0 dual-endpoint).
 
@@ -88,6 +89,10 @@ class NodeClient:
             "constraints": {"timeout_ms": timeout_ms},
             "auth": {"node_token": self._token},
         }
+        if source_node_id:
+            # #525/G1b: proxy/coordinator dispatches identify the querying node so
+            # credit self-query neutrality can apply at the directory when receipts are awarded.
+            body["source_node_id"] = source_node_id
         # Assemble trace block — merge trace_id + CIP coordinator role (S.12 §4.2 CIP-CALL-06)
         trace_block: dict[str, Any] = {}
         if trace_id:

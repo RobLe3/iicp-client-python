@@ -58,6 +58,7 @@ class TaskRouter:
         payload: dict[str, Any],
         timeout_ms: int,
         cip_envelope: dict[str, Any] | None = None,
+        source_node_id: str | None = None,
     ) -> dict[str, Any]:
         """Submit one task to one node; raise on any failure mode.
 
@@ -88,7 +89,11 @@ class TaskRouter:
         client = NodeClient(endpoint, self._token, transport_endpoint=transport_endpoint)
 
         async def attempt() -> dict[str, Any]:
-            return await client.submit_task(task_id, intent, payload, timeout_ms, cip_envelope=cip_envelope)
+            return await client.submit_task(
+                task_id, intent, payload, timeout_ms,
+                cip_envelope=cip_envelope,
+                source_node_id=source_node_id,
+            )
 
         try:
             result = await self._retry.run(attempt)

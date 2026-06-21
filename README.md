@@ -16,10 +16,15 @@ urn:iicp:intent:llm:chat:v1  →  discover  →  select  →  submit
 ## Install
 
 ```bash
-pip install iicp-client
+pip install --upgrade iicp-client
 ```
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
+
+> **Upgrade note (0.7.65)** — upgrade clients and nodes so discovery prefers the canonical
+> IICP-CX `cx_public_key` field while still accepting the temporary `public_key` alias.
+> This prevents keyed live nodes from being treated as plaintext-only during the migration
+> and prepares your install for the later removal of the ambiguous alias.
 
 ---
 

@@ -35,6 +35,8 @@ import struct
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from iicp_client.relay_ticket import fetch_relay_bind_ticket
+
 logger = logging.getLogger(__name__)
 
 _IICP_MAGIC = b"IICP"
@@ -124,6 +126,10 @@ class RelayWorkerClient:
         task_handler: TaskHandler,
         models: list[str] | None = None,
         on_bind: Callable[[str, int, str], Awaitable[None]] | None = None,
+        bind_ticket: str | None = None,
+        directory_url: str | None = None,
+        node_token: str | None = None,
+        relay_node_id: str | None = None,
     ) -> None:
         """
         Args:
@@ -146,6 +152,10 @@ class RelayWorkerClient:
         self._handler = task_handler
         self._models = models or []
         self._on_bind = on_bind
+        self._bind_ticket = bind_ticket
+        self._directory_url = directory_url
+        self._node_token = node_token
+        self._relay_node_id = relay_node_id
 
     async def run(self) -> None:
         """Connect-and-run loop. Reconnects with exponential backoff on drop."""
@@ -195,11 +205,25 @@ class RelayWorkerClient:
                 raise ConnectionError(f"Expected ACK, got {frame[0] if frame else 'EOF'}")
 
             # Step 2: RELAY_BIND → RELAY_ACK
-            writer.write(_make_frame(_MT_RELAY_BIND, _enc({
+            bind_ticket = self._bind_ticket
+            if not bind_ticket and self._directory_url and self._node_token:
+                try:
+                    bind_ticket = await fetch_relay_bind_ticket(
+                        self._directory_url,
+                        self._node_token,
+                        self._worker_id,
+                        self._relay_node_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    bind_ticket = None
+            bind = {
                 1: self._worker_id,
                 2: self._intent,
                 3: self._models,
-            })))
+            }
+            if bind_ticket:
+                bind[4] = bind_ticket
+            writer.write(_make_frame(_MT_RELAY_BIND, _enc(bind)))
             await writer.drain()
             frame = await _read_frame(reader)
             if frame is None or frame[0] != _MT_RELAY_ACK:

@@ -201,7 +201,10 @@ class IicpClient:
                     endpoint,
                 )
                 continue
-            cx_key = n.get("cx_public_key")
+            # Directory discover now treats `cx_public_key` as canonical;
+            # `public_key` is accepted only as a deprecated compatibility alias.
+            # Accept both so live keyed nodes do not get treated as plaintext-only.
+            cx_key = n.get("cx_public_key") or n.get("public_key")
             nodes.append(Node(
                 node_id=n["node_id"],
                 endpoint=endpoint,

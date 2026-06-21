@@ -698,3 +698,73 @@ async def test_heartbeat_includes_avg_latency_when_task_counters_present(monkeyp
 
     assert received[0]["metrics"]["avg_latency_ms"] == 150.0
     assert n._tasks_latency_total_ms == 0.0
+
+
+def test_task_refuses_during_backend_stability_drain():
+    """#553: provider-local observer can temporarily drain new tasks with Retry-After."""
+    from iicp_client.backend_stability import BackendStabilityObservation
+
+    cfg = NodeConfig(
+        node_id="drain-node",
+        endpoint="http://drain.local",
+        intent="urn:iicp:intent:llm:chat:v1",
+        region="test-region",
+        model="test-model",
+        max_concurrent=2,
+    )
+    h = _ServerHandle(cfg).start()
+    try:
+        h._node._set_backend_stability(
+            BackendStabilityObservation(
+                backend_state="draining",
+                reason_class="backend_loading",
+                drain_until=time.time() + 30,
+            )
+        )
+        status, body, headers = h.post(
+            "/v1/task",
+            {
+                "task_id": "t-drain",
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "payload": {"messages": []},
+            },
+        )
+        assert status == 503
+        assert headers["Retry-After"]
+        assert body["error"]["code"] == "IICP-E024"
+        assert body["error"]["reason"] == "backend_loading"
+    finally:
+        h.stop()
+
+
+def test_health_includes_redacted_backend_stability():
+    """#553: /iicp/health exposes only coarse backend stability fields."""
+    from iicp_client.backend_stability import BackendStabilityObservation
+
+    cfg = NodeConfig(
+        node_id="health-drain-node",
+        endpoint="http://health-drain.local",
+        intent="urn:iicp:intent:llm:chat:v1",
+        region="test-region",
+        model="test-model",
+    )
+    h = _ServerHandle(cfg).start()
+    try:
+        h._node._set_backend_stability(
+            BackendStabilityObservation(
+                backend_state="draining",
+                reason_class="backend_unstable",
+                drain_until=time.time() + 20,
+                diagnostics={"model_size_bytes": 123, "loaded_instances": [{"id": "secret"}]},
+            )
+        )
+        status, body = h.get("/iicp/health")
+        assert status == 200
+        public = body["backend_stability"]
+        assert public["backend_state"] == "draining"
+        assert public["reason_class"] == "backend_unstable"
+        assert "retry_after_s" in public
+        assert "model_size_bytes" not in public
+        assert "loaded_instances" not in public
+    finally:
+        h.stop()

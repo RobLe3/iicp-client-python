@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -34,6 +35,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from iicp_client.availability import AvailabilityEvaluator, Window
+from iicp_client.backend_stability import BackendStabilityObservation, observe_backend_stability
 from iicp_client.idempotency import IdempotencyGuard
 from iicp_client.iicp_tcp import IICP_MAGIC, IicpTcpServer  # #457 single-port multiplexer
 from iicp_client.peer_manager import PeerManager
@@ -459,6 +461,11 @@ class IicpNode:
             self._cx_private_key = None
         # #494 — models registered at last register(); used for drift detection in heartbeat.
         self._registered_models: frozenset[str] = frozenset()
+        # #553 / WQ-114 — provider-local backend stability observer.
+        # Updated by heartbeat/model probes; consumed by /iicp/health and the
+        # task admission gate. The public form is deliberately redacted.
+        self._backend_stability = BackendStabilityObservation()
+        self._backend_stability_lock = threading.Lock()
         # #343 — UPnP IPv6 pinhole tracking. Set by apply_nat_profile() when
         # detect_nat opened a firewall pinhole; consumed by _revoke_pinhole()
         # on graceful shutdown and the renewal loop.
@@ -730,6 +737,8 @@ class IicpNode:
             health_models = await self._probe_health_models()
             if health_models is not None:
                 payload["health_models"] = health_models
+            stability = await self._observe_backend_stability()
+            payload["backend_stability"] = stability.public_dict()
         # ADR-047 Part A (#411) — answer the directory's liveness challenge from the
         # previous beat by HMAC-ing the nonce with node_hmac_key. Proves we control
         # the key (anti-replay) without any dial-back. No-op until we have both a
@@ -780,6 +789,34 @@ class IicpNode:
         except Exception:  # noqa: BLE001
             pass
         return None
+
+    def _backend_stability_snapshot(self) -> BackendStabilityObservation:
+        with self._backend_stability_lock:
+            return self._backend_stability
+
+    def _set_backend_stability(self, observation: BackendStabilityObservation) -> None:
+        with self._backend_stability_lock:
+            current = self._backend_stability
+            # Keep an active drain until it expires unless the new observation is
+            # also draining. A transient probe miss must not prematurely reopen
+            # the node while a backend is still loading/recovering.
+            if current.is_draining() and not observation.is_draining():
+                return
+            self._backend_stability = observation
+
+    async def _observe_backend_stability(self) -> BackendStabilityObservation:
+        if not self._cfg.backend_url:
+            obs = BackendStabilityObservation()
+        else:
+            obs = await observe_backend_stability(
+                self._http,
+                backend_url=self._cfg.backend_url,
+                backend=self._cfg.backend,
+                expected_model=self._cfg.model,
+                api_key=self._cfg.backend_api_key or "",
+            )
+        self._set_backend_stability(obs)
+        return obs
 
     async def _maybe_reregister_on_model_drift(self) -> None:
         """#494 — re-register when the backend's live model set diverges from registered.
@@ -1025,6 +1062,28 @@ class IicpNode:
                     err = json.dumps({"error": {"code": "IICP-E001", "message": "worker_id is required"}}).encode()
                     self._json_response(422, err, cors=True)
                     return
+                bind_ticket = payload.get("bind_ticket") if isinstance(payload.get("bind_ticket"), str) else ""
+                ticket_public_key = os.getenv("IICP_RELAY_BIND_TICKET_PUBLIC_KEY", "")
+                require_bind_ticket = os.getenv("IICP_RELAY_REQUIRE_BIND_TICKET") == "1"
+                if bind_ticket and ticket_public_key:
+                    from iicp_client.relay_ticket import verify_relay_bind_ticket
+
+                    claims = verify_relay_bind_ticket(bind_ticket, ticket_public_key, worker_id, node._cfg.node_id)
+                    if claims is None:
+                        err = json.dumps(
+                            {"error": {"code": "IICP-E040", "message": "relay bind ticket invalid"}}
+                        ).encode()
+                        self._json_response(401, err, cors=True)
+                        return
+                elif require_bind_ticket:
+                    err = json.dumps(
+                        {"error": {"code": "IICP-E040", "message": "relay bind ticket required"}}
+                    ).encode()
+                    self._json_response(401, err, cors=True)
+                    return
+                elif not bind_ticket:
+                    logger.warning("HTTP-poll relay bind without ticket: %s", worker_id)
+
                 # #510 interim-C parity: never displace an ALIVE bound session.
                 existing = node._relay_sessions.get(worker_id)
                 if existing is not None and existing.is_alive():
@@ -1222,6 +1281,7 @@ class IicpNode:
                         "models": all_models,
                         "intent": node._cfg.intent,
                         "pinhole_state": pinhole_state,
+                        "backend_stability": node._backend_stability_snapshot().public_dict(),
                     }
                 ).encode()
                 self._json_response(200, body)
@@ -1297,6 +1357,31 @@ class IicpNode:
                     ).encode()
                     self.send_response(403)
                     self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err)))
+                    self.end_headers()
+                    self.wfile.write(err)
+                    return
+
+                # #553 / WQ-114 — backend drain guard. A provider-local
+                # observer may temporarily ask the node to refuse new work while
+                # the local model backend is loading or unstable. This is coarse
+                # and redacted: no model sizes/host capacity leak to callers.
+                stability = node._backend_stability_snapshot()
+                retry_after = stability.retry_after_s()
+                if stability.is_draining() and retry_after is not None:
+                    err = json.dumps(
+                        {
+                            "error": {
+                                "code": "IICP-E024",
+                                "message": "backend temporarily draining",
+                                "reason": stability.reason_class,
+                                "retry_after_ms": retry_after * 1000,
+                            }
+                        }
+                    ).encode()
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Retry-After", str(retry_after))
                     self.send_header("Content-Length", str(len(err)))
                     self.end_headers()
                     self.wfile.write(err)
@@ -1663,6 +1748,8 @@ class IicpNode:
                 task_handler=handler,
                 models=[self._cfg.model] if self._cfg.model else [],
                 on_bind=_on_relay_bind,
+                directory_url=self._cfg.directory_url,
+                node_token=_current_token[0],
             )
             bg_tasks.append(asyncio.create_task(relay_worker.run()))
             logger.info("Relay worker started → %s:%d", _relay_host, _relay_port_n)

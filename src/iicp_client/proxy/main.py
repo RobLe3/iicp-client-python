@@ -112,6 +112,7 @@ def create_app(cfg: ProxyConfig) -> FastAPI:
         app.state.cip_config = cip_config
         app.state.cip_budget_tracker = cip_budget_tracker
         app.state.node_token = node_token  # WQ-059: §10.1 consumer balance fetch
+        app.state.node_id = None  # #525/G1b: filled from /v1/me for proxy source_node_id forwarding
 
         # Starlette sets scope["app"]=compat (not app) for mounted sub-app requests,
         # so request.app inside compat handlers is the compat sub-app. Propagate the
@@ -124,6 +125,7 @@ def create_app(cfg: ProxyConfig) -> FastAPI:
         compat.state.cip_config = cip_config
         compat.state.cip_budget_tracker = cip_budget_tracker
         compat.state.node_token = node_token  # WQ-059: §10.1 consumer balance fetch
+        compat.state.node_id = None  # #525/G1b: filled from /v1/me for proxy source_node_id forwarding
 
         await peer_cache.start()
 
@@ -133,6 +135,10 @@ def create_app(cfg: ProxyConfig) -> FastAPI:
             try:
                 me = await directory.me(node_token)
                 addr_state.update_from_me(me)
+                node_id = me.get("node_id")
+                if isinstance(node_id, str) and node_id:
+                    app.state.node_id = node_id
+                    compat.state.node_id = node_id
                 check_observed_ip_vs_endpoint(
                     me.get("observed_source_ip", ""),
                     me.get("endpoint", cfg.directory_url),

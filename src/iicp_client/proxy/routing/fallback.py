@@ -147,6 +147,7 @@ class FallbackChain:
         cip_policy: str = "best_of_n",
         cip_replicas: int = 1,
         cip_quorum: int | None = None,
+        source_node_id: str | None = None,
     ) -> dict[str, Any]:
         """Try `nodes` in order; return first success, or an exhaustion error.
 
@@ -201,7 +202,9 @@ class FallbackChain:
             node_id = node.get("node_id", "unknown")
             try:
                 response = await self._router.route(
-                    node, task_id, intent, payload, timeout_ms, cip_envelope=cip_envelope
+                    node, task_id, intent, payload, timeout_ms,
+                    cip_envelope=cip_envelope,
+                    source_node_id=source_node_id,
                 )
                 # CIP-BIND-01: S.12 §10.4 MUST — coordinator MUST discard worker responses
                 # whose trace.cip_session_key does not match the dispatched key.

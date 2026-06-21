@@ -30,11 +30,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import struct
 import threading
 import time
 import uuid
 from typing import Any
+
+from iicp_client.relay_ticket import verify_relay_bind_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +272,9 @@ class RelayAcceptServer:
         host: str = "0.0.0.0",
         port: int = 9485,
         http_port: int = 9484,
+        require_bind_ticket: bool | None = None,
+        bind_ticket_public_key_hex: str | None = None,
+        relay_node_id: str | None = None,
     ) -> None:
         self.registry = registry
         self.host = host
@@ -276,6 +282,13 @@ class RelayAcceptServer:
         # The relay's public HTTP task port — advertised in RELAY_ACK (field 4)
         # so workers can register the correct {relay}/v1/relay-for/<wid> endpoint.
         self.http_port = http_port
+        self.require_bind_ticket = (
+            os.getenv("IICP_RELAY_REQUIRE_BIND_TICKET") == "1"
+            if require_bind_ticket is None
+            else require_bind_ticket
+        )
+        self.bind_ticket_public_key_hex = bind_ticket_public_key_hex or os.getenv("IICP_RELAY_BIND_TICKET_PUBLIC_KEY")
+        self.relay_node_id = relay_node_id or os.getenv("IICP_NODE_ID", "*")
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
@@ -352,12 +365,39 @@ class RelayAcceptServer:
             worker_id = str(body.get(1, ""))
             intent = str(body.get(2, ""))
             models = [str(m) for m in (body.get(3) or [])]
+            bind_ticket = str(body.get(4, ""))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Relay accept: RELAY_BIND decode error: %s", exc)
             return
         if not worker_id:
             logger.warning("Relay accept: RELAY_BIND missing worker_id")
             return
+
+        if bind_ticket and self.bind_ticket_public_key_hex:
+            claims = verify_relay_bind_ticket(
+                bind_ticket,
+                self.bind_ticket_public_key_hex,
+                worker_id,
+                self.relay_node_id,
+            )
+            if claims is None:
+                writer.write(
+                    _make_frame(
+                        _MT_RELAY_ACK,
+                        _enc({1: "error", 2: worker_id, 3: "relay bind ticket invalid"}),
+                    )
+                )
+                await writer.drain()
+                return
+        elif self.require_bind_ticket:
+            writer.write(_make_frame(_MT_RELAY_ACK, _enc({1: "error", 2: worker_id, 3: "relay bind ticket required"})))
+            await writer.drain()
+            return
+        elif not bind_ticket:
+            logger.warning(
+                "Relay accept: unsigned RELAY_BIND for worker=%s; #510 ticket auth not yet enforced",
+                worker_id,
+            )
 
         # #510 interim hardening: RELAY_BIND is unauthenticated, so refuse to
         # displace an existing session whose socket is still alive (mid-session
