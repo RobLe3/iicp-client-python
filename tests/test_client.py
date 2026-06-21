@@ -797,3 +797,13 @@ def test_node_register_payload_omits_relay_capable_when_false():
     asyncio.run(node.register())
     payload = json.loads(route.calls[0].request.content)
     assert "relay_capable" not in payload, "relay_capable must not appear when not set"
+
+
+def test_routing_strategy_env_overrides(monkeypatch):
+    monkeypatch.setenv("IICP_ROUTING_STRATEGY", "softmax_top_k")
+    monkeypatch.setenv("IICP_ROUTING_TOP_K", "2")
+    monkeypatch.setenv("IICP_ROUTING_SOFTMAX_TAU", "0.02")
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    assert client._cfg.routing_strategy == "softmax_top_k"
+    assert client._cfg.routing_top_k == 2
+    assert client._cfg.routing_softmax_tau == 0.02

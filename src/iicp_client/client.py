@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import math
 import os
 import random
 import re
@@ -73,13 +74,27 @@ class IicpClient:
         if self._cfg.timeout_ms > _MAX_TIMEOUT_MS:
             # SDK-04: reject oversized timeouts at construction time
             raise ValueError(f"timeout_ms must be ≤ {_MAX_TIMEOUT_MS}; got {self._cfg.timeout_ms}")
-        # IICP_ROUTING_EPSILON overrides config; clamp to [0.0, 1.0]
+        # Routing env overrides; keep epsilon as the backward-compatible default.
         _env_eps = os.environ.get("IICP_ROUTING_EPSILON")
         if _env_eps is not None:
             try:
                 self._cfg.routing_epsilon = max(0.0, min(1.0, float(_env_eps)))
             except ValueError:
                 pass
+        _env_strategy = os.environ.get("IICP_ROUTING_STRATEGY")
+        if _env_strategy in {"deterministic", "epsilon", "softmax_top_k"}:
+            self._cfg.routing_strategy = _env_strategy
+        try:
+            self._cfg.routing_top_k = max(1, int(os.environ.get("IICP_ROUTING_TOP_K", self._cfg.routing_top_k)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self._cfg.routing_softmax_tau = max(
+                0.001,
+                float(os.environ.get("IICP_ROUTING_SOFTMAX_TAU", self._cfg.routing_softmax_tau)),
+            )
+        except (TypeError, ValueError):
+            pass
         # Phase 2 (#496): consumer token cache — (target_node_id, intent) → (token, exp_unix)
         self._ct_cache: dict[tuple[str, str], tuple[str, int]] = {}
 
@@ -118,6 +133,25 @@ class IicpClient:
         except Exception:
             pass
         return None
+
+
+    def _select_candidates(self, all_nodes: list[Node], top_n: int) -> list[Node]:
+        strategy = self._cfg.routing_strategy
+        if strategy == "deterministic" or len(all_nodes) <= 1:
+            return all_nodes[:top_n]
+        if strategy == "softmax_top_k":
+            pool = all_nodes[: max(1, min(len(all_nodes), self._cfg.routing_top_k))]
+            tau = max(0.001, self._cfg.routing_softmax_tau)
+            max_score = max(float(n.score) for n in pool)
+            weights = [math.exp((float(n.score) - max_score) / tau) for n in pool]
+            chosen = random.choices(pool, weights=weights, k=1)[0]
+            rest = [n for n in all_nodes[:top_n] if n.node_id != chosen.node_id][: top_n - 1]
+            return [chosen] + rest
+        if random.random() < self._cfg.routing_epsilon:
+            explore_node = random.choice(all_nodes)
+            rest = [n for n in all_nodes[:top_n] if n.node_id != explore_node.node_id][: top_n - 1]
+            return [explore_node] + rest
+        return all_nodes[:top_n]
 
     # ------------------------------------------------------------------
     # Public async API
@@ -211,17 +245,9 @@ class IicpClient:
             )
 
         task_id = str(uuid.uuid4())
-        # ε-greedy provider selection (R4): with probability ε pick a random node
-        # from the full discovered set; otherwise use the directory-sorted top pick.
-        # Remaining fallback candidates always come from the directory-sorted list.
         all_nodes = node_list.nodes
         top_n = max(1, self._cfg.max_retries)
-        if len(all_nodes) > 1 and random.random() < self._cfg.routing_epsilon:
-            explore_node = random.choice(all_nodes)
-            rest = [n for n in all_nodes[:top_n] if n.node_id != explore_node.node_id][: top_n - 1]
-            candidates = [explore_node] + rest
-        else:
-            candidates = all_nodes[:top_n]
+        candidates = self._select_candidates(all_nodes, top_n)
         last_exc: IicpError | None = None
 
         for node in candidates:

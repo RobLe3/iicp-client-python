@@ -20,6 +20,9 @@ class ClientConfig:
     # encrypts when the node advertises a cx_public_key, regardless of this flag.
     use_confidentiality: bool = True
     routing_epsilon: float = 0.05  # ε-greedy exploration probability (R4); 0.0 disables
+    routing_strategy: str = "epsilon"  # deterministic | epsilon | softmax_top_k
+    routing_top_k: int = 3
+    routing_softmax_tau: float = 0.04
     # Phase 2 (#496): caller's JWT from directory registration; used to acquire consumer tokens.
     node_token: str | None = None
 

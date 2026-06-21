@@ -666,3 +666,35 @@ async def test_heartbeat_omits_health_models_when_no_backend_url(monkeypatch):
     assert received, "heartbeat should have fired"
     assert "health_models" not in received[0], \
         "health_models must be absent when no backend_url is configured"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_includes_avg_latency_when_task_counters_present(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import httpx
+
+    received: list[dict] = []
+
+    async def fake_post(url, **kwargs):  # noqa: ANN001
+        req_obj = httpx.Request("POST", url)
+        received.append(kwargs.get("json", {}))
+        return httpx.Response(200, json={"ok": True}, request=req_obj)
+
+    cfg = NodeConfig(
+        node_id="latency-test-1",
+        endpoint="http://127.0.0.1:9999",
+        intent="urn:iicp:intent:llm:chat:v1",
+        directory_url="http://localhost:8888",
+    )
+    n = IicpNode(cfg)
+    with n._task_counters_lock:
+        n._tasks_success = 1
+        n._tasks_failed = 1
+        n._tasks_latency_total_ms = 300.0
+    monkeypatch.setattr(n._http, "post", AsyncMock(side_effect=fake_post))
+
+    await n.heartbeat("tok")
+
+    assert received[0]["metrics"]["avg_latency_ms"] == 150.0
+    assert n._tasks_latency_total_ms == 0.0

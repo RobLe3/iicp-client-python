@@ -418,6 +418,7 @@ class IicpNode:
         # Incremental task counters drained on each heartbeat for directory reporting.
         self._tasks_success = 0
         self._tasks_failed = 0
+        self._tasks_latency_total_ms = 0.0
         self._task_counters_lock = threading.Lock()
         # R1 relay-as-last-resort (#341): session registry populated when
         # RelayAcceptServer is started by serve(). HTTP /v1/relay checks here
@@ -701,8 +702,10 @@ class IicpNode:
         with self._task_counters_lock:
             ok = self._tasks_success
             fail = self._tasks_failed
+            latency_total_ms = self._tasks_latency_total_ms
             self._tasks_success = 0
             self._tasks_failed = 0
+            self._tasks_latency_total_ms = 0.0
         payload: dict = {
             "node_id": self._cfg.node_id,
             "node_token": node_token,
@@ -716,7 +719,11 @@ class IicpNode:
             "max_concurrent": self._availability.effective_max_concurrent(self._cfg.max_concurrent),
         }
         if ok > 0 or fail > 0:
-            payload["metrics"] = {"tasks_success": ok, "tasks_failed": fail}
+            metrics: dict[str, float | int] = {"tasks_success": ok, "tasks_failed": fail}
+            total = ok + fail
+            if total > 0 and latency_total_ms > 0:
+                metrics["avg_latency_ms"] = round(latency_total_ms / total, 2)
+            payload["metrics"] = metrics
         # #494 — report live model list from backend so directory can filter stale-model
         # nodes from discover. Best-effort: if probe fails, omit health_models (backward compat).
         if self._cfg.backend_url:
@@ -1419,6 +1426,8 @@ class IicpNode:
                         node._metrics.observe("completed", intent, qos, latency_ms, tokens)
                         with node._task_counters_lock:
                             node._tasks_success += 1
+                            if latency_ms > 0:
+                                node._tasks_latency_total_ms += latency_ms
                         resp_body = json.dumps(
                             {
                                 "task_id": task_id,
@@ -1456,6 +1465,8 @@ class IicpNode:
                         node._metrics.observe("error", intent, qos, latency_ms)
                         with node._task_counters_lock:
                             node._tasks_failed += 1
+                            if latency_ms > 0:
+                                node._tasks_latency_total_ms += latency_ms
                         logger.error("Handler error: %s", exc)
                         self.send_error(500, str(exc))
                 finally:
