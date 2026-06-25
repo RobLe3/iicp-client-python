@@ -10,9 +10,11 @@
 # Required env vars:
 #   IICP_BACKEND_URL    — OpenAI-compatible backend (Ollama / vLLM / LM Studio)
 #   IICP_BACKEND_MODEL  — model name (e.g. qwen2.5:0.5b)
-#   IICP_PUBLIC_ENDPOINT — externally reachable URL of this node
 #
 # Optional:
+#   IICP_PUBLIC_ENDPOINT — externally reachable URL of this node. If omitted,
+#                          the node tries automatic reachability (Quick Tunnel
+#                          first, relay last-resort) before staying local.
 #   IICP_DIRECTORY_URL  — default: https://iicp.network/api
 #   IICP_REGION         — default: eu-central
 #   IICP_MAX_CONCURRENT — default: 4
@@ -29,7 +31,21 @@ RUN pip install --no-cache-dir ".[metrics,iicp-tcp]"
 
 FROM python:3.12-slim AS runtime
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+  && arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+      amd64) cf_arch=amd64 ;; \
+      arm64) cf_arch=arm64 ;; \
+      *) echo "unsupported architecture for cloudflared: $arch" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}" -o /usr/local/bin/cloudflared \
+  && chmod +x /usr/local/bin/cloudflared \
+  && cloudflared --version >/dev/null \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=build /usr/local/bin/iicp-node /usr/local/bin/iicp-node
 COPY --from=build /app/src /app/src
 ENV PYTHONPATH=/app/src
 EXPOSE 8020

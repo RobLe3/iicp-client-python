@@ -290,10 +290,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="#520 NAT-ladder rung 5: expose this node via a zero-account "
         "Cloudflare Quick Tunnel for its OWN public endpoint (requires cloudflared "
-        "on PATH; never auto-installed). Default: automatic — on tier ≥ 3 "
-        "(CGNAT/unreachable) the node tries a tunnel FIRST, falling back to a relay "
-        "only if the tunnel fails. --tunnel forces it on regardless of tier; "
-        "--no-tunnel disables it (relay becomes first). env: IICP_TUNNEL=1/0",
+        "on PATH; never auto-installed). Default: automatic — when direct IPv4/IPv6/"
+        "pinhole reachability is unavailable or unverified, the node tries a tunnel "
+        "before relay. --tunnel forces it on; --no-tunnel disables tunnel fallback. "
+        "env: IICP_TUNNEL=1/0",
     )
     serve.add_argument(
         "--relay-capable",
@@ -1035,6 +1035,7 @@ async def _serve(args: argparse.Namespace) -> int:
         elif _env_tunnel in ("0", "false", "no"):
             _tunnel_pref = False
     _tunnel = None  # QuickTunnel handle — closed in the serve finally block
+    _nat_profile = None
     _backend_flavor = _detect_backend_flavor(
         args.backend_url, getattr(args, "backend_api_key", "") or "", args.backend_type
     )
@@ -1109,6 +1110,7 @@ async def _serve(args: argparse.Namespace) -> int:
                 profile.transport_method,
                 getattr(profile, "public_endpoint", None) or "(none)",
             )
+            _nat_profile = profile
             node.apply_nat_profile(profile)
             # Reachability escalation for a tier-≥3 (CGNAT/unreachable, no IPv6) node with no
             # operator-configured relay. Order comes from the pure, unit-tested planner
@@ -1189,6 +1191,43 @@ async def _serve(args: argparse.Namespace) -> int:
         if _tunnel is not None:
             public_endpoint = _tunnel.url
 
+    # Maximum-adoption fallback: keep the local direct listener, but if the
+    # advertised direct endpoint is local/private or IPv6 without a verified
+    # inbound pinhole, publish a Quick Tunnel by default. Operators can opt out
+    # with --no-tunnel / IICP_TUNNEL=0.
+    if (
+        _tunnel_pref is not False
+        and _tunnel is None
+        and not relay_worker_ep
+        and not args.skip_registration
+    ):
+        reason = direct_tunnel_fallback_reason(
+            public_endpoint,
+            _nat_profile,
+        )
+        if reason:
+            logger.info(
+                "direct endpoint needs public fallback (%s) — opening Quick Tunnel automatically.",
+                reason,
+            )
+            _tunnel = _open_tunnel_rung(node, args.port, forced=False)
+            if _tunnel is not None:
+                public_endpoint = _tunnel.url
+            else:
+                logger.info(
+                    "no tunnel available — querying directory for a relay-capable peer (last resort)."
+                )
+                elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
+                if elected_relay:
+                    relay_host, relay_port = elected_relay
+                    relay_worker_ep = f"{relay_host}:{relay_port}"
+                    cfg.relay_worker_endpoint = relay_worker_ep
+                    logger.info(
+                        "NAT: auto-elected relay %s:%d (last resort) — node will register via relay.",
+                        relay_host,
+                        relay_port,
+                    )
+
     # The handler expects base_url; the CLI's --backend-url is the OpenAI-
     # compatible root. Append /v1 if not already present (Ollama serves at
     # both /v1/chat/completions and the bare /api/chat, but the SDK helper
@@ -1220,11 +1259,7 @@ async def _serve(args: argparse.Namespace) -> int:
 
     # NAT-4 guard: if endpoint is non-routable and no relay configured, skip
     # registration to avoid a confusing 422 from the directory's RoutableEndpoint check.
-    _ep = public_endpoint.lower()
-    _ep_is_local = any(
-        _ep.startswith(p)
-        for p in ("http://localhost", "http://127.", "http://0.0.0.0", "http://192.168.", "http://10.")
-    )
+    _ep_is_local = endpoint_is_local_or_private(public_endpoint)
     if _ep_is_local and not relay_worker_ep and not args.skip_registration:
         logger.warning(
             "No routable endpoint detected and no relay configured — "
@@ -1346,6 +1381,42 @@ def plan_reachability(tier: int, relay_configured: bool, tunnel_enabled: bool) -
     return (["tunnel"] if tunnel_enabled else []) + ["relay", "gossip"]
 
 
+def endpoint_is_local_or_private(endpoint: str) -> bool:
+    ep = (endpoint or "").lower()
+    return (
+        "://localhost" in ep
+        or "://127." in ep
+        or "://0.0.0.0" in ep
+        or "://192.168." in ep
+        or "://10." in ep
+        or any(f"://172.{n}." in ep for n in range(16, 32))
+        or "://[::1]" in ep
+        or "://[fc" in ep
+        or "://[fd" in ep
+    )
+
+
+def endpoint_is_bracketed_ipv6(endpoint: str) -> bool:
+    return "://[" in (endpoint or "")
+
+
+def direct_tunnel_fallback_reason(endpoint: str, profile: object | None = None) -> str | None:
+    if endpoint_is_local_or_private(endpoint):
+        return "local/private endpoint"
+
+    if profile is not None:
+        if getattr(profile, "tier", 0) >= 3 or getattr(profile, "transport_method", None) == "unreachable":
+            return "NAT traversal did not produce a direct public route"
+
+    if endpoint_is_bracketed_ipv6(endpoint):
+        ipv6 = getattr(profile, "ipv6", None) if profile is not None else None
+        pinhole_active = bool(getattr(ipv6, "pinhole_active", False)) if ipv6 is not None else False
+        if not pinhole_active:
+            return "IPv6 direct endpoint has no verified inbound pinhole"
+
+    return None
+
+
 def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
     """#520 rung 5: open a Quick Tunnel and wire it into the node lifecycle.
 
@@ -1371,6 +1442,11 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
 
     node._cfg.endpoint = tunnel.url  # noqa: SLF001 — same pattern as _on_relay_bind
     node._cfg.transport_method = "external_tunnel"  # noqa: SLF001
+    node._cfg.exposure_mode = "tunnel_required"  # noqa: SLF001
+    node._cfg.transport_metadata = {  # noqa: SLF001
+        "tier": 3,
+        "detection_log_tail": ["rung 5: quick tunnel"],
+    }
     loop = asyncio.get_running_loop()
 
     def _on_new_url(url: str) -> None:

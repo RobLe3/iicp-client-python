@@ -21,10 +21,10 @@ pip install --upgrade iicp-client
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
 
-> **Upgrade note (0.7.68)** — upgrade provider nodes so normal `iicp-node serve`
-> processes run the unattended updater, check hourly by default, and report updater
-> evidence to the directory. This helps the mesh route away from stuck downlevel or
-> non-key-ready nodes without weakening IICP-CX requirements.
+> **Upgrade note (0.7.69)** — upgrade provider nodes so normal `iicp-node serve`
+> processes keep the unattended updater evidence, refuse keyless plaintext by default,
+> and automatically try a Quick Tunnel before relay when a Docker/home-network endpoint
+> is not directly reachable. This improves adoption without weakening IICP-CX.
 
 ---
 
@@ -258,7 +258,7 @@ The SDK tries each path in order and picks the best one for your network:
 | **1a** | Home router with UPnP, no CGNAT | Opens a port-forward via UPnP → registers WAN IP |
 | **1b** | CGNAT + IPv6 available + AddPinhole works | Registers IPv6 address with firewall rule |
 | **1c** | CGNAT + IPv6 + AddPinhole fails (e.g. FRITZ!Box error 606) | Registers IPv6 GUA anyway + logs guidance |
-| **3** | CGNAT + no usable IPv6 | Auto-elects relay from directory → registers via relay |
+| **3** | CGNAT + no usable IPv6 | Opens a Quick Tunnel if available → otherwise auto-elects relay |
 | **4** | Nothing worked | Serves locally with operator guidance |
 
 ### Environment-specific behaviour
@@ -279,7 +279,9 @@ Alternatively use IICP_RELAY_WORKER_ENDPOINT for relay-as-last-resort fallback.
 ```
 
 **Docker bridge (`-p 8020:8020`)** — UPnP is skipped (it would reach the Docker NAT, not
-your home router). Set `IICP_PUBLIC_ENDPOINT` so the node knows its real address:
+your home router). The official image includes `cloudflared`, so if no public endpoint is
+configured the node first tries a zero-account Quick Tunnel, then falls back to relay. For
+stable direct hosting, set `IICP_PUBLIC_ENDPOINT` so the node knows its real address:
 
 ```yaml
 # docker-compose.yml
@@ -298,18 +300,20 @@ env:
     value: "http://$(LOAD_BALANCER_IP):8020"
 ```
 
-### CGNAT + no IPv6 → automatic relay
+### CGNAT + no IPv6 → Quick Tunnel, then relay
 
 When no direct path is possible, the SDK automatically finds a relay:
 
 ```
 NAT tier=3: no direct or IPv6 endpoint available.
-Auto-electing relay from directory...
+Opening Quick Tunnel...
+No tunnel available; auto-electing relay from directory...
 Auto-elected relay: relay.example.com:9485
 ```
 
-The node connects outbound to the elected relay, which forwards inbound tasks down the
-tunnel. Re-registration happens automatically when the relay bind succeeds.
+With `cloudflared` available, the node registers its own temporary HTTPS tunnel URL.
+If that is unavailable, it connects outbound to the elected relay, which forwards inbound
+tasks down the relay path. Re-registration happens automatically when either path succeeds.
 
 To use a specific relay instead of auto-electing:
 ```bash
@@ -335,6 +339,7 @@ node = IicpNode(NodeConfig(
 ```bash
 IICP_AUTO_DETECT_NAT=false   # disable NAT detection entirely
 IICP_PUBLIC_ENDPOINT=http://x.x.x.x:8020   # trust this endpoint, skip detection
+IICP_TUNNEL=0                # opt out of Quick Tunnel fallback
 IICP_EXTERNAL_IP_PROBE_URL=https://api.ipify.org  # WAN IP probe (default)
 ```
 

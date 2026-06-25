@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Self-updater P1 — read-only version check (#521 WQ-089).
+"""Self-updater for provider nodes (#521 WQ-089).
 
-This phase is deliberately inert: it tells the operator whether a newer
-release exists and prints the exact upgrade command. No download, no install,
-no restart — those are P2/P3 (opt-in, signed). Zero risk surface; answers the
-"a user several versions behind shouldn't have to worry" goal by making the
-gap visible at a glance.
+`iicp-node update` still supports the safe read-only version check, but normal
+long-running `iicp-node serve` processes now also run a default-on background
+loop: check PyPI hourly (first check within five minutes), `pip install
+--upgrade` when a newer stable release exists, and re-exec the process so the
+node comes back on the new code. The loop is failure-isolated and opt-out via
+`IICP_AUTO_UPDATE=0`.
 """
 
 from __future__ import annotations
