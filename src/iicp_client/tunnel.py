@@ -32,6 +32,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,15 @@ MAX_RESPAWNS = 3
 # dead-endpoint bug, #538). Probe every interval; after this many consecutive
 # failures, force a tunnel restart (terminate → respawn → new URL → re-register).
 TUNNEL_HEALTH_INTERVAL_S = 30.0
-TUNNEL_HEALTH_MAX_FAILS = 3
+TUNNEL_HEALTH_MAX_FAILS = 2
+TUNNEL_VERIFY_TIMEOUT_S = 30.0
+
+
+class TunnelState(str, Enum):
+    READY = "ready"
+    TWILIGHT = "twilight"
+    RECOVERING = "recovering"
+    DEAD = "dead"
 
 
 def _tunnel_url_reachable(url: str) -> bool:
@@ -63,6 +72,20 @@ def _tunnel_url_reachable(url: str) -> bool:
             return 200 <= resp.status < 300
     except Exception:  # noqa: BLE001 — any failure means the URL isn't reachable
         return False
+
+
+def _wait_until_reachable(
+    url: str,
+    probe: Callable[[str], bool],
+    timeout: float = TUNNEL_VERIFY_TIMEOUT_S,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if probe(url):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1.0)
 
 INSTALL_HINT = (
     "cloudflared not found — install it to become reachable without router "
@@ -166,6 +189,101 @@ class QuickTunnel:
                 on_new_url(self.url)
 
         self._watchdog = threading.Thread(target=_run, name="quick-tunnel-watchdog", daemon=True)
+        self._watchdog.start()
+
+    def watch_elastic(
+        self,
+        on_new_url: Callable[[str], None],
+        on_state: Callable[[TunnelState], None],
+        on_dead: Callable[[], None],
+        *,
+        probe: Callable[[str], bool] = _tunnel_url_reachable,
+        health_interval: float = TUNNEL_HEALTH_INTERVAL_S,
+        verify_timeout: float = TUNNEL_VERIFY_TIMEOUT_S,
+    ) -> None:
+        """Public-URL keepalive with twilight/recovery states.
+
+        ``on_new_url`` fires only after the fresh tunnel URL has passed
+        ``/iicp/health`` through the public edge, so callers can heartbeat
+        ``available:false`` while a tunnel is stale or rebuilding.
+        """
+
+        def _run() -> None:
+            health_fails = 0
+            last_health = time.monotonic()
+            state = TunnelState.READY
+            on_state(state)
+
+            def set_state(next_state: TunnelState) -> None:
+                nonlocal state
+                if state != next_state:
+                    state = next_state
+                    on_state(next_state)
+
+            while not self._closed:
+                while not self._closed:
+                    if self.process.poll() is not None:
+                        break
+                    now = time.monotonic()
+                    if now - last_health >= health_interval:
+                        last_health = now
+                        if probe(self.url):
+                            health_fails = 0
+                            self._respawns = 0
+                            set_state(TunnelState.READY)
+                        else:
+                            health_fails += 1
+                            set_state(TunnelState.TWILIGHT)
+                            if health_fails >= TUNNEL_HEALTH_MAX_FAILS:
+                                logger.warning(
+                                    "Quick Tunnel %s unreachable %d× while cloudflared is "
+                                    "up (twilight) — rebuilding tunnel.",
+                                    self.url,
+                                    health_fails,
+                                )
+                                set_state(TunnelState.RECOVERING)
+                                if self.process.poll() is None:
+                                    self.process.terminate()
+                                health_fails = 0
+                    time.sleep(0.2)
+                if self._closed:
+                    return
+                set_state(TunnelState.RECOVERING)
+                self._respawns += 1
+                if self._respawns > MAX_RESPAWNS:
+                    logger.error(
+                        "Quick Tunnel: %d consecutive respawns failed to recover a healthy "
+                        "tunnel — giving up. Node is no longer publicly reachable; restart "
+                        "`iicp-node serve` to recover.",
+                        self._respawns - 1,
+                    )
+                    set_state(TunnelState.DEAD)
+                    on_dead()
+                    return
+                logger.warning("Quick Tunnel down — respawning (%d/%d)…", self._respawns, MAX_RESPAWNS)
+                try:
+                    fresh = open_quick_tunnel(self.local_port, binary=self._binary)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Quick Tunnel respawn failed: %s", exc)
+                    set_state(TunnelState.DEAD)
+                    on_dead()
+                    return
+                self.process = fresh.process
+                self.url = fresh.url
+                health_fails = 0
+                logger.info("Quick Tunnel candidate at %s — verifying public health.", self.url)
+                if _wait_until_reachable(self.url, probe, verify_timeout):
+                    last_health = time.monotonic()
+                    self._respawns = 0
+                    set_state(TunnelState.READY)
+                    logger.info("Quick Tunnel verified at %s — re-registering.", self.url)
+                    on_new_url(self.url)
+                else:
+                    logger.warning("Quick Tunnel candidate %s stayed unreachable — rebuilding.", self.url)
+                    if self.process.poll() is None:
+                        self.process.terminate()
+
+        self._watchdog = threading.Thread(target=_run, name="quick-tunnel-elastic-watchdog", daemon=True)
         self._watchdog.start()
 
     # ── tear down ────────────────────────────────────────────────────────────

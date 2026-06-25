@@ -449,6 +449,9 @@ class IicpNode:
         self._liveness_challenge: str | None = None
         # BUG-5: token stashed by register() so deregister()/heartbeat don't need it re-passed.
         self._node_token: str = ""
+        # Runtime public reachability gate. Quick Tunnel recovery sets this false
+        # while the local server is alive but the public edge is stale/rebuilding.
+        self._runtime_available = True
         try:
             from iicp_client._confidentiality import load_or_create_node_cx_key
 
@@ -471,6 +474,9 @@ class IicpNode:
         # on graceful shutdown and the renewal loop.
         self._pinhole_uid: int | None = None
         self._pinhole_lease_seconds: int = 3600
+
+    def set_runtime_available(self, available: bool) -> None:
+        self._runtime_available = bool(available)
 
     def apply_nat_profile(self, profile: Any) -> None:
         """Populate transport_endpoint + NAT observability fields from a
@@ -719,16 +725,17 @@ class IicpNode:
             self._tasks_success = 0
             self._tasks_failed = 0
             self._tasks_latency_total_ms = 0.0
+        public_available = self._runtime_available
         payload: dict = {
             "node_id": self._cfg.node_id,
             "node_token": node_token,
-            "status": "available",
+            "status": "available" if public_available else "recovering",
             # Explicit availability boolean. The directory reads `available` (not the
             # `status` string) when deciding discover eligibility; sending it lets the
             # directory restore a node that briefly went dormant (host sleep) on the
             # very next beat — robust even against directory builds older than v1.10.17
             # whose heartbeat handler defaulted to the stored (possibly false) value.
-            "available": True,
+            "available": public_available,
             "max_concurrent": self._availability.effective_max_concurrent(self._cfg.max_concurrent),
         }
         try:

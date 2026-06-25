@@ -1429,7 +1429,7 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
     Must be called from async context (captures the running loop so the
     watchdog thread can marshal `node.register()` back onto it).
     """
-    from iicp_client.tunnel import INSTALL_HINT, cloudflared_path, open_quick_tunnel
+    from iicp_client.tunnel import INSTALL_HINT, TunnelState, cloudflared_path, open_quick_tunnel
 
     if not cloudflared_path():
         logger.warning(INSTALL_HINT)
@@ -1450,9 +1450,14 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
     loop = asyncio.get_running_loop()
 
     def _on_new_url(url: str) -> None:
-        # Quick Tunnel URLs rotate per process — re-register with the new one.
+        # Quick Tunnel URLs rotate per process — re-register after the new URL
+        # has passed public /iicp/health in the elastic watchdog.
         node._cfg.endpoint = url  # noqa: SLF001
         asyncio.run_coroutine_threadsafe(node.register(), loop)
+
+    def _on_state(state: TunnelState) -> None:
+        node.set_runtime_available(state is TunnelState.READY)
+        logger.info("Quick Tunnel state: %s", state.value)
 
     def _on_dead() -> None:
         logger.error(
@@ -1460,7 +1465,7 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
             "reachable. Restart `iicp-node serve` to recover."
         )
 
-    tunnel.watch(_on_new_url, _on_dead)
+    tunnel.watch_elastic(_on_new_url, _on_state, _on_dead)
 
     # Teardown must survive SIGTERM too: a plain `kill` bypasses finally/atexit
     # in CPython, which would orphan the cloudflared child. Close the tunnel,

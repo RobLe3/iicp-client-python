@@ -18,6 +18,7 @@ import pytest
 
 from iicp_client.tunnel import (
     INSTALL_HINT,
+    TunnelState,
     cloudflared_path,
     open_quick_tunnel,
 )
@@ -108,6 +109,32 @@ class TestSupervision:
         t.close()  # intentional teardown — watchdog must NOT respawn
         time.sleep(0.5)
         assert not fired.is_set()
+
+    def test_elastic_watchdog_marks_twilight_then_rebuilds_after_public_health_recovers(self, tmp_path):
+        t = open_quick_tunnel(9484, binary=_fake_bin(tmp_path, FAKE_OK, name="elastic", lifetime=60))
+        states: list[TunnelState] = []
+        new_urls: list[str] = []
+        got_url = threading.Event()
+        calls = {"n": 0}
+
+        def probe(_url: str) -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 3
+
+        t.watch_elastic(
+            lambda u: (new_urls.append(u), got_url.set()),
+            lambda state: states.append(state),
+            lambda: None,
+            probe=probe,
+            health_interval=0.02,
+            verify_timeout=2.0,
+        )
+        assert got_url.wait(timeout=10), "elastic watchdog did not verify rebuilt tunnel"
+        assert new_urls == ["https://elastic.trycloudflare.com"]
+        assert TunnelState.TWILIGHT in states
+        assert TunnelState.RECOVERING in states
+        assert TunnelState.READY in states
+        t.close()
 
 
 class TestCliWiring:

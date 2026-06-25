@@ -637,6 +637,27 @@ def test_heartbeat_payload_includes_available_true():
 
 
 @respx.mock
+def test_heartbeat_payload_reports_unavailable_during_tunnel_recovery():
+    route = respx.post("https://iicp.test/v1/heartbeat").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+    node = IicpNode(
+        NodeConfig(
+            node_id="n-1",
+            endpoint="https://p.example.com:8080",
+            intent="urn:iicp:intent:llm:chat:v1",
+            model="m",
+            directory_url="https://iicp.test",
+        )
+    )
+    node.set_runtime_available(False)
+    asyncio.run(node.heartbeat("tok"))
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["available"] is False
+    assert payload["status"] == "recovering"
+
+
+@respx.mock
 def test_node_register_includes_transport_endpoint_when_set():
     """spec/iicp-dir.md v0.7.0: when transport_endpoint is configured, the SDK MUST
     advertise it so clients can prefer native IICP binary transport over HTTP."""
