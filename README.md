@@ -21,7 +21,7 @@ pip install --upgrade iicp-client
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
 
-> **Upgrade note (0.7.67)** — upgrade provider nodes so normal `iicp-node serve`
+> **Upgrade note (0.7.68)** — upgrade provider nodes so normal `iicp-node serve`
 > processes run the unattended updater, check hourly by default, and report updater
 > evidence to the directory. This helps the mesh route away from stuck downlevel or
 > non-key-ready nodes without weakening IICP-CX requirements.

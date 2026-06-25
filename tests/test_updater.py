@@ -158,13 +158,13 @@ def test_auto_update_interval_env_floor_and_bad_value(monkeypatch):
 def test_auto_update_status_payload_defaults_hourly(monkeypatch):
     monkeypatch.delenv("IICP_AUTO_UPDATE", raising=False)
     monkeypatch.delenv("IICP_AUTO_UPDATE_INTERVAL_S", raising=False)
-    updater.record_update_check("0.7.67")
+    updater.record_update_check("0.7.68")
 
     payload = updater.auto_update_status_payload()
 
     assert payload["auto_update_enabled"] is True
     assert payload["auto_update_interval_s"] == 3600
-    assert payload["sdk_latest_seen"] == "0.7.67"
+    assert payload["sdk_latest_seen"] == "0.7.68"
     assert payload["sdk_update_last_checked_at"]
     assert payload["sdk_update_error_class"] is None
 

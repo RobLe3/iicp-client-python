@@ -63,6 +63,14 @@ def _is_ssrf_safe(url: str) -> bool:
     return True
 
 
+def _cx_plaintext_fallback_allowed() -> bool:
+    return os.getenv("IICP_CX_ALLOW_PLAINTEXT", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _node_short_id(node_id: str) -> str:
+    return node_id[:8]
+
+
 def _is_browser_usable_endpoint(url: str) -> bool:
     """True for endpoints a browser on an HTTPS page may call directly."""
     parsed = urlparse(url)
@@ -273,7 +281,29 @@ class IicpClient:
             )
 
         task_id = str(uuid.uuid4())
-        all_nodes = node_list.nodes
+        allow_plaintext = _cx_plaintext_fallback_allowed()
+        skipped_keyless = 0
+        all_nodes: list[Node] = []
+        for node in node_list.nodes:
+            if node.cx_public_key or allow_plaintext:
+                all_nodes.append(node)
+            else:
+                skipped_keyless += 1
+                logging.getLogger(__name__).warning(
+                    "IICP-CX: skipping keyless node %s — refusing plaintext by default "
+                    "(set IICP_CX_ALLOW_PLAINTEXT=1 only for transitional debugging).",
+                    _node_short_id(node.node_id),
+                )
+        if not all_nodes and skipped_keyless:
+            raise IicpError(
+                code="IICP-CX-REQUIRED",
+                message=(
+                    f"IICP-CX confidentiality required: {skipped_keyless} discovered node(s) "
+                    "advertised no encryption key; refusing plaintext fallback"
+                ),
+                component="sdk",
+                retryable=True,
+            )
         top_n = max(1, self._cfg.max_retries)
         candidates = self._select_candidates(all_nodes, top_n)
         last_exc: IicpError | None = None
@@ -293,18 +323,16 @@ class IicpClient:
             if request.source_node_id:
                 body["source_node_id"] = request.source_node_id
 
-            # IICP-CX S.16: encryption is MANDATORY (privacy-first #360) — there is no
-            # opt-out. Always encrypt when the node advertises a cx_public_key. During the
-            # migration window (#532) a node that advertises no key yet gets a loud warning
-            # and plaintext; once the mesh is key-ready this path becomes fail-closed (P0b).
-            # `use_confidentiality` is retained for back-compat but no longer gates anything.
+            # IICP-CX S.16: encryption is mandatory by default. Always encrypt when
+            # the node advertises a cx_public_key. Plaintext fallback is refused unless
+            # the caller explicitly sets IICP_CX_ALLOW_PLAINTEXT=1 for transitional debugging.
             if node.cx_public_key:
                 from iicp_client._confidentiality import encrypt_payload
                 body["iicp_conf"] = encrypt_payload(request.payload, node.cx_public_key, task_id, request.intent)
             else:
                 logging.getLogger(__name__).warning(
-                    "IICP-CX: node %s advertises no encryption key — sending UNENCRYPTED. "
-                    "This is transitional; it will be refused once the mesh is key-ready.",
+                    "IICP-CX: node %s advertises no encryption key — sending UNENCRYPTED "
+                    "only because IICP_CX_ALLOW_PLAINTEXT=1 is set.",
                     node.node_id,
                 )
                 body["payload"] = request.payload

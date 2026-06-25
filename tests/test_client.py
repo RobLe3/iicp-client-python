@@ -25,6 +25,15 @@ DIRECTORY = "https://iicp.test"
 NODE = "https://1.2.3.4:9484"
 DISCOVER_URL = f"{DIRECTORY}/v1/discover"
 TASK_URL = f"{NODE}/v1/task"
+NODE_KEYED_FALLBACK = "https://5.6.7.8:9484"
+TASK_URL_KEYED_FALLBACK = f"{NODE_KEYED_FALLBACK}/v1/task"
+
+CX_KEY_FIXTURE = {
+    "algorithm": "X25519",
+    "encoding": "base64url",
+    "key": "-LKZgrZEnFMr9ctB3uQDKsME07ZzS4Ce-SapFAePul0",
+    "key_id": "cx-fixture",
+}
 
 GOOD_NODES = {
     "nodes": [
@@ -42,6 +51,7 @@ GOOD_NODES = {
             "route_evidence": "directory_observed",
             "routing_hint": "https_direct",
             "browser_usable": True,
+            "cx_public_key": CX_KEY_FIXTURE,
         }
     ]
 }
@@ -299,7 +309,7 @@ def test_p0a_encrypts_with_directory_public_key_alias():
     """Deprecated directory public_key alias still encrypts as cx_public_key."""
     import json
 
-    nodes = {"nodes": [dict(GOOD_NODES["nodes"][0], public_key=_cx_key())]}
+    nodes = {"nodes": [dict(GOOD_NODES["nodes"][0], cx_public_key=None, public_key=_cx_key())]}
     respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
     route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
     client = IicpClient(ClientConfig(directory_url=DIRECTORY))
@@ -331,11 +341,56 @@ def test_p0a_prefers_canonical_cx_public_key_when_both_fields_present():
 
 
 @respx.mock
-def test_p0a_no_key_is_transitional_plaintext():
-    """A node advertising no key → plaintext during the migration window (fail-closed at P0b)."""
+def test_p0a_skips_keyless_node_and_uses_keyed_candidate():
+    """A reachable but keyless high-score node must not receive plaintext when a keyed route exists."""
     import json
 
-    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=GOOD_NODES))  # no cx key
+    nodes = {"nodes": [
+        dict(GOOD_NODES["nodes"][0], node_id="keyless", score=0.99, cx_public_key=None),
+        dict(
+            GOOD_NODES["nodes"][0],
+            node_id="keyed",
+            endpoint=NODE_KEYED_FALLBACK,
+            score=0.50,
+            cx_public_key=_cx_key("cx-keyed"),
+        ),
+    ]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
+    keyless_route = respx.post(TASK_URL).mock(
+        return_value=httpx.Response(500, json={"message": "should not be called"})
+    )
+    keyed_route = respx.post(TASK_URL_KEYED_FALLBACK).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY, routing_epsilon=0.0))
+    client.chat([ChatMessage(role="user", content="secret")], ChatOptions(model="m"))
+    assert keyless_route.call_count == 0
+    assert keyed_route.call_count == 1
+    body = json.loads(keyed_route.calls.last.request.content)
+    assert "iicp_conf" in body and "payload" not in body
+    assert body["iicp_conf"]["recipient_key_id"] == "cx-keyed"
+
+
+@respx.mock
+def test_p0a_no_key_is_refused_by_default():
+    """A node advertising no key must not receive plaintext by default."""
+
+    nodes = {"nodes": [dict(GOOD_NODES["nodes"][0], cx_public_key=None)]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    with pytest.raises(IicpError) as exc_info:
+        client.chat([ChatMessage(role="user", content="hi")], ChatOptions(model="m"))
+    assert exc_info.value.code == "IICP-CX-REQUIRED"
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_p0a_no_key_plaintext_requires_explicit_env_opt_in(monkeypatch):
+    """Plaintext fallback remains available only as an explicit transition/debug escape hatch."""
+    import json
+
+    monkeypatch.setenv("IICP_CX_ALLOW_PLAINTEXT", "1")
+    nodes = {"nodes": [dict(GOOD_NODES["nodes"][0], cx_public_key=None)]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
     route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
     client = IicpClient(ClientConfig(directory_url=DIRECTORY))
     client.chat([ChatMessage(role="user", content="hi")], ChatOptions(model="m"))
@@ -755,7 +810,8 @@ _MULTI_NODE_IPS = ["1.2.3.1", "1.2.3.2", "1.2.3.3", "1.2.3.4", "1.2.3.5"]
 _MULTI_NODES = {
     "nodes": [
         {"node_id": f"node-{i:02d}", "endpoint": f"https://{ip}:9484",
-         "score": round(1.0 - (i - 1) * 0.1, 1), "available": True, "region": "eu-west"}
+         "score": round(1.0 - (i - 1) * 0.1, 1), "available": True, "region": "eu-west",
+         "cx_public_key": CX_KEY_FIXTURE}
         for i, ip in enumerate(_MULTI_NODE_IPS, start=1)
     ]
 }
