@@ -146,10 +146,53 @@ def test_auto_update_enabled_env_opt_out(monkeypatch):
 
 def test_auto_update_interval_env_floor_and_bad_value(monkeypatch):
     monkeypatch.delenv("IICP_AUTO_UPDATE_INTERVAL_S", raising=False)
-    assert auto_update_interval_s() == 21600
+    assert auto_update_interval_s() == 3600
     monkeypatch.setenv("IICP_AUTO_UPDATE_INTERVAL_S", "42")
     assert auto_update_interval_s() == 300
     monkeypatch.setenv("IICP_AUTO_UPDATE_INTERVAL_S", "900")
     assert auto_update_interval_s() == 900
     monkeypatch.setenv("IICP_AUTO_UPDATE_INTERVAL_S", "not-a-number")
-    assert auto_update_interval_s() == 21600
+    assert auto_update_interval_s() == 3600
+
+
+def test_auto_update_status_payload_defaults_hourly(monkeypatch):
+    monkeypatch.delenv("IICP_AUTO_UPDATE", raising=False)
+    monkeypatch.delenv("IICP_AUTO_UPDATE_INTERVAL_S", raising=False)
+    updater.record_update_check("0.7.67")
+
+    payload = updater.auto_update_status_payload()
+
+    assert payload["auto_update_enabled"] is True
+    assert payload["auto_update_interval_s"] == 3600
+    assert payload["sdk_latest_seen"] == "0.7.67"
+    assert payload["sdk_update_last_checked_at"]
+    assert payload["sdk_update_error_class"] is None
+
+
+def test_start_auto_update_loop_runs_without_blocking(monkeypatch):
+    monkeypatch.delenv("IICP_AUTO_UPDATE", raising=False)
+    stop = updater.start_auto_update_loop(
+        "0.7.66",
+        latest_fn=lambda: "0.7.66",
+        upgrade_fn=lambda: (_ for _ in ()).throw(AssertionError("must not upgrade")),
+        reexec_fn=lambda: (_ for _ in ()).throw(AssertionError("must not reexec")),
+        log_fn=lambda *_: None,
+    )
+    assert stop is not None
+    stop.set()
+
+
+def test_provider_serve_uses_shared_auto_update_starter(monkeypatch):
+    import iicp_client.cli as cli
+    from iicp_client import __version__
+
+    calls = []
+    sentinel = object()
+    monkeypatch.setattr(
+        updater,
+        "start_auto_update_loop",
+        lambda current, **kw: calls.append((current, kw)) or sentinel,
+    )
+
+    assert cli._start_provider_auto_update() is sentinel
+    assert calls and calls[0][0] == __version__

@@ -38,6 +38,10 @@ GOOD_NODES = {
             "health_label": "healthy",
             "exposure_mode": "ipv4_public_direct",
             "transport": ["https", "iicp-native"],
+            "directory_observed_reachable": True,
+            "route_evidence": "directory_observed",
+            "routing_hint": "https_direct",
+            "browser_usable": True,
         }
     ]
 }
@@ -87,6 +91,11 @@ def test_discover_returns_node_list():
     assert result.nodes[0].exposure_mode == "ipv4_public_direct"
     # #397 — transport parsed from discover
     assert result.nodes[0].transport == ["https", "iicp-native"]
+    # Additive route-signal split parsed from discover
+    assert result.nodes[0].directory_observed_reachable is True
+    assert result.nodes[0].route_evidence == "directory_observed"
+    assert result.nodes[0].routing_hint == "https_direct"
+    assert result.nodes[0].browser_usable is True
 
 
 @respx.mock
@@ -98,6 +107,38 @@ def test_discover_health_fields_default_none_against_old_directory():
     result = client.discover("urn:iicp:intent:llm:chat:v1")
     assert result.nodes[0].health_label is None
     assert result.nodes[0].exposure_mode is None
+
+
+@respx.mock
+def test_discover_browser_usable_only_filters_http_ipv6_nodes():
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={
+        "nodes": [
+            {
+                "node_id": "n-ipv6",
+                "endpoint": "http://[2a0a:a543:df54::8ae]:9484",
+                "score": 0.9,
+                "available": True,
+                "region": "eu",
+                "routing_hint": "http_ipv6",
+                "browser_usable": False,
+            },
+            {
+                "node_id": "n-https",
+                "endpoint": "https://relay.example.com",
+                "score": 0.8,
+                "available": True,
+                "region": "eu",
+                "routing_hint": "relay_service",
+                "browser_usable": True,
+            },
+        ]
+    }))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    result = client.discover(
+        "urn:iicp:intent:llm:chat:v1",
+        DiscoverOptions(browser_usable_only=True),
+    )
+    assert [n.node_id for n in result.nodes] == ["n-https"]
 
 
 @respx.mock
@@ -218,13 +259,13 @@ def test_chat_sdk02_openai_compat_shape():
 # P0a (#360): mandatory encryption — no opt-out
 # ---------------------------------------------------------------------------
 
-def _cx_key():
+def _cx_key(key_id: str = "cx-1"):
     import base64
 
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
     pub = X25519PrivateKey.generate().public_key().public_bytes_raw()
-    return {"algorithm": "X25519", "key": base64.urlsafe_b64encode(pub).rstrip(b"=").decode(), "key_id": "cx-1"}
+    return {"algorithm": "X25519", "key": base64.urlsafe_b64encode(pub).rstrip(b"=").decode(), "key_id": key_id}
 
 
 _OK_TASK = {
@@ -267,6 +308,26 @@ def test_p0a_encrypts_with_directory_public_key_alias():
     assert "iicp_conf" in body, "client must encrypt when directory exposes deprecated public_key alias"
     assert "payload" not in body
     assert body["iicp_conf"]["recipient_key_id"] == "cx-1"
+
+
+@respx.mock
+def test_p0a_prefers_canonical_cx_public_key_when_both_fields_present():
+    """A transitional directory may expose both names; prefer canonical cx_public_key."""
+    import json
+
+    nodes = {"nodes": [dict(
+        GOOD_NODES["nodes"][0],
+        cx_public_key=_cx_key("cx-canonical"),
+        public_key=_cx_key("cx-alias"),
+    )]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    client.chat([ChatMessage(role="user", content="secret")], ChatOptions(model="m"))
+    body = json.loads(route.calls.last.request.content)
+    assert "iicp_conf" in body
+    assert "payload" not in body
+    assert body["iicp_conf"]["recipient_key_id"] == "cx-canonical"
 
 
 @respx.mock

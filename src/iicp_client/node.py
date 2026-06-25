@@ -632,6 +632,12 @@ class IicpNode:
 
         payload["sdk_language"] = "python"
         payload["sdk_version"] = _iicp_client_version
+        try:
+            from iicp_client.updater import auto_update_status_payload
+
+            payload.update(auto_update_status_payload())
+        except Exception:  # noqa: BLE001 — update metadata must never block registration
+            pass
         if self._cx_public_key:
             payload["cx_public_key"] = self._cx_public_key
         if self._cfg.backend:
@@ -725,6 +731,12 @@ class IicpNode:
             "available": True,
             "max_concurrent": self._availability.effective_max_concurrent(self._cfg.max_concurrent),
         }
+        try:
+            from iicp_client.updater import auto_update_status_payload
+
+            payload.update(auto_update_status_payload())
+        except Exception:  # noqa: BLE001 — update metadata must never block heartbeat
+            pass
         if ok > 0 or fail > 0:
             metrics: dict[str, float | int] = {"tasks_success": ok, "tasks_failed": fail}
             total = ok + fail

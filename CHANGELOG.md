@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 within the scope of the IICP Software axis (see [`VERSIONING.md`](https://github.com/RobLe3/iicp.network/blob/main/project/VERSIONING.md)
 in the main repo).
 
+## [0.7.67] — 2026-06-25
+
+### Fixed — unattended updater parity
+- Normal `iicp-node serve` now starts the background self-updater, matching the
+  service-managed and cross-SDK unattended behavior.
+- Auto-update checks default to hourly and report update evidence in heartbeats.
+
+## [0.7.66] — 2026-06-21
+
+### Verified — discover CX key dual-field migration
+- Added regression coverage for transitional directory responses that contain both canonical `cx_public_key` and deprecated `public_key`; Python already prefers `cx_public_key` and encrypts to the canonical key.
+- Retains browser/routing signal parsing for directory v1.10.50+.
+
 ## [0.7.65] — 2026-06-21
 
 ### Fixed — discover CX key alias
@@ -68,7 +81,7 @@ in the main repo).
   registry and, when a newer release is published, `pip install --upgrade`s and re-execs onto
   the new version — no operator intervention. **Once a node reaches 0.7.60, every future release
   self-propagates.** Default-on; opt out with `IICP_AUTO_UPDATE=0`. Check cadence via
-  `IICP_AUTO_UPDATE_INTERVAL_S` (default 6h, min 5m). Loop-safe (post-upgrade the running
+  `IICP_AUTO_UPDATE_INTERVAL_S` (default 1h, min 5m). Loop-safe (post-upgrade the running
   version equals latest) and failure-isolated (a failed upgrade never restarts or crashes the node).
 
 ### Security

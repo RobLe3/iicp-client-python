@@ -14,9 +14,19 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import urllib.request
+from datetime import UTC, datetime
 
 PYPI_URL = "https://pypi.org/pypi/iicp-client/json"
+DEFAULT_AUTO_UPDATE_INTERVAL_S = 3600
+
+_status_lock = threading.Lock()
+_status: dict[str, str | int | bool | None] = {
+    "sdk_latest_seen": None,
+    "sdk_update_last_checked_at": None,
+    "sdk_update_error_class": None,
+}
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -104,8 +114,8 @@ def auto_update_enabled() -> bool:
     return os.environ.get("IICP_AUTO_UPDATE", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
-def auto_update_interval_s(default: int = 21600) -> int:
-    """Check cadence in seconds (default 6h), floored at 5 min."""
+def auto_update_interval_s(default: int = DEFAULT_AUTO_UPDATE_INTERVAL_S) -> int:
+    """Check cadence in seconds (default 1h), floored at 5 min."""
     try:
         return max(300, int(os.environ.get("IICP_AUTO_UPDATE_INTERVAL_S", str(default))))
     except ValueError:
@@ -141,3 +151,53 @@ def auto_update_tick(
         return "upgraded"
     log_fn("auto-update: upgrade failed; staying on current version, will retry next check")
     return "upgrade-failed"
+
+
+def record_update_check(latest: str | None, error_class: str | None = None) -> None:
+    """Record the latest updater check for heartbeat observability."""
+    with _status_lock:
+        _status["sdk_latest_seen"] = latest
+        _status["sdk_update_last_checked_at"] = datetime.now(UTC).isoformat()
+        _status["sdk_update_error_class"] = error_class
+
+
+def auto_update_status_payload() -> dict[str, str | int | bool | None]:
+    """Optional heartbeat fields that let the directory see updater health."""
+    with _status_lock:
+        snapshot = dict(_status)
+    snapshot["auto_update_enabled"] = auto_update_enabled()
+    snapshot["auto_update_interval_s"] = auto_update_interval_s()
+    return snapshot
+
+
+def start_auto_update_loop(
+    current: str,
+    *,
+    stop_event: threading.Event | None = None,
+    latest_fn=latest_pypi_version,
+    upgrade_fn=perform_self_update,
+    reexec_fn=reexec_cli,
+    log_fn=print,
+) -> threading.Event | None:
+    """Start the default-on background updater for long-running node processes.
+
+    Returns the stop event when a loop was started; None when auto-update is disabled.
+    """
+    if not auto_update_enabled():
+        return None
+    stop = stop_event or threading.Event()
+    interval = auto_update_interval_s()
+
+    def _loop() -> None:
+        wait = auto_update_initial_delay_s(interval)
+        while not stop.wait(wait):
+            wait = interval
+            try:
+                latest = latest_fn()
+                record_update_check(latest, None if latest is not None else "latest_unknown")
+                auto_update_tick(current, latest, True, upgrade_fn, reexec_fn, log_fn)
+            except Exception as exc:  # noqa: BLE001 — updater must never take down the node
+                record_update_check(None, exc.__class__.__name__)
+
+    threading.Thread(target=_loop, daemon=True, name="iicp-auto-update").start()
+    return stop

@@ -110,6 +110,10 @@ class DiscoverOptions:
     min_reputation: float | None = None
     model: str | None = None
     limit: int = 10
+    # Browser-like consumers can request client-side filtering to endpoints a
+    # normal HTTPS page may call. Native clients keep the default False so IPv6
+    # HTTP/native nodes remain eligible.
+    browser_usable_only: bool = False
 
 
 @dataclass
@@ -131,6 +135,11 @@ class Node:
     cx_public_key: dict[str, str] | None = None
     # #397 — transport protocols the node speaks (e.g. ["https", "iicp-native"]).
     transport: list[str] | None = None
+    # Additive routing-signal split from directory v1.10.50+.
+    directory_observed_reachable: bool | None = None
+    route_evidence: str | None = None
+    routing_hint: str | None = None
+    browser_usable: bool | None = None
 
 
 @dataclass

@@ -63,6 +63,17 @@ def _is_ssrf_safe(url: str) -> bool:
     return True
 
 
+def _is_browser_usable_endpoint(url: str) -> bool:
+    """True for endpoints a browser on an HTTPS page may call directly."""
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return True
+    if parsed.scheme != "http":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
 class IicpClient:
     """Discover → select → submit client for the IICP protocol.
 
@@ -201,6 +212,12 @@ class IicpClient:
                     endpoint,
                 )
                 continue
+            browser_usable = n.get("browser_usable")
+            browser_usable_bool = bool(browser_usable) if isinstance(browser_usable, bool) else None
+            if opts.browser_usable_only and not (
+                browser_usable_bool if browser_usable_bool is not None else _is_browser_usable_endpoint(endpoint)
+            ):
+                continue
             # Directory discover now treats `cx_public_key` as canonical;
             # `public_key` is accepted only as a deprecated compatibility alias.
             # Accept both so live keyed nodes do not get treated as plaintext-only.
@@ -217,6 +234,14 @@ class IicpClient:
                 exposure_mode=n.get("exposure_mode"),
                 cx_public_key=cx_key if isinstance(cx_key, dict) else None,
                 transport=n.get("transport") if isinstance(n.get("transport"), list) else None,
+                directory_observed_reachable=(
+                    n.get("directory_observed_reachable")
+                    if isinstance(n.get("directory_observed_reachable"), bool)
+                    else None
+                ),
+                route_evidence=n.get("route_evidence") if isinstance(n.get("route_evidence"), str) else None,
+                routing_hint=n.get("routing_hint") if isinstance(n.get("routing_hint"), str) else None,
+                browser_usable=browser_usable_bool,
             ))
         return NodeList(nodes=nodes, query_ms=elapsed)
 

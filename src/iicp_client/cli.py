@@ -79,6 +79,17 @@ def _find_available_port(host: str, start: int, max_tries: int = 64) -> int:
     return start  # exhausted — let serve() surface the real bind error
 
 
+def _start_provider_auto_update():
+    """Start the SDK self-updater for normal `iicp-node serve` processes."""
+    from iicp_client import __version__ as _ver
+    from iicp_client.updater import start_auto_update_loop
+
+    return start_auto_update_loop(
+        _ver,
+        log_fn=lambda m: sys.stderr.write(f"[iicp-node] {m}\n") or sys.stderr.flush(),
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="iicp-node",
@@ -1305,9 +1316,12 @@ async def _serve(args: argparse.Namespace) -> int:
     proxy_task: asyncio.Task | None = None
     if getattr(args, "with_proxy", False):
         proxy_task = asyncio.create_task(_run_cohosted_proxy())
+    update_stop = _start_provider_auto_update()
     try:
         await node.serve(handler, host=args.host, port=args.port, node_token=token)
     finally:
+        if update_stop is not None:
+            update_stop.set()
         if proxy_task is not None:
             proxy_task.cancel()  # node exited → stop the co-hosted proxy
         if _tunnel is not None:
@@ -1982,7 +1996,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             return
         interval = auto_update_interval_s()
         # First check soon after startup (≤5 min) so a freshly-published release propagates
-        # fast + observably, instead of waiting a full interval (default 6h); then the cadence.
+        # fast + observably, instead of waiting a full interval (default 1h); then the cadence.
         wait = auto_update_initial_delay_s(interval)
         while not stop_event.wait(wait):
             wait = interval
