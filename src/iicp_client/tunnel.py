@@ -32,7 +32,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +52,25 @@ MAX_RESPAWNS = 3
 TUNNEL_HEALTH_INTERVAL_S = 30.0
 TUNNEL_HEALTH_MAX_FAILS = 2
 TUNNEL_VERIFY_TIMEOUT_S = 30.0
+TUNNEL_DEAD_RETRY_INITIAL_S = 30.0
+TUNNEL_DEAD_RETRY_MAX_S = 300.0
 
 
-class TunnelState(str, Enum):
+class TunnelState(StrEnum):
     READY = "ready"
     TWILIGHT = "twilight"
     RECOVERING = "recovering"
     DEAD = "dead"
+
+
+class TunnelDeadAction(StrEnum):
+    STOP = "stop"
+    RETRY = "retry"
+
+
+def _dead_retry_delay(attempt: int) -> float:
+    exponent = max(0, min(attempt - 1, 4))
+    return min(TUNNEL_DEAD_RETRY_INITIAL_S * (2**exponent), TUNNEL_DEAD_RETRY_MAX_S)
 
 
 def _tunnel_url_reachable(url: str) -> bool:
@@ -195,11 +207,12 @@ class QuickTunnel:
         self,
         on_new_url: Callable[[str], None],
         on_state: Callable[[TunnelState], None],
-        on_dead: Callable[[], None],
+        on_dead: Callable[[], TunnelDeadAction | str | None],
         *,
         probe: Callable[[str], bool] = _tunnel_url_reachable,
         health_interval: float = TUNNEL_HEALTH_INTERVAL_S,
         verify_timeout: float = TUNNEL_VERIFY_TIMEOUT_S,
+        dead_retry_delay: Callable[[int], float] = _dead_retry_delay,
     ) -> None:
         """Public-URL keepalive with twilight/recovery states.
 
@@ -210,6 +223,7 @@ class QuickTunnel:
 
         def _run() -> None:
             health_fails = 0
+            dead_retries = 0
             last_health = time.monotonic()
             state = TunnelState.READY
             on_state(state)
@@ -219,6 +233,33 @@ class QuickTunnel:
                 if state != next_state:
                     state = next_state
                     on_state(next_state)
+
+            def sleep_until_closed(delay: float) -> bool:
+                deadline = time.monotonic() + delay
+                while time.monotonic() < deadline:
+                    if self._closed:
+                        return True
+                    time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+                return self._closed
+
+            def handle_dead() -> bool:
+                nonlocal dead_retries, health_fails
+                set_state(TunnelState.DEAD)
+                action = on_dead()
+                if action not in (TunnelDeadAction.RETRY, TunnelDeadAction.RETRY.value):
+                    return False
+                dead_retries += 1
+                delay = dead_retry_delay(dead_retries)
+                logger.warning(
+                    "Quick Tunnel dead-state retry policy active — retrying in %.0fs.",
+                    delay,
+                )
+                if sleep_until_closed(delay):
+                    return False
+                self._respawns = 0
+                health_fails = 0
+                set_state(TunnelState.RECOVERING)
+                return True
 
             while not self._closed:
                 while not self._closed:
@@ -257,16 +298,16 @@ class QuickTunnel:
                         "`iicp-node serve` to recover.",
                         self._respawns - 1,
                     )
-                    set_state(TunnelState.DEAD)
-                    on_dead()
+                    if handle_dead():
+                        continue
                     return
                 logger.warning("Quick Tunnel down — respawning (%d/%d)…", self._respawns, MAX_RESPAWNS)
                 try:
                     fresh = open_quick_tunnel(self.local_port, binary=self._binary)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Quick Tunnel respawn failed: %s", exc)
-                    set_state(TunnelState.DEAD)
-                    on_dead()
+                    if handle_dead():
+                        continue
                     return
                 self.process = fresh.process
                 self.url = fresh.url
@@ -275,6 +316,7 @@ class QuickTunnel:
                 if _wait_until_reachable(self.url, probe, verify_timeout):
                     last_health = time.monotonic()
                     self._respawns = 0
+                    dead_retries = 0
                     set_state(TunnelState.READY)
                     logger.info("Quick Tunnel verified at %s — re-registering.", self.url)
                     on_new_url(self.url)

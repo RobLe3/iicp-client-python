@@ -63,6 +63,8 @@ def render_launchd(node: str, *, name: str | None = None, executable: str = "iic
         "IICP_NODE_NAME": node,
         "IICP_AUTO_UPDATE": _env_value("IICP_AUTO_UPDATE", "1"),
         "IICP_AUTO_UPDATE_INTERVAL_S": _env_value("IICP_AUTO_UPDATE_INTERVAL_S", "3600"),
+        "IICP_SUPERVISED": _env_value("IICP_SUPERVISED", "1"),
+        "IICP_TUNNEL_DEAD_POLICY": _env_value("IICP_TUNNEL_DEAD_POLICY", "auto"),
         "IICP_LOG_DIR": str(log_dir),
     }
     env_xml = "\n".join(f"    <key>{escape(k)}</key><string>{escape(v)}</string>" for k, v in env.items())
@@ -112,6 +114,8 @@ def render_systemd(node: str, *, name: str | None = None, executable: str = "iic
         "IICP_NODE_NAME": node,
         "IICP_AUTO_UPDATE": _env_value("IICP_AUTO_UPDATE", "1"),
         "IICP_AUTO_UPDATE_INTERVAL_S": _env_value("IICP_AUTO_UPDATE_INTERVAL_S", "3600"),
+        "IICP_SUPERVISED": _env_value("IICP_SUPERVISED", "1"),
+        "IICP_TUNNEL_DEAD_POLICY": _env_value("IICP_TUNNEL_DEAD_POLICY", "auto"),
         "IICP_LOG_DIR": str(log_dir),
     }
     env_lines = "\n".join(f"Environment={k}={shlex.quote(v)}" for k, v in env.items())

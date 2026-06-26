@@ -5,8 +5,8 @@
 long-running `iicp-node serve` processes now also run a default-on background
 loop: check PyPI hourly (first check within five minutes), `pip install
 --upgrade` when a newer stable release exists, and re-exec the process so the
-node comes back on the new code. The loop is failure-isolated and opt-out via
-`IICP_AUTO_UPDATE=0`.
+node comes back on the new code in covered service paths. The loop is
+failure-isolated and opt-out via `IICP_AUTO_UPDATE=0`.
 """
 
 from __future__ import annotations
@@ -81,9 +81,9 @@ def check_update(current: str, latest: str | None) -> dict:
 # ── P2 — background self-updater (#521) ─────────────────────────────────────────
 # A node running `serve` periodically checks the registry and, when a newer
 # release is published, upgrades itself and re-execs so it comes back on the new
-# version. This removes the dependency on operators manually upgrading downlevel
-# clients — once a node reaches the first release that contains this updater, all
-# future releases self-propagate. Default-on; opt out with IICP_AUTO_UPDATE=0.
+# version. This removes the dependency on manual upgrades in covered service
+# paths. Nodes older than the hardened 0.7.67 serve wiring may need one manual
+# upgrade/restart first. Default-on; opt out with IICP_AUTO_UPDATE=0.
 # Loop-safe by construction: after a successful upgrade the running version equals
 # `latest`, so the next tick is a no-op.
 

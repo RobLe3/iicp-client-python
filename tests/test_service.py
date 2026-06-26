@@ -17,6 +17,8 @@ def test_launchd_unit_runs_foreground_serve_with_hourly_auto_update(monkeypatch,
     assert "<string>mynode</string>" in unit.content
     assert "<key>IICP_AUTO_UPDATE</key><string>1</string>" in unit.content
     assert "<key>IICP_AUTO_UPDATE_INTERVAL_S</key><string>3600</string>" in unit.content
+    assert "<key>IICP_SUPERVISED</key><string>1</string>" in unit.content
+    assert "<key>IICP_TUNNEL_DEAD_POLICY</key><string>auto</string>" in unit.content
     assert "<key>KeepAlive</key><true/>" in unit.content
     assert "--daemon" not in unit.content
 
@@ -32,6 +34,8 @@ def test_systemd_unit_runs_foreground_serve_with_hourly_auto_update(monkeypatch,
     assert "ExecStart=iicp-node serve --node mynode" in unit.content
     assert "Environment=IICP_AUTO_UPDATE=1" in unit.content
     assert "Environment=IICP_AUTO_UPDATE_INTERVAL_S=3600" in unit.content
+    assert "Environment=IICP_SUPERVISED=1" in unit.content
+    assert "Environment=IICP_TUNNEL_DEAD_POLICY=auto" in unit.content
     assert "Restart=on-failure" in unit.content
     assert "--daemon" not in unit.content
 

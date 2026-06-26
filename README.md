@@ -21,10 +21,26 @@ pip install --upgrade iicp-client
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
 
-> **Upgrade note (0.7.70)** — upgrade provider nodes so Quick Tunnel endpoints
-> recover more elastically after sleep, idle, or Cloudflare edge drops. A tunnel in
-> twilight/recovery now heartbeats as unavailable and only re-registers once the
-> public `/iicp/health` route verifies again.
+> **Upgrade note (0.7.71)** — upgrade provider nodes so Quick Tunnel endpoints
+> recover more safely after sleep, idle, or Cloudflare edge drops. Tunnel
+> twilight/recovery still heartbeats as unavailable and only re-registers once
+> public `/iicp/health` verifies; supervised services and Docker containers now
+> fail visibly so launchd/systemd/Docker can restart instead of staying stuck.
+
+### Keeping provider nodes current
+
+Provider nodes run an hourly official-registry check by default
+(`IICP_AUTO_UPDATE=1`, `IICP_AUTO_UPDATE_INTERVAL_S=3600`; minimum 300s).
+When PyPI publishes a newer stable release, `serve` runs
+`python -m pip install --upgrade iicp-client` and re-execs the node so identity
+and cached node tokens are preserved.
+
+If a node is older than 0.7.67, perform one manual upgrade/restart first,
+especially for Dockerized Python or TypeScript providers: early updater wiring
+did not reliably cover every normal `serve` path. For Docker, use a Compose
+`restart: unless-stopped` policy (or `docker run --restart unless-stopped`) so
+0.7.71 can intentionally exit from a confirmed tunnel-dead state and let Docker
+bring it back cleanly.
 
 ---
 
@@ -280,11 +296,14 @@ Alternatively use IICP_RELAY_WORKER_ENDPOINT for relay-as-last-resort fallback.
 
 **Docker bridge (`-p 8020:8020`)** — UPnP is skipped (it would reach the Docker NAT, not
 your home router). The official image includes `cloudflared`, so if no public endpoint is
-configured the node first tries a zero-account Quick Tunnel, then falls back to relay. For
-stable direct hosting, set `IICP_PUBLIC_ENDPOINT` so the node knows its real address:
+configured the node first tries a zero-account Quick Tunnel, then falls back to relay.
+The image also sets `IICP_SUPERVISED=1`, so with Docker restart policy enabled a
+confirmed tunnel-dead state exits visibly and lets Docker restart the node. For stable
+direct hosting, set `IICP_PUBLIC_ENDPOINT` so the node knows its real address:
 
 ```yaml
 # docker-compose.yml
+restart: unless-stopped
 environment:
   IICP_PUBLIC_ENDPOINT: "http://your-host-ip:8020"
   IICP_BACKEND_URL: "http://host.docker.internal:11434"
@@ -340,6 +359,10 @@ node = IicpNode(NodeConfig(
 IICP_AUTO_DETECT_NAT=false   # disable NAT detection entirely
 IICP_PUBLIC_ENDPOINT=http://x.x.x.x:8020   # trust this endpoint, skip detection
 IICP_TUNNEL=0                # opt out of Quick Tunnel fallback
+IICP_TUNNEL_DEAD_POLICY=auto  # auto|retry|exit|log-only (auto = supervised exit, manual retry)
+IICP_SUPERVISED=1             # set by generated services/Docker so supervisors can restart
+IICP_AUTO_UPDATE=1            # hourly provider self-update; set 0 to disable
+IICP_AUTO_UPDATE_INTERVAL_S=3600  # update cadence in seconds; minimum 300
 IICP_EXTERNAL_IP_PROBE_URL=https://api.ipify.org  # WAN IP probe (default)
 ```
 

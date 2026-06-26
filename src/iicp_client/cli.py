@@ -59,6 +59,35 @@ def _env(name: str, default: str | None = None) -> str | None:
     return os.environ.get(name, default)
 
 
+TUNNEL_DEAD_EXIT_CODE = 75
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
+def _tunnel_dead_policy_from_env() -> str:
+    value = os.environ.get("IICP_TUNNEL_DEAD_POLICY", "auto").strip().lower()
+    if value in {"auto", "retry", "exit", "log-only", "log_only", "logonly"}:
+        return "log-only" if value in {"log_only", "logonly"} else value
+    logger.warning(
+        "ignoring invalid IICP_TUNNEL_DEAD_POLICY=%r; using auto.",
+        value,
+    )
+    return "auto"
+
+
+def _tunnel_dead_behavior(policy: str, supervised: bool) -> str:
+    if policy == "auto":
+        return "exit" if supervised else "retry"
+    if policy in {"retry", "exit", "log-only"}:
+        return policy
+    return "exit" if supervised else "retry"
+
+
 def _find_available_port(host: str, start: int, max_tries: int = 64) -> int:
     """Return the first bindable TCP port >= ``start`` on ``host``.
 
@@ -293,7 +322,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "on PATH; never auto-installed). Default: automatic — when direct IPv4/IPv6/"
         "pinhole reachability is unavailable or unverified, the node tries a tunnel "
         "before relay. --tunnel forces it on; --no-tunnel disables tunnel fallback. "
-        "env: IICP_TUNNEL=1/0",
+        "Dead-state policy: IICP_TUNNEL_DEAD_POLICY=auto|retry|exit|log-only; "
+        "generated services set IICP_SUPERVISED=1. env: IICP_TUNNEL=1/0",
     )
     serve.add_argument(
         "--relay-capable",
@@ -1429,7 +1459,13 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
     Must be called from async context (captures the running loop so the
     watchdog thread can marshal `node.register()` back onto it).
     """
-    from iicp_client.tunnel import INSTALL_HINT, TunnelState, cloudflared_path, open_quick_tunnel
+    from iicp_client.tunnel import (
+        INSTALL_HINT,
+        TunnelDeadAction,
+        TunnelState,
+        cloudflared_path,
+        open_quick_tunnel,
+    )
 
     if not cloudflared_path():
         logger.warning(INSTALL_HINT)
@@ -1459,11 +1495,25 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
         node.set_runtime_available(state is TunnelState.READY)
         logger.info("Quick Tunnel state: %s", state.value)
 
-    def _on_dead() -> None:
+    def _on_dead() -> TunnelDeadAction | None:
         logger.error(
             "Quick Tunnel permanently down — this node is no longer publicly "
             "reachable. Restart `iicp-node serve` to recover."
         )
+        behavior = _tunnel_dead_behavior(
+            _tunnel_dead_policy_from_env(),
+            _env_bool("IICP_SUPERVISED"),
+        )
+        if behavior == "exit":
+            logger.error(
+                "supervised tunnel failure policy is exit — terminating with code %d "
+                "so the supervisor can restart.",
+                TUNNEL_DEAD_EXIT_CODE,
+            )
+            os._exit(TUNNEL_DEAD_EXIT_CODE)  # noqa: SLF001 — watchdog thread must terminate process
+        if behavior == "retry":
+            return TunnelDeadAction.RETRY
+        return None
 
     tunnel.watch_elastic(_on_new_url, _on_state, _on_dead)
 

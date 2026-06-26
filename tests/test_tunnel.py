@@ -18,6 +18,7 @@ import pytest
 
 from iicp_client.tunnel import (
     INSTALL_HINT,
+    TunnelDeadAction,
     TunnelState,
     cloudflared_path,
     open_quick_tunnel,
@@ -136,6 +137,32 @@ class TestSupervision:
         assert TunnelState.READY in states
         t.close()
 
+    def test_elastic_watchdog_can_retry_after_dead_policy(self, tmp_path):
+        t = open_quick_tunnel(9484, binary=_fake_bin(tmp_path, FAKE_OK, name="dead-retry", lifetime=0.01))
+        dead_calls = 0
+        stopped = threading.Event()
+
+        def on_dead() -> TunnelDeadAction | None:
+            nonlocal dead_calls
+            dead_calls += 1
+            if dead_calls == 1:
+                return TunnelDeadAction.RETRY
+            stopped.set()
+            return None
+
+        t.watch_elastic(
+            lambda _u: None,
+            lambda _state: None,
+            on_dead,
+            probe=lambda _url: False,
+            health_interval=0.02,
+            verify_timeout=0.0,
+            dead_retry_delay=lambda _attempt: 0.0,
+        )
+        assert stopped.wait(timeout=30), "dead retry policy should re-enter recovery before stopping"
+        assert dead_calls >= 2
+        t.close()
+
 
 class TestCliWiring:
     def test_serve_has_tunnel_flags(self):
@@ -148,3 +175,12 @@ class TestCliWiring:
         assert ns.tunnel is False
         ns = parser.parse_args(["serve", "--model", "m"])
         assert ns.tunnel is None  # auto
+
+    def test_tunnel_dead_behavior_auto_exits_only_when_supervised(self):
+        from iicp_client.cli import _tunnel_dead_behavior
+
+        assert _tunnel_dead_behavior("auto", True) == "exit"
+        assert _tunnel_dead_behavior("auto", False) == "retry"
+        assert _tunnel_dead_behavior("retry", True) == "retry"
+        assert _tunnel_dead_behavior("exit", False) == "exit"
+        assert _tunnel_dead_behavior("log-only", True) == "log-only"

@@ -1,7 +1,7 @@
 # IICP Python node — runs an iicp-client provider node out of the box.
 #
 #   docker build -t iicp-node-py .
-#   docker run -p 8020:8020 \
+#   docker run --restart on-failure -p 8020:8020 \
 #     -e IICP_BACKEND_URL=http://host.docker.internal:11434 \
 #     -e IICP_BACKEND_MODEL=qwen2.5:0.5b \
 #     -e IICP_PUBLIC_ENDPOINT=http://<your-public-ip>:8020 \
@@ -15,6 +15,9 @@
 #   IICP_PUBLIC_ENDPOINT — externally reachable URL of this node. If omitted,
 #                          the node tries automatic reachability (Quick Tunnel
 #                          first, relay last-resort) before staying local.
+#   IICP_TUNNEL_DEAD_POLICY — auto|retry|exit|log-only; default auto exits when
+#                          supervised so Docker can restart, manual runs retry.
+#   IICP_SUPERVISED   — default 1 in this image; keep with --restart on-failure.
 #   IICP_DIRECTORY_URL  — default: https://iicp.network/api
 #   IICP_REGION         — default: eu-central
 #   IICP_MAX_CONCURRENT — default: 4
@@ -48,6 +51,8 @@ COPY --from=build /usr/local/lib/python3.12/site-packages /usr/local/lib/python3
 COPY --from=build /usr/local/bin/iicp-node /usr/local/bin/iicp-node
 COPY --from=build /app/src /app/src
 ENV PYTHONPATH=/app/src
+ENV IICP_SUPERVISED=1 \
+    IICP_TUNNEL_DEAD_POLICY=auto
 EXPOSE 8020
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
   CMD python3 -c "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8020/iicp/health',timeout=5); sys.exit(0 if r.status==200 else 1)"
