@@ -21,8 +21,9 @@ pip install --upgrade iicp-client
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
 
-> **Upgrade note (0.7.71)** — upgrade provider nodes so Quick Tunnel endpoints
-> recover more safely after sleep, idle, or Cloudflare edge drops. Tunnel
+> **Upgrade note (0.7.72)** — upgrade provider nodes so Quick Tunnel endpoints
+> recover safely after sleep, idle, Cloudflare edge drops, and local DNS
+> propagation lag on freshly-created `trycloudflare.com` URLs. Tunnel
 > twilight/recovery still heartbeats as unavailable and only re-registers once
 > public `/iicp/health` verifies; supervised services and Docker containers now
 > fail visibly so launchd/systemd/Docker can restart instead of staying stuck.
@@ -39,7 +40,7 @@ If a node is older than 0.7.67, perform one manual upgrade/restart first,
 especially for Dockerized Python or TypeScript providers: early updater wiring
 did not reliably cover every normal `serve` path. For Docker, use a Compose
 `restart: unless-stopped` policy (or `docker run --restart unless-stopped`) so
-0.7.71 can intentionally exit from a confirmed tunnel-dead state and let Docker
+0.7.72 can intentionally exit from a confirmed tunnel-dead state and let Docker
 bring it back cleanly.
 
 ---

@@ -23,6 +23,7 @@ a browser node became directory-LISTED via a tunnel-exposed relay (#452).
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import queue
 import re
@@ -31,6 +32,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from collections import deque
 from collections.abc import Callable
 from enum import StrEnum
 
@@ -52,6 +54,7 @@ MAX_RESPAWNS = 3
 TUNNEL_HEALTH_INTERVAL_S = 30.0
 TUNNEL_HEALTH_MAX_FAILS = 2
 TUNNEL_VERIFY_TIMEOUT_S = 30.0
+TUNNEL_DOH_TIMEOUT_S = 5.0
 TUNNEL_DEAD_RETRY_INITIAL_S = 30.0
 TUNNEL_DEAD_RETRY_MAX_S = 300.0
 
@@ -73,16 +76,72 @@ def _dead_retry_delay(attempt: int) -> float:
     return min(TUNNEL_DEAD_RETRY_INITIAL_S * (2**exponent), TUNNEL_DEAD_RETRY_MAX_S)
 
 
+def _trycloudflare_host(url: str) -> str | None:
+    if not url.strip().startswith("https://"):
+        return None
+    host = url.strip()[len("https://") :].split("/", 1)[0]
+    if not host.endswith(".trycloudflare.com"):
+        return None
+    if not re.fullmatch(r"[a-z0-9.-]+", host):
+        return None
+    return host
+
+
+def _error_message_is_likely_dns(message: str) -> bool:
+    msg = message.lower()
+    return (
+        "dns" in msg
+        or "failed to lookup address" in msg
+        or "nodename nor servname" in msg
+        or "name or service not known" in msg
+        or "temporary failure in name resolution" in msg
+        or "enotfound" in msg
+        or "eai_again" in msg
+    )
+
+
+def _doh_has_answer(host: str, record_type: str) -> bool:
+    req = urllib.request.Request(
+        f"https://cloudflare-dns.com/dns-query?name={host}&type={record_type}",
+        headers={"accept": "application/dns-json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TUNNEL_DOH_TIMEOUT_S) as resp:  # noqa: S310
+            if not (200 <= resp.status < 300):
+                return False
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 — DoH is only a false-negative guard
+        return False
+    return body.get("Status") == 0 and bool(body.get("Answer"))
+
+
+def _trycloudflare_published_via_doh(url: str) -> bool:
+    host = _trycloudflare_host(url)
+    if not host:
+        return False
+    return _doh_has_answer(host, "A") or _doh_has_answer(host, "AAAA")
+
+
 def _tunnel_url_reachable(url: str) -> bool:
     """GET ``<url>/iicp/health`` through the Cloudflare edge back to the local node —
     the same path a browser consumer takes — so it detects an edge-drop, not just a
-    local-process death. Any error / non-2xx → unreachable (treated as a failed probe).
+    local-process death. Local resolvers can lag freshly-created accountless
+    ``trycloudflare.com`` records; if local DNS fails but Cloudflare DoH already
+    publishes the hostname, keep the tunnel alive so we do not create→verify→kill-loop
+    fresh public URLs.
     """
     probe = url.rstrip("/") + "/iicp/health"
     try:
         with urllib.request.urlopen(probe, timeout=8) as resp:  # noqa: S310
             return 200 <= resp.status < 300
-    except Exception:  # noqa: BLE001 — any failure means the URL isn't reachable
+    except Exception as exc:  # noqa: BLE001
+        if _error_message_is_likely_dns(str(exc)) and _trycloudflare_published_via_doh(url):
+            logger.warning(
+                "Local DNS has not resolved %s yet, but Cloudflare DoH already "
+                "publishes it — keeping tunnel alive.",
+                url,
+            )
+            return True
         return False
 
 
@@ -381,6 +440,7 @@ def open_quick_tunnel(
 
     deadline = time.monotonic() + timeout
     url: str | None = None
+    last_lines: deque[str] = deque(maxlen=6)
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -391,6 +451,7 @@ def open_quick_tunnel(
             break
         if line is None:
             break  # process exited before printing a URL
+        last_lines.append(line.strip())
         m = _URL_RE.search(line)
         if m:
             url = m.group(0)
@@ -398,9 +459,9 @@ def open_quick_tunnel(
             break
     if url is None:
         proc.terminate()
-        raise RuntimeError(
-            f"cloudflared produced no tunnel URL within {timeout:.0f}s "
-            f"(exit={proc.poll()})"
-        )
+        reason = f"cloudflared produced no tunnel URL within {timeout:.0f}s (exit={proc.poll()})"
+        if last_lines:
+            reason += "; last cloudflared output: " + " | ".join(last_lines)
+        raise RuntimeError(reason)
     logger.info("Quick Tunnel up: %s → http://127.0.0.1:%d", url, local_port)
     return QuickTunnel(proc, url, local_port, resolved)

@@ -20,6 +20,8 @@ from iicp_client.tunnel import (
     INSTALL_HINT,
     TunnelDeadAction,
     TunnelState,
+    _error_message_is_likely_dns,
+    _trycloudflare_host,
     cloudflared_path,
     open_quick_tunnel,
 )
@@ -46,6 +48,21 @@ def _fake_bin(tmp_path, template: str, name: str = "fake-fox-1234", lifetime: fl
 
 
 class TestSetup:
+    def test_trycloudflare_host_accepts_only_safe_hosts(self):
+        assert (
+            _trycloudflare_host("https://blue-fox-1.trycloudflare.com/iicp/health")
+            == "blue-fox-1.trycloudflare.com"
+        )
+        assert _trycloudflare_host("https://example.com") is None
+        assert _trycloudflare_host("http://blue-fox-1.trycloudflare.com") is None
+        assert _trycloudflare_host("https://blue_fox.trycloudflare.com") is None
+
+    def test_dns_error_detection_covers_macos_resolver_wording(self):
+        assert _error_message_is_likely_dns(
+            "dns error: failed to lookup address information: "
+            "nodename nor servname provided, or not known"
+        )
+
     def test_cloudflared_path_none_when_absent(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda _: None)
         assert cloudflared_path() is None
