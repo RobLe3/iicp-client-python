@@ -25,6 +25,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import os
 import queue
 import re
 import shutil
@@ -55,8 +56,11 @@ TUNNEL_HEALTH_INTERVAL_S = 30.0
 TUNNEL_HEALTH_MAX_FAILS = 2
 TUNNEL_VERIFY_TIMEOUT_S = 30.0
 TUNNEL_DOH_TIMEOUT_S = 5.0
+TUNNEL_RATE_LIMIT_COOLDOWN_S = 15 * 60.0
 TUNNEL_DEAD_RETRY_INITIAL_S = 30.0
 TUNNEL_DEAD_RETRY_MAX_S = 300.0
+
+_quick_tunnel_rate_limit_until = 0.0
 
 
 class TunnelState(StrEnum):
@@ -74,6 +78,40 @@ class TunnelDeadAction(StrEnum):
 def _dead_retry_delay(attempt: int) -> float:
     exponent = max(0, min(attempt - 1, 4))
     return min(TUNNEL_DEAD_RETRY_INITIAL_S * (2**exponent), TUNNEL_DEAD_RETRY_MAX_S)
+
+
+def _rate_limit_cooldown_s() -> float:
+    try:
+        value = float(os.environ.get("IICP_TUNNEL_RATE_LIMIT_COOLDOWN_S", ""))
+        return value if value > 0 else TUNNEL_RATE_LIMIT_COOLDOWN_S
+    except ValueError:
+        return TUNNEL_RATE_LIMIT_COOLDOWN_S
+
+
+def _quick_tunnel_rate_limit_remaining_s() -> float:
+    return max(0.0, _quick_tunnel_rate_limit_until - time.monotonic())
+
+
+def _mark_quick_tunnel_rate_limited() -> float:
+    global _quick_tunnel_rate_limit_until
+    cooldown = _rate_limit_cooldown_s()
+    _quick_tunnel_rate_limit_until = time.monotonic() + cooldown
+    return cooldown
+
+
+def _cloudflared_output_is_rate_limited(lines: deque[str]) -> bool:
+    joined = " ".join(lines).lower()
+    return (
+        "429" in joined
+        or "too many requests" in joined
+        or "error code: 1015" in joined
+        or "rate limit" in joined
+    )
+
+
+def _reset_quick_tunnel_rate_limit_for_tests() -> None:
+    global _quick_tunnel_rate_limit_until
+    _quick_tunnel_rate_limit_until = 0.0
 
 
 def _trycloudflare_host(url: str) -> str | None:
@@ -413,6 +451,14 @@ def open_quick_tunnel(
     Raises FileNotFoundError when cloudflared is absent (caller prints
     INSTALL_HINT once) and RuntimeError when no URL appears within ``timeout``.
     """
+    remaining = _quick_tunnel_rate_limit_remaining_s()
+    if remaining > 0:
+        raise RuntimeError(
+            f"accountless Quick Tunnel creation paused for {remaining:.0f}s after "
+            "Cloudflare rate limiting; retry later or configure a named tunnel / "
+            "IICP_PUBLIC_ENDPOINT"
+        )
+
     resolved = binary or cloudflared_path()
     if not resolved:
         raise FileNotFoundError(INSTALL_HINT)
@@ -462,6 +508,12 @@ def open_quick_tunnel(
         reason = f"cloudflared produced no tunnel URL within {timeout:.0f}s (exit={proc.poll()})"
         if last_lines:
             reason += "; last cloudflared output: " + " | ".join(last_lines)
+        if _cloudflared_output_is_rate_limited(last_lines):
+            cooldown = _mark_quick_tunnel_rate_limited()
+            reason += (
+                f"; accountless Quick Tunnel rate limit detected — pausing tunnel "
+                f"creation for {cooldown:.0f}s"
+            )
         raise RuntimeError(reason)
     logger.info("Quick Tunnel up: %s → http://127.0.0.1:%d", url, local_port)
     return QuickTunnel(proc, url, local_port, resolved)

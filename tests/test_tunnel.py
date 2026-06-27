@@ -21,6 +21,7 @@ from iicp_client.tunnel import (
     TunnelDeadAction,
     TunnelState,
     _error_message_is_likely_dns,
+    _reset_quick_tunnel_rate_limit_for_tests,
     _trycloudflare_host,
     cloudflared_path,
     open_quick_tunnel,
@@ -37,6 +38,14 @@ time.sleep({lifetime})
 FAKE_SILENT = """#!{python}
 import time
 time.sleep(60)
+"""
+
+FAKE_RATE_LIMITED = """#!{python}
+import sys
+sys.stdout.write("ERR Error unmarshaling QuickTunnel response: error code: 1015\\n")
+sys.stdout.write("status_code=\\"429 Too Many Requests\\"\\n")
+sys.stdout.flush()
+sys.exit(1)
 """
 
 
@@ -88,6 +97,16 @@ class TestInitiation:
     def test_timeout_when_no_url(self, tmp_path):
         with pytest.raises(RuntimeError, match="no tunnel URL"):
             open_quick_tunnel(9484, timeout=0.5, binary=_fake_bin(tmp_path, FAKE_SILENT))
+
+    def test_rate_limit_output_opens_creation_cooldown(self, tmp_path):
+        _reset_quick_tunnel_rate_limit_for_tests()
+        try:
+            with pytest.raises(RuntimeError, match="rate limit detected"):
+                open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_RATE_LIMITED))
+            with pytest.raises(RuntimeError, match="creation paused"):
+                open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_OK))
+        finally:
+            _reset_quick_tunnel_rate_limit_for_tests()
 
 
 class TestTeardown:
