@@ -20,7 +20,10 @@ from iicp_client.tunnel import (
     INSTALL_HINT,
     TunnelDeadAction,
     TunnelState,
+    _acquire_quick_tunnel_create_lease,
     _error_message_is_likely_dns,
+    _mark_quick_tunnel_create_attempt,
+    _quick_tunnel_create_gate_remaining_s,
     _reset_quick_tunnel_rate_limit_for_tests,
     _trycloudflare_host,
     cloudflared_path,
@@ -54,6 +57,26 @@ def _fake_bin(tmp_path, template: str, name: str = "fake-fox-1234", lifetime: fl
     p.write_text(template.format(python=sys.executable, name=name, lifetime=lifetime))
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
     return str(p)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_tunnel_state(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "IICP_TUNNEL_RATE_LIMIT_STATE_FILE",
+        str(tmp_path / "quick_tunnel_rate_limit.json"),
+    )
+    monkeypatch.setenv(
+        "IICP_TUNNEL_CREATE_STATE_FILE",
+        str(tmp_path / "quick_tunnel_create_gate.json"),
+    )
+    monkeypatch.setenv(
+        "IICP_TUNNEL_CREATE_LOCK_FILE",
+        str(tmp_path / "quick_tunnel_create.lock"),
+    )
+    monkeypatch.setenv("IICP_TUNNEL_CREATE_MIN_INTERVAL_S", "0")
+    _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
+    yield
+    _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
 
 
 class TestSetup:
@@ -98,15 +121,48 @@ class TestInitiation:
         with pytest.raises(RuntimeError, match="no tunnel URL"):
             open_quick_tunnel(9484, timeout=0.5, binary=_fake_bin(tmp_path, FAKE_SILENT))
 
-    def test_rate_limit_output_opens_creation_cooldown(self, tmp_path):
-        _reset_quick_tunnel_rate_limit_for_tests()
+    def test_rate_limit_output_opens_creation_cooldown(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("IICP_HOME", str(tmp_path / "iicp-home"))
+        _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
         try:
             with pytest.raises(RuntimeError, match="rate limit detected"):
                 open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_RATE_LIMITED))
             with pytest.raises(RuntimeError, match="creation paused"):
                 open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_OK))
         finally:
+            _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
+
+    def test_rate_limit_cooldown_survives_process_restart(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("IICP_HOME", str(tmp_path / "iicp-home"))
+        _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
+        try:
+            with pytest.raises(RuntimeError, match="rate limit detected"):
+                open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_RATE_LIMITED))
+
+            # Simulate a supervised restart: process-local state is gone, but
+            # the node state directory still remembers the cooldown.
             _reset_quick_tunnel_rate_limit_for_tests()
+
+            with pytest.raises(RuntimeError, match="creation paused"):
+                open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_OK))
+        finally:
+            _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
+
+    def test_create_gate_spaces_local_services(self, monkeypatch):
+        monkeypatch.setenv("IICP_TUNNEL_CREATE_MIN_INTERVAL_S", "60")
+        assert _quick_tunnel_create_gate_remaining_s() == 0
+        _mark_quick_tunnel_create_attempt()
+        assert _quick_tunnel_create_gate_remaining_s() > 0
+
+    def test_create_lease_serializes_parallel_spawns(self):
+        lease = _acquire_quick_tunnel_create_lease()
+        try:
+            with pytest.raises(RuntimeError, match="another local IICP node"):
+                _acquire_quick_tunnel_create_lease()
+        finally:
+            lease.close()
+        next_lease = _acquire_quick_tunnel_create_lease()
+        next_lease.close()
 
 
 class TestTeardown:

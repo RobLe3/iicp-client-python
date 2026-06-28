@@ -36,6 +36,7 @@ import urllib.request
 from collections import deque
 from collections.abc import Callable
 from enum import StrEnum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ TUNNEL_HEALTH_MAX_FAILS = 2
 TUNNEL_VERIFY_TIMEOUT_S = 30.0
 TUNNEL_DOH_TIMEOUT_S = 5.0
 TUNNEL_RATE_LIMIT_COOLDOWN_S = 15 * 60.0
+TUNNEL_CREATE_MIN_INTERVAL_S = 120.0
+TUNNEL_CREATE_LEASE_S = 45.0
 TUNNEL_DEAD_RETRY_INITIAL_S = 30.0
 TUNNEL_DEAD_RETRY_MAX_S = 300.0
 
@@ -88,15 +91,212 @@ def _rate_limit_cooldown_s() -> float:
         return TUNNEL_RATE_LIMIT_COOLDOWN_S
 
 
+def _quick_tunnel_rate_limit_state_path() -> Path:
+    override = os.environ.get("IICP_TUNNEL_RATE_LIMIT_STATE_FILE")
+    if override:
+        return Path(override).expanduser()
+    home = Path(os.environ.get("IICP_HOME") or (Path.home() / ".iicp")).expanduser()
+    return home / "state" / "quick_tunnel_rate_limit.json"
+
+
+def _quick_tunnel_create_state_path() -> Path:
+    override = os.environ.get("IICP_TUNNEL_CREATE_STATE_FILE")
+    if override:
+        return Path(override).expanduser()
+    home = Path(os.environ.get("IICP_HOME") or (Path.home() / ".iicp")).expanduser()
+    return home / "state" / "quick_tunnel_create_gate.json"
+
+
+def _quick_tunnel_create_lock_path() -> Path:
+    override = os.environ.get("IICP_TUNNEL_CREATE_LOCK_FILE")
+    if override:
+        return Path(override).expanduser()
+    home = Path(os.environ.get("IICP_HOME") or (Path.home() / ".iicp")).expanduser()
+    return home / "state" / "quick_tunnel_create.lock"
+
+
+def _tunnel_create_min_interval_s() -> float:
+    try:
+        value = float(os.environ.get("IICP_TUNNEL_CREATE_MIN_INTERVAL_S", ""))
+        return max(0.0, value)
+    except ValueError:
+        return TUNNEL_CREATE_MIN_INTERVAL_S
+
+
+def _tunnel_create_lease_s() -> float:
+    try:
+        value = float(os.environ.get("IICP_TUNNEL_CREATE_LEASE_S", ""))
+        return value if value > 0 else TUNNEL_CREATE_LEASE_S
+    except ValueError:
+        return TUNNEL_CREATE_LEASE_S
+
+
+def _read_json_field_float(path: Path, field: str) -> float:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return 0.0
+    except Exception as exc:  # noqa: BLE001 — corrupted state must not break serving
+        logger.debug("Ignoring unreadable Quick Tunnel state %s: %s", path, exc)
+        return 0.0
+    try:
+        return float(data.get(field, 0.0))
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def _read_persistent_rate_limit_until() -> float:
+    return _read_json_field_float(
+        _quick_tunnel_rate_limit_state_path(), "quick_tunnel_rate_limited_until"
+    )
+
+
+def _persistent_rate_limit_remaining_s() -> float:
+    until = _read_persistent_rate_limit_until()
+    remaining = max(0.0, until - time.time())
+    if remaining <= 0:
+        _clear_persistent_rate_limit_if_safe()
+    return remaining
+
+
+def _persist_rate_limit_until(until_wall_epoch_s: float, cooldown_s: float) -> None:
+    path = _quick_tunnel_rate_limit_state_path()
+    payload = {
+        "quick_tunnel_rate_limited_until": until_wall_epoch_s,
+        "cooldown_s": cooldown_s,
+        "reason": "cloudflare_quick_tunnel_rate_limit",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001 — in-process cooldown still protects this process
+        logger.warning("Could not persist Quick Tunnel cooldown state %s: %s", path, exc)
+
+
+def _clear_persistent_rate_limit_if_safe() -> None:
+    path = _quick_tunnel_rate_limit_state_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not clear expired Quick Tunnel cooldown state %s: %s", path, exc)
+
+
+def _clear_create_gate_if_safe() -> None:
+    path = _quick_tunnel_create_state_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not clear expired Quick Tunnel create-gate state %s: %s", path, exc)
+
+
 def _quick_tunnel_rate_limit_remaining_s() -> float:
-    return max(0.0, _quick_tunnel_rate_limit_until - time.monotonic())
+    return max(0.0, _quick_tunnel_rate_limit_until - time.monotonic(), _persistent_rate_limit_remaining_s())
 
 
 def _mark_quick_tunnel_rate_limited() -> float:
     global _quick_tunnel_rate_limit_until
     cooldown = _rate_limit_cooldown_s()
     _quick_tunnel_rate_limit_until = time.monotonic() + cooldown
+    _persist_rate_limit_until(time.time() + cooldown, cooldown)
     return cooldown
+
+
+def _quick_tunnel_create_gate_remaining_s() -> float:
+    until = _read_json_field_float(
+        _quick_tunnel_create_state_path(), "quick_tunnel_create_not_before"
+    )
+    remaining = max(0.0, until - time.time())
+    if remaining <= 0:
+        _clear_create_gate_if_safe()
+    return remaining
+
+
+def _mark_quick_tunnel_create_attempt() -> None:
+    interval = _tunnel_create_min_interval_s()
+    if interval <= 0:
+        _clear_create_gate_if_safe()
+        return
+    path = _quick_tunnel_create_state_path()
+    payload = {
+        "quick_tunnel_create_not_before": time.time() + interval,
+        "interval_s": interval,
+        "pid": os.getpid(),
+        "reason": "host_wide_quick_tunnel_creation_pacing",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not persist Quick Tunnel create-gate state %s: %s", path, exc)
+
+
+class _QuickTunnelCreateLease:
+    def __init__(self, path: Path | None):
+        self.path = path
+
+    def close(self) -> None:
+        if self.path is None:
+            return
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            return
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not release Quick Tunnel create lock %s", self.path)
+
+
+def _acquire_quick_tunnel_create_lease() -> _QuickTunnelCreateLease:
+    path = _quick_tunnel_create_lock_path()
+    lease = _tunnel_create_lease_s()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001 — fail open; the create gate still helps
+        logger.warning("Could not create Quick Tunnel lock directory %s: %s", path.parent, exc)
+        return _QuickTunnelCreateLease(None)
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            expires = _read_json_field_float(path, "expires_at")
+            remaining = max(0.0, expires - time.time())
+            if remaining > 0:
+                raise RuntimeError(
+                    f"accountless Quick Tunnel creation held by another local IICP node for "
+                    f"{remaining:.0f}s; falling back to the previous reachability method"
+                ) from None
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        except Exception as exc:  # noqa: BLE001 — fail open; do not prevent serving
+            logger.warning("Could not acquire Quick Tunnel create lock %s: %s", path, exc)
+            return _QuickTunnelCreateLease(None)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "pid": os.getpid(),
+                    "expires_at": time.time() + lease,
+                    "lease_s": lease,
+                    "reason": "host_wide_quick_tunnel_creation_lock",
+                },
+                handle,
+                sort_keys=True,
+            )
+            handle.write("\n")
+        return _QuickTunnelCreateLease(path)
+    raise RuntimeError(
+        f"accountless Quick Tunnel creation held by another local IICP node for "
+        f"{lease:.0f}s; falling back to the previous reachability method"
+    )
 
 
 def _cloudflared_output_is_rate_limited(lines: deque[str]) -> bool:
@@ -109,9 +309,16 @@ def _cloudflared_output_is_rate_limited(lines: deque[str]) -> bool:
     )
 
 
-def _reset_quick_tunnel_rate_limit_for_tests() -> None:
+def _reset_quick_tunnel_rate_limit_for_tests(*, clear_persistent: bool = False) -> None:
     global _quick_tunnel_rate_limit_until
     _quick_tunnel_rate_limit_until = 0.0
+    if clear_persistent:
+        _clear_persistent_rate_limit_if_safe()
+        _clear_create_gate_if_safe()
+        try:
+            _quick_tunnel_create_lock_path().unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _trycloudflare_host(url: str) -> str | None:
@@ -458,16 +665,29 @@ def open_quick_tunnel(
             "Cloudflare rate limiting; retry later or configure a named tunnel / "
             "IICP_PUBLIC_ENDPOINT"
         )
+    create_remaining = _quick_tunnel_create_gate_remaining_s()
+    if create_remaining > 0:
+        raise RuntimeError(
+            f"accountless Quick Tunnel creation paced for {create_remaining:.0f}s to avoid "
+            "Cloudflare rate limits; falling back to the previous reachability method "
+            "while the tunnel budget recovers"
+        )
 
     resolved = binary or cloudflared_path()
     if not resolved:
         raise FileNotFoundError(INSTALL_HINT)
-    proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
-        [resolved, "tunnel", "--url", f"http://127.0.0.1:{local_port}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    create_lease = _acquire_quick_tunnel_create_lease()
+    _mark_quick_tunnel_create_attempt()
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+            [resolved, "tunnel", "--url", f"http://127.0.0.1:{local_port}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except Exception:
+        create_lease.close()
+        raise
     # Read on a thread: readline() on the main thread would block forever if
     # the child prints nothing, defeating the deadline. The same thread keeps
     # draining after the URL is found so the child never stalls on a full pipe
@@ -504,6 +724,7 @@ def open_quick_tunnel(
             url_found.set()
             break
     if url is None:
+        create_lease.close()
         proc.terminate()
         reason = f"cloudflared produced no tunnel URL within {timeout:.0f}s (exit={proc.poll()})"
         if last_lines:
@@ -515,5 +736,6 @@ def open_quick_tunnel(
                 f"creation for {cooldown:.0f}s"
             )
         raise RuntimeError(reason)
+    create_lease.close()
     logger.info("Quick Tunnel up: %s → http://127.0.0.1:%d", url, local_port)
     return QuickTunnel(proc, url, local_port, resolved)

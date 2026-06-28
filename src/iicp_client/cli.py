@@ -1065,6 +1065,7 @@ async def _serve(args: argparse.Namespace) -> int:
         elif _env_tunnel in ("0", "false", "no"):
             _tunnel_pref = False
     _tunnel = None  # QuickTunnel handle — closed in the serve finally block
+    _tunnel_attempted = False
     _nat_profile = None
     _backend_flavor = _detect_backend_flavor(
         args.backend_url, getattr(args, "backend_api_key", "") or "", args.backend_type
@@ -1156,6 +1157,7 @@ async def _serve(args: argparse.Namespace) -> int:
                         "NAT tier=%d: opening Quick Tunnel (rung 5) for an autonomous public endpoint.",
                         profile.tier,
                     )
+                    _tunnel_attempted = True
                     _tunnel = _open_tunnel_rung(node, args.port, forced=False)
                     if _tunnel is not None:
                         public_endpoint = _tunnel.url
@@ -1217,6 +1219,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # who KNOWS they're unreachable, or wants an https endpoint for browser
     # consumers without touching the router).
     if _tunnel_pref is True and _tunnel is None:
+        _tunnel_attempted = True
         _tunnel = _open_tunnel_rung(node, args.port, forced=True)
         if _tunnel is not None:
             public_endpoint = _tunnel.url
@@ -1236,17 +1239,22 @@ async def _serve(args: argparse.Namespace) -> int:
             _nat_profile,
         )
         if reason:
-            logger.info(
-                "direct endpoint needs public fallback (%s) — opening Quick Tunnel automatically.",
-                reason,
-            )
-            _tunnel = _open_tunnel_rung(node, args.port, forced=False)
-            if _tunnel is not None:
-                public_endpoint = _tunnel.url
+            if _tunnel_attempted:
+                logger.info(
+                    "direct endpoint needs public fallback (%s) — Quick Tunnel was already "
+                    "attempted for this startup; falling back to the previous method.",
+                    reason,
+                )
             else:
                 logger.info(
-                    "no tunnel available — querying directory for a relay-capable peer (last resort)."
+                    "direct endpoint needs public fallback (%s) — opening Quick Tunnel automatically.",
+                    reason,
                 )
+                _tunnel = _open_tunnel_rung(node, args.port, forced=False)
+                if _tunnel is not None:
+                    public_endpoint = _tunnel.url
+            if _tunnel is None:
+                logger.info("no tunnel available — querying directory for a relay-capable peer (last resort).")
                 elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
                 if elected_relay:
                     relay_host, relay_port = elected_relay
