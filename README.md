@@ -5,7 +5,11 @@
 [![Protocol](https://img.shields.io/badge/IICP-v1.7-indigo.svg)](https://iicp.network/spec)
 [![PyPI](https://img.shields.io/badge/PyPI-iicp--client-blue?logo=pypi&logoColor=white)](https://pypi.org/project/iicp-client/)
 
-Official Python client library for the [IICP protocol](https://iicp.network) — route AI agent tasks by intent across a self-organising mesh of provider nodes. No central broker. No hardcoded endpoints.
+Use the open AI mesh from your Python app. Install the client, send an intent,
+and get a routed response from an IICP node.
+
+You do **not** need to run a node to try the client path. Consume first,
+provide later.
 
 ```
 urn:iicp:intent:llm:chat:v1  →  discover  →  select  →  submit
@@ -20,6 +24,69 @@ pip install --upgrade iicp-client
 ```
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
+
+## One-line test
+
+```bash
+iicp-node query "Hello, mesh."
+```
+
+What good looks like:
+
+```bash
+iicp-node --help       # shows query, serve, proxy, mcp-gateway, credits, ...
+which iicp-node        # points to your Python environment
+iicp-node --version    # prints iicp-node 0.7.75 or newer
+```
+
+The query command contacts the public directory, discovers a matching live node,
+routes your prompt, and prints the response. No account, API key, or local node
+is required for this consumer path.
+
+## Use from Python
+
+```python
+from iicp_client import IicpClient, ChatMessage
+import asyncio
+
+async def main():
+    reply = await IicpClient().chat_async([
+        ChatMessage(role="user", content="Hello, mesh.")
+    ])
+    print(reply.choices[0].message.content)
+
+asyncio.run(main())
+```
+
+## Do I need to run a node?
+
+No. Running a node is only needed when you want to provide compute or tools to
+the mesh. Start as a client; run a node later when you want to contribute.
+
+## Migrate from existing AI tools
+
+Direct call:
+
+```python
+# Before: call one vendor endpoint directly.
+# After: ask IICP to discover and route by capability.
+reply = await IicpClient().chat_async([
+    ChatMessage(role="user", content="Summarize this document.")
+])
+```
+
+Existing OpenAI-compatible tools:
+
+```bash
+pip install 'iicp-client[proxy]'
+iicp-node proxy
+export OPENAI_BASE_URL=http://127.0.0.1:9483/v1
+```
+
+Then point LangChain, Cursor, liteLLM or another OpenAI-compatible tool at that
+base URL. Full guide: <https://iicp.network/docs/proxy>
+
+## Provider upgrade note
 
 > **Upgrade note (0.7.75)** — upgrade provider nodes so Quick Tunnel endpoints
 > recover safely after sleep, idle, Cloudflare edge drops, and local DNS
@@ -65,7 +132,7 @@ For production provider nodes backed by Ollama/vLLM, the `iicp-node` binary (Rus
 
 ---
 
-## Quickstart
+## Library quickstart
 
 ```python
 import asyncio
