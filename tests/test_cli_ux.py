@@ -198,7 +198,7 @@ def test_credits_default_no_token_multiple_token_nodes_shows_all(iicp_home, monk
 
     fetched_for: list[str] = []
 
-    async def _mock_fetch(directory_url, node_id, token, label, as_json, verify):
+    async def _mock_fetch(directory_url, node_id, token, label, as_json, verify, wallet_state=None):
         fetched_for.append(label)
         return 0
 
