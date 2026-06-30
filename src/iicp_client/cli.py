@@ -388,7 +388,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     credits = sub.add_parser(
         "credits",
-        help="Show this node's earned / spent / balance credits.",
+        help="Show your operator wallet plus this node's credit ledger.",
     )
     credits.add_argument("--node", default=None, help="Load token + node_id from ~/.iicp/nodes/<NAME>.json")
     credits.add_argument("--node-id", dest="node_id", default=None, help="Node id (if not using --node).")
@@ -500,7 +500,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def _cmd_credits_async(args: argparse.Namespace) -> int:
-    """`iicp-node credits` — earned / spent / balance from the directory's
+    """`iicp-node credits` — operator wallet + node ledger from the directory's
     reconcile-checked GET /v1/credits/summary (#456). Figures come authenticated
     from the directory (not the local config), so editing the saved file cannot
     inflate them; `reconciles` flags a ledger that does not add up."""
@@ -545,13 +545,14 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
                     # One node failing must not hide the others — show every
                     # node, then exit non-zero if any failed (2026-06-11).
                     failed = 0
+                    wallet_state = {"shown": False}
                     for idx, n in enumerate(with_token):
                         if idx > 0:
                             print()
                         rc = await _fetch_and_display_credits(
                             n.directory_url or directory_url,
                             n.node_id, n.node_token, n.name,
-                            args.json, args.verify,
+                            args.json, args.verify, wallet_state,
                         )
                         if rc != 0:
                             sys.stderr.write(
@@ -610,6 +611,7 @@ async def _fetch_and_display_credits(
     label: str,
     as_json: bool,
     verify: bool,
+    wallet_state: dict[str, bool] | None = None,
 ) -> int:
     """Shared fetch+display logic for one node's credits summary."""
     import httpx
@@ -670,7 +672,38 @@ async def _fetch_and_display_credits(
     tx = int(body.get("tx_count", 0))
     reconciles = bool(body.get("reconciles", False))
     tpc = int(body.get("tokens_per_credit", 1000))
-    print(f"IICP credits — {label}")
+    wallet = body.get("operator_wallet")
+    if isinstance(wallet, dict):
+        show_wallet = not (wallet_state or {}).get("shown", False)
+        fingerprint = wallet.get("operator_fingerprint")
+        suffix = f" · operator {fingerprint}" if fingerprint else ""
+        wallet_balance = float(wallet.get("total_balance", balance))
+        wallet_nodes = int(wallet.get("node_count", 0))
+        if show_wallet:
+            print(f"IICP operator wallet{suffix}")
+            if "total_earned" in wallet:
+                print(f"  Total earned       {float(wallet.get('total_earned', 0.0)):>12.3f}")
+            if "total_spent" in wallet:
+                print(f"  Total spent        {float(wallet.get('total_spent', 0.0)):>12.3f}")
+            print("  ─────────────────────────────")
+            wallet_reconciles = wallet.get("reconciles")
+            wallet_check = (
+                "✓ reconciles" if wallet_reconciles is True
+                else "✗ DOES NOT RECONCILE" if wallet_reconciles is False
+                else "rollup"
+            )
+            print(
+                f"  Wallet balance     {wallet_balance:>12.3f}   {wallet_check}   "
+                f"(≈ {int(wallet_balance * tpc)} tokens)"
+            )
+            print(f"  {wallet_nodes} linked node(s) · per-node audit below")
+            print()
+            if wallet_state is not None:
+                wallet_state["shown"] = True
+        print(f"Node ledger — {label}")
+    else:
+        print(f"IICP credits — {label}")
+        print("  Node-local ledger  bind an operator identity to combine nodes")
     print(f"  Earned (income)   {earned:>12.3f}")
     print(f"  Spent             {spent:>12.3f}")
     print("  ─────────────────────────────")

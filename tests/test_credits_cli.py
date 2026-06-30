@@ -45,6 +45,25 @@ def test_credits_renders_on_200(capsys):
     assert '"total_earned": 142.5' in capsys.readouterr().out
 
 
+def test_credits_human_output_shows_operator_wallet(capsys):
+    body = (
+        '{"node_id":"n1","total_earned":2.5,"total_spent":1.0,"balance":1.5,'
+        '"tx_count":3,"reconciles":true,"unit":"credit","tokens_per_credit":1000,'
+        '"operator_wallet":{"total_balance":8.5,"total_earned":10.0,"total_spent":1.5,'
+        '"tx_count":6,"node_count":2,"reconciles":true,"operator_fingerprint":"abc123"}}'
+    )
+    port = _serve_once(200, body)
+    rc = main(
+        ["credits", "--node-id", "n1", "--token", "t",
+         "--directory-url", f"http://127.0.0.1:{port}"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "IICP operator wallet · operator abc123" in out
+    assert "Wallet balance" in out
+    assert "Node ledger — n1" in out
+
+
 def test_credits_errs_on_forged_token_401():
     body = '{"error":{"code":"unauthorized","message":"invalid node_token"}}'
     port = _serve_once(401, body)
@@ -354,6 +373,13 @@ _OK_BODY = (
     '"tx_count":1,"reconciles":true,"unit":"credit","tokens_per_credit":1000}'
 )
 
+_WALLET_BODY = (
+    '{"node_id":"n1","total_earned":2.5,"total_spent":1.0,"balance":1.5,'
+    '"tx_count":3,"reconciles":true,"unit":"credit","tokens_per_credit":1000,'
+    '"operator_wallet":{"total_balance":8.5,"total_earned":10.0,"total_spent":1.5,'
+    '"tx_count":6,"node_count":2,"reconciles":true,"operator_fingerprint":"abc123"}}'
+)
+
 
 def test_credits_retries_once_on_transient_500(capsys):
     """A single 5xx (deploy window / shared-hosting blip) must not surface as a
@@ -412,3 +438,32 @@ def test_credits_all_nodes_continues_past_failing_node(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "zzz-good" in out, "the healthy node must still be displayed"
     assert rc == 1, "exit must be non-zero when any node failed"
+
+
+def test_credits_all_nodes_prints_operator_wallet_once(tmp_path, monkeypatch, capsys):
+    """All-nodes output should explain the operator wallet once, then show each
+    node ledger underneath it. Repeating the wallet per node adds adoption noise."""
+    monkeypatch.setenv("IICP_HOME", str(tmp_path))
+    port_a, _a = _serve_sequence([(200, _WALLET_BODY)])
+    port_b, _b = _serve_sequence([(200, _WALLET_BODY)])
+
+    save_node(NodeIdentity(
+        node_id="n-def", operator_id="op", name="default", backend_url="http://b",
+        model="m",
+    ))
+    save_node(NodeIdentity(
+        node_id="n-a", operator_id="op", name="aaa", backend_url="http://b",
+        model="m", directory_url=f"http://127.0.0.1:{port_a}", node_token="t1",
+    ))
+    save_node(NodeIdentity(
+        node_id="n-b", operator_id="op", name="bbb", backend_url="http://b",
+        model="m", directory_url=f"http://127.0.0.1:{port_b}", node_token="t2",
+    ))
+
+    rc = main(["credits"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out.count("IICP operator wallet") == 1
+    assert "Node ledger — aaa" in out
+    assert "Node ledger — bbb" in out
