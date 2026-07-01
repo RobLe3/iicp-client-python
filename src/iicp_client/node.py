@@ -866,14 +866,78 @@ class IicpNode:
             logger.warning("Model-drift re-registration failed: %s", exc)
 
     async def _heartbeat_loop(self, node_token: str) -> None:
+        from iicp_client.recovery import (
+            RECOVERY_EXIT_CODE,
+            DirectoryPresence,
+            RecoveryAction,
+            RecoveryState,
+            classify,
+            env_check_every_heartbeats,
+            env_grace_checks,
+            registry_node_presence,
+            supervised_recovery_enabled,
+        )
+
         token = node_token
+        seq = 0
+        recovery_failures = 0
+        recovery_grace = env_grace_checks()
+        recovery_check_every = env_check_every_heartbeats()
+        recovery_supervised = supervised_recovery_enabled()
         while True:
             await asyncio.sleep(_HEARTBEAT_INTERVAL)
+            seq += 1
             try:
                 await self.heartbeat(token)
                 logger.debug("Heartbeat sent for %s", self._cfg.node_id)
                 # #494 — detect model list drift and re-register if needed.
                 await self._maybe_reregister_on_model_drift()
+                if recovery_check_every > 0 and seq % recovery_check_every == 0:
+                    presence = await registry_node_presence(
+                        self._http,
+                        self._cfg.directory_url,
+                        self._cfg.node_id,
+                    )
+                    public_available = bool(self._runtime_available)
+                    if (not public_available) or presence is DirectoryPresence.ABSENT:
+                        recovery_failures += 1
+                    elif presence is DirectoryPresence.PRESENT:
+                        recovery_failures = 0
+
+                    backend_attention = self._backend_stability_snapshot().is_draining()
+                    state, action = classify(
+                        local_health_ok=True,
+                        public_available=public_available,
+                        directory_presence=presence,
+                        consecutive_failures=recovery_failures,
+                        grace_checks=recovery_grace,
+                        backend_attention=backend_attention,
+                    )
+                    if state not in (RecoveryState.HEALTHY, RecoveryState.UNKNOWN):
+                        logger.warning(
+                            "Recovery check state=%s action=%s failures=%s/%s",
+                            state.value,
+                            action.value,
+                            recovery_failures,
+                            recovery_grace,
+                        )
+                    if action is RecoveryAction.REREGISTER:
+                        try:
+                            token = await self.register()
+                            recovery_failures = 0
+                            logger.info("Re-registered %s after recovery check", self._cfg.node_id)
+                        except Exception as reg_exc:  # noqa: BLE001
+                            logger.warning("Recovery re-registration failed: %s", reg_exc)
+                    elif action is RecoveryAction.RESTART_SELF and recovery_supervised:
+                        logger.error(
+                            "Recovery check recommends restart (state=%s, failures=%s/%s); "
+                            "exiting with code %s so the supervisor can rebuild route + registration.",
+                            state.value,
+                            recovery_failures,
+                            recovery_grace,
+                            RECOVERY_EXIT_CODE,
+                        )
+                        os._exit(RECOVERY_EXIT_CODE)  # noqa: SLF001 — supervised recovery path
             except httpx.HTTPStatusError as exc:
                 # #399 — the directory dropped the node (deregistered on a prior
                 # shutdown, TTL-expired after a heartbeat gap, or the directory

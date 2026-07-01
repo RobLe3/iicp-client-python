@@ -409,6 +409,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cryptographically audit each award against the directory's signed CREDIT_AWARD log.",
     )
 
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check local health, directory presence, and deterministic recovery action.",
+    )
+    doctor.add_argument(
+        "--node",
+        default=_env("IICP_NODE_NAME", "default"),
+        help="Load saved node config (~/.iicp/nodes/<NAME>.json). env: IICP_NODE_NAME",
+    )
+    doctor.add_argument(
+        "--directory-url",
+        default=None,
+        help="Override the saved IICP directory base URL.",
+    )
+    doctor.add_argument("--json", action="store_true", help="Print machine-readable recovery state.")
+
     # #460 — operator-identity management (mutable nickname over the immutable operator_id).
     operator = sub.add_parser("operator", help="Manage your operator identity.")
     op_sub = operator.add_subparsers(dest="op_cmd", required=True)
@@ -738,6 +754,100 @@ async def _fetch_and_display_credits(
                 f"  · {free_tier:.3f} credits are free-tier allocation "
                 "(directory-granted, not signed task awards)"
             )
+    return 0
+
+
+def _doctor_loopback_host(host: str) -> str:
+    host = (host or "").strip()
+    if host in {"", "::", "0.0.0.0"}:
+        return "127.0.0.1"
+    return host
+
+
+def _doctor_url(host: str, port: int) -> str:
+    host = _doctor_loopback_host(host)
+    if ":" in host and not host.startswith("["):
+        return f"http://[{host}]:{port}/iicp/health"
+    return f"http://{host}:{port}/iicp/health"
+
+
+async def _cmd_doctor_async(args: argparse.Namespace) -> int:
+    """`iicp-node doctor` — local health + directory-presence recovery diagnosis."""
+    import httpx
+
+    from iicp_client.recovery import (
+        DirectoryPresence,
+        classify,
+        env_grace_checks,
+        node_registry_prefix,
+        registry_node_presence,
+    )
+
+    saved = load_node(args.node) if args.node else None
+    if saved is None:
+        sys.stderr.write(
+            f"ERROR: no saved config at ~/.iicp/nodes/{args.node}.json — run `iicp-node init` first.\n"
+        )
+        return 1
+
+    directory_url = args.directory_url or saved.directory_url or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
+    local_health_url = _doctor_url(saved.host, saved.port)
+    health: dict | None = None
+    health_error: str | None = None
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            resp = await client.get(local_health_url, timeout=2.0)
+            resp.raise_for_status()
+            health = resp.json()
+            local_health_ok = True
+        except Exception as exc:  # noqa: BLE001
+            health_error = str(exc)
+            local_health_ok = False
+        presence = await registry_node_presence(client, directory_url, saved.node_id)
+
+    backend_state = ((health or {}).get("backend_stability") or {}).get("backend_state")
+    backend_attention = backend_state == "draining"
+    failures = 1 if (not local_health_ok or presence is DirectoryPresence.ABSENT) else 0
+    state, action = classify(
+        local_health_ok=local_health_ok,
+        public_available=local_health_ok,
+        directory_presence=presence,
+        consecutive_failures=failures,
+        grace_checks=env_grace_checks(),
+        backend_attention=backend_attention,
+    )
+    prefix = node_registry_prefix(saved.node_id)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "node": saved.name,
+                    "node_id": saved.node_id,
+                    "prefix": prefix,
+                    "directory_url": directory_url,
+                    "local_health_url": local_health_url,
+                    "local_health_ok": local_health_ok,
+                    "local_health_error": health_error,
+                    "directory_presence": presence.value,
+                    "recovery_state": state.value,
+                    "recommended_action": action.value,
+                    "health": health,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"IICP node doctor — {saved.name}")
+    print(f"  Local health            {'ok' if local_health_ok else 'failed'} ({local_health_url})")
+    if health_error:
+        print(f"  Local health detail     {health_error}")
+    print(f"  Directory prefix        {prefix}")
+    print(f"  Directory presence      {presence.value}")
+    print(f"  Recovery state          {state.value}")
+    print(f"  Recommended action      {action.value}")
+    print("  Note                    restart is automatic only when supervised services set IICP_SUPERVISED=1")
     return 0
 
 
@@ -2301,6 +2411,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_cmd_query_async(args))
     if args.cmd == "credits":
         return asyncio.run(_cmd_credits_async(args))
+    if args.cmd == "doctor":
+        return asyncio.run(_cmd_doctor_async(args))
     if args.cmd == "operator":
         if args.op_cmd == "rename":
             return asyncio.run(_cmd_operator_rename_async(args))
