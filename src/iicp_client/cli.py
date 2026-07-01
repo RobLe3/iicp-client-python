@@ -88,6 +88,32 @@ def _tunnel_dead_behavior(policy: str, supervised: bool) -> str:
     return "exit" if supervised else "retry"
 
 
+def relay_worker_fallback_allowed(relay_capable: bool) -> bool:
+    """Relay-capable nodes must not turn into relay workers on fallback.
+
+    If a relay service cannot obtain its own public endpoint, supervised
+    services should restart and retry the public route instead of removing
+    relay capacity from the mesh by falling back through another relay.
+    """
+
+    return not relay_capable
+
+
+def _exit_if_supervised_public_fallback_unrecovered() -> None:
+    if _tunnel_dead_behavior(
+        _tunnel_dead_policy_from_env(),
+        _env_bool("IICP_SUPERVISED"),
+    ) != "exit":
+        return
+    logger.error(
+        "public fallback is still unavailable after tunnel/relay attempts. "
+        "Exiting with code %d so the supervisor can retry instead of advertising "
+        "an unverified direct route.",
+        TUNNEL_DEAD_EXIT_CODE,
+    )
+    raise SystemExit(TUNNEL_DEAD_EXIT_CODE)
+
+
 def _find_available_port(host: str, start: int, max_tries: int = 64) -> int:
     """Return the first bindable TCP port >= ``start`` on ``host``.
 
@@ -1306,19 +1332,27 @@ async def _serve(args: argparse.Namespace) -> int:
                         public_endpoint = _tunnel.url
                         break
                 elif _step == "relay":
-                    logger.info(
-                        "NAT tier=%d: no tunnel — querying directory for a relay-capable peer (last resort).",
-                        profile.tier,
-                    )
-                    elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
-                    if elected_relay:
-                        relay_host, relay_port = elected_relay
-                        relay_worker_ep = f"{relay_host}:{relay_port}"
-                        cfg.relay_worker_endpoint = relay_worker_ep
+                    if relay_worker_fallback_allowed(getattr(args, "relay_capable", False)):
                         logger.info(
-                            "NAT: auto-elected relay %s:%d (last resort) — node will register via relay.",
-                            relay_host,
-                            relay_port,
+                            "NAT tier=%d: no tunnel — querying directory for a relay-capable peer (last resort).",
+                            profile.tier,
+                        )
+                        elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
+                        if elected_relay:
+                            relay_host, relay_port = elected_relay
+                            relay_worker_ep = f"{relay_host}:{relay_port}"
+                            cfg.relay_worker_endpoint = relay_worker_ep
+                            logger.info(
+                                "NAT: auto-elected relay %s:%d (last resort) — node will register via relay.",
+                                relay_host,
+                                relay_port,
+                            )
+                            break
+                    else:
+                        logger.warning(
+                            "NAT tier=%d: no tunnel for relay-capable node — not falling back "
+                            "through another relay; supervisor will retry the public route.",
+                            profile.tier,
                         )
                         break
                 elif _step == "gossip":
@@ -1397,17 +1431,24 @@ async def _serve(args: argparse.Namespace) -> int:
                 if _tunnel is not None:
                     public_endpoint = _tunnel.url
             if _tunnel is None:
-                logger.info("no tunnel available — querying directory for a relay-capable peer (last resort).")
-                elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
-                if elected_relay:
-                    relay_host, relay_port = elected_relay
-                    relay_worker_ep = f"{relay_host}:{relay_port}"
-                    cfg.relay_worker_endpoint = relay_worker_ep
-                    logger.info(
-                        "NAT: auto-elected relay %s:%d (last resort) — node will register via relay.",
-                        relay_host,
-                        relay_port,
+                if relay_worker_fallback_allowed(getattr(args, "relay_capable", False)):
+                    logger.info("no tunnel available — querying directory for a relay-capable peer (last resort).")
+                    elected_relay = await _auto_elect_relay(args.directory_url, cfg.intent, node_id)
+                    if elected_relay:
+                        relay_host, relay_port = elected_relay
+                        relay_worker_ep = f"{relay_host}:{relay_port}"
+                        cfg.relay_worker_endpoint = relay_worker_ep
+                        logger.info(
+                            "NAT: auto-elected relay %s:%d (last resort) — node will register via relay.",
+                            relay_host,
+                            relay_port,
+                        )
+                else:
+                    logger.warning(
+                        "no tunnel available for relay-capable node — not falling back through "
+                        "another relay; supervisor will retry the public route."
                     )
+                    _exit_if_supervised_public_fallback_unrecovered()
 
     # The handler expects base_url; the CLI's --backend-url is the OpenAI-
     # compatible root. Append /v1 if not already present (Ollama serves at
@@ -1709,7 +1750,11 @@ async def _auto_elect_relay(directory_url: str, intent: str, node_id: str) -> tu
         logger.debug("relay discovery failed: %s", exc)
         return None
 
-    candidates = [n for n in data.get("nodes", []) if n.get("relay_capable") and n.get("endpoint")]
+    candidates = [
+        n
+        for n in data.get("nodes", [])
+        if n.get("relay_capable") and n.get("endpoint") and n.get("node_id") != node_id
+    ]
     if not candidates:
         return None
 

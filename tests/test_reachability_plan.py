@@ -6,7 +6,7 @@ plan_reachability() which _serve consumes. Parity with the TS/Rust planners.
 """
 from types import SimpleNamespace
 
-from iicp_client.cli import direct_tunnel_fallback_reason, plan_reachability
+from iicp_client.cli import direct_tunnel_fallback_reason, plan_reachability, relay_worker_fallback_allowed
 
 
 def test_tunnel_first_for_tier3_with_tunnel_enabled():
@@ -22,6 +22,11 @@ def test_no_escalation_when_reachable_or_relay_configured():
     assert plan_reachability(0, False, True) == []   # tier<3 → direct/UPnP path
     assert plan_reachability(2, False, True) == []
     assert plan_reachability(3, True, True) == []     # explicit relay → no auto-escalation
+
+
+def test_relay_capable_node_does_not_become_relay_worker_on_public_fallback_failure():
+    assert relay_worker_fallback_allowed(False) is True
+    assert relay_worker_fallback_allowed(True) is False
 
 
 def test_direct_tunnel_fallback_preserves_verified_direct():
