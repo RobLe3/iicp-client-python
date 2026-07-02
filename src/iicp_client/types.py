@@ -9,6 +9,26 @@ if TYPE_CHECKING:
     from iicp_client.errors import IicpError
 
 
+RoutingProfile = str
+
+
+@dataclass
+class RoutingPolicy:
+    """Client-side pre-dispatch routing policy.
+
+    The policy is evaluated after prompt-free directory discovery and before
+    a task payload is sent to any remote executor.
+    """
+
+    profile: RoutingProfile = "standard"
+    allowed_regions: list[str] | None = None
+    require_encryption: bool | None = None
+    require_policy_manifest: bool | None = None
+    require_no_payload_retention: bool | None = None
+    allow_remote_executor: bool | None = None
+    known_operator_only: bool | None = None
+
+
 @dataclass
 class ClientConfig:
     directory_url: str = "https://iicp.network/api"
@@ -25,6 +45,8 @@ class ClientConfig:
     routing_softmax_tau: float = 0.04
     # Phase 2 (#496): caller's JWT from directory registration; used to acquire consumer tokens.
     node_token: str | None = None
+    # Phase 6 (#585): default client-side policy applied before remote dispatch.
+    routing_policy: RoutingPolicy = field(default_factory=RoutingPolicy)
 
 
 @dataclass
@@ -47,6 +69,8 @@ class TaskRequest:
     auth: TaskAuth = field(default_factory=TaskAuth)
     # #488 — requester node identity for self-query neutrality at the directory.
     source_node_id: str | None = None
+    # Phase 6 (#585): optional per-request override for remote routing policy.
+    routing_policy: RoutingPolicy | None = None
 
 
 @dataclass
@@ -79,6 +103,7 @@ class ChatOptions:
     timeout_ms: int | None = None
     qos: str = "interactive"
     node_token: str | None = None
+    routing_policy: RoutingPolicy | None = None
 
 
 @dataclass

@@ -16,6 +16,7 @@ from iicp_client import (
     DiscoverOptions,
     IicpClient,
     IicpError,
+    RoutingPolicy,
     TaskAuth,
     TaskRequest,
 )
@@ -411,6 +412,89 @@ def test_p0a_no_key_plaintext_requires_explicit_env_opt_in(monkeypatch):
     client.chat([ChatMessage(role="user", content="hi")], ChatOptions(model="m"))
     body = json.loads(route.calls.last.request.content)
     assert "payload" in body and "iicp_conf" not in body
+
+
+# ---------------------------------------------------------------------------
+# #585: remote routing policy gate — no prompt dispatch on policy refusal
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_routing_policy_sensitive_refuses_remote_before_prompt_dispatch():
+    nodes = {"nodes": [dict(GOOD_NODES["nodes"][0], cx_public_key=_cx_key("cx-sensitive"))]}
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=nodes))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+
+    with pytest.raises(IicpError) as exc_info:
+        client.chat(
+            [ChatMessage(role="user", content="GDPR_CANARY_PROMPT_DO_NOT_SEND")],
+            ChatOptions(model="m", routing_policy=RoutingPolicy(profile="sensitive")),
+        )
+
+    assert exc_info.value.code == "IICP-POLICY-ROUTING"
+    assert "no prompt was sent" in exc_info.value.message
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_routing_policy_eu_restricted_excludes_non_eu_and_uses_eu_node():
+    import json
+
+    eu_node = dict(
+        GOOD_NODES["nodes"][0],
+        node_id="eu-node",
+        endpoint=NODE_KEYED_FALLBACK,
+        region="eu-central",
+        cx_public_key=_cx_key("cx-eu"),
+    )
+    us_node = dict(
+        GOOD_NODES["nodes"][0],
+        node_id="us-node",
+        region="us-east",
+        score=0.99,
+        cx_public_key=_cx_key("cx-us"),
+    )
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [us_node, eu_node]}))
+    us_route = respx.post(TASK_URL).mock(return_value=httpx.Response(500, json={"message": "no"}))
+    eu_route = respx.post(TASK_URL_KEYED_FALLBACK).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY, routing_epsilon=0.0))
+
+    client.chat(
+        [ChatMessage(role="user", content="hello")],
+        ChatOptions(model="m", routing_policy=RoutingPolicy(profile="eu_restricted")),
+    )
+
+    assert us_route.call_count == 0
+    assert eu_route.call_count == 1
+    body = json.loads(eu_route.calls.last.request.content)
+    assert "iicp_conf" in body and "payload" not in body
+
+
+@respx.mock
+def test_routing_policy_strict_requires_no_payload_retention_manifest():
+    retained = dict(
+        GOOD_NODES["nodes"][0],
+        cx_public_key=_cx_key("cx-retained"),
+        node_policy_manifest={
+            "jurisdiction": "DE",
+            "training_use": "none",
+            "retention": {"task_payload": "provider_defined"},
+        },
+    )
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [retained]}))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+
+    with pytest.raises(IicpError) as exc_info:
+        client.chat(
+            [ChatMessage(role="user", content="hello")],
+            ChatOptions(model="m", routing_policy=RoutingPolicy(profile="strict_policy")),
+        )
+
+    assert exc_info.value.code == "IICP-POLICY-ROUTING"
+    assert "payload_retention_not_none" in exc_info.value.message
+    assert route.call_count == 0
 
 
 # ---------------------------------------------------------------------------

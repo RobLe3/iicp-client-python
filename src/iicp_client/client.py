@@ -19,6 +19,12 @@ import httpx
 from iicp_client._http import _traceparent, get_json, post_json
 from iicp_client.errors import IicpError
 from iicp_client.policy import ensure_intent_allowed
+from iicp_client.routing_policy import (
+    ROUTING_POLICY_REFUSAL_CODE,
+    filter_nodes_for_routing_policy,
+    resolved_policy,
+    routing_policy_refusal_message,
+)
 from iicp_client.types import (
     ChatChoice,
     ChatMessage,
@@ -285,31 +291,41 @@ class IicpClient:
             )
 
         task_id = str(uuid.uuid4())
-        allow_plaintext = _cx_plaintext_fallback_allowed()
-        skipped_keyless = 0
-        all_nodes: list[Node] = []
+        routing_policy = request.routing_policy or self._cfg.routing_policy
+        effective_policy = resolved_policy(routing_policy)
+        allow_plaintext = _cx_plaintext_fallback_allowed() or effective_policy.require_encryption is False
+        decision = filter_nodes_for_routing_policy(
+            node_list.nodes,
+            effective_policy,
+            allow_plaintext_debug=allow_plaintext,
+        )
         for node in node_list.nodes:
             if node.cx_public_key or allow_plaintext:
-                all_nodes.append(node)
-            else:
-                skipped_keyless += 1
-                logging.getLogger(__name__).warning(
-                    "IICP-CX: skipping keyless node %s — refusing plaintext by default "
-                    "(set IICP_CX_ALLOW_PLAINTEXT=1 only for transitional debugging).",
-                    _node_short_id(node.node_id),
-                )
-        if not all_nodes and skipped_keyless:
+                continue
+            logging.getLogger(__name__).warning(
+                "IICP-CX: skipping keyless node %s — refusing plaintext by default "
+                "(set IICP_CX_ALLOW_PLAINTEXT=1 or routing_profile=debug_override only for transitional debugging).",
+                _node_short_id(node.node_id),
+            )
+        if not decision.eligible and decision.skipped_keyless and len(decision.rejected_reasons) == decision.skipped_keyless:
             raise IicpError(
                 code="IICP-CX-REQUIRED",
                 message=(
-                    f"IICP-CX confidentiality required: {skipped_keyless} discovered node(s) "
+                    f"IICP-CX confidentiality required: {decision.skipped_keyless} discovered node(s) "
                     "advertised no encryption key; refusing plaintext fallback"
                 ),
                 component="sdk",
                 retryable=True,
             )
+        if not decision.eligible:
+            raise IicpError(
+                code=ROUTING_POLICY_REFUSAL_CODE,
+                message=routing_policy_refusal_message(request.intent, decision, effective_policy),
+                component="sdk",
+                retryable=False,
+            )
         top_n = max(1, self._cfg.max_retries)
-        candidates = self._select_candidates(all_nodes, top_n)
+        candidates = self._select_candidates(decision.eligible, top_n)
         last_exc: IicpError | None = None
 
         for node in candidates:
@@ -413,6 +429,7 @@ class IicpClient:
                     qos=opts.qos,
                 ),
                 auth=TaskAuth(node_token=opts.node_token),
+                routing_policy=opts.routing_policy,
             )
         )
 

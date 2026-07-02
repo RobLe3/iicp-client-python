@@ -401,6 +401,23 @@ def _build_parser() -> argparse.ArgumentParser:
     query.add_argument("--model", default=None, help="Pin to a specific model on the remote node.")
     query.add_argument("--max-tokens", type=int, default=None, help="Limit response length.")
     query.add_argument(
+        "--routing-profile",
+        choices=["standard", "sensitive", "eu-restricted", "strict-policy", "debug-override"],
+        default=_env("IICP_ROUTING_PROFILE", "standard"),
+        help="Remote routing safety profile. sensitive refuses remote prompt dispatch; "
+        "eu-restricted keeps EU/EEA nodes; strict-policy requires a no-retention policy manifest.",
+    )
+    query.add_argument(
+        "--allow-remote-executor",
+        action="store_true",
+        help="Explicitly allow a remote executor to read the prompt for profiles that otherwise refuse it.",
+    )
+    query.add_argument(
+        "--region-allowlist",
+        default=_env("IICP_REGION_ALLOWLIST", ""),
+        help="Comma-separated allowed node regions before prompt dispatch (e.g. eu-central,eu-west).",
+    )
+    query.add_argument(
         "--timeout-ms",
         type=int,
         default=60_000,
@@ -1068,7 +1085,7 @@ async def _verify_credit_awards(directory_url: str, node_id: str) -> tuple[float
 
 async def _cmd_query_async(args: argparse.Namespace) -> int:
     from iicp_client.client import IicpClient
-    from iicp_client.types import ClientConfig, TaskConstraints, TaskRequest
+    from iicp_client.types import ClientConfig, RoutingPolicy, TaskConstraints, TaskRequest
 
     prompt_text = " ".join(args.prompt)
     payload: dict = {"messages": [{"role": "user", "content": prompt_text}]}
@@ -1080,6 +1097,11 @@ async def _cmd_query_async(args: argparse.Namespace) -> int:
     cfg = ClientConfig(
         directory_url=args.directory_url,
         timeout_ms=args.timeout_ms,
+    )
+    routing_policy = RoutingPolicy(
+        profile=str(args.routing_profile).replace("-", "_"),
+        allowed_regions=[r.strip() for r in str(args.region_allowlist).split(",") if r.strip()] or None,
+        allow_remote_executor=True if args.allow_remote_executor else None,
     )
     client = IicpClient(cfg)
     # #488: resolve source_node_id from saved node config for self-query neutrality.
@@ -1093,8 +1115,15 @@ async def _cmd_query_async(args: argparse.Namespace) -> int:
         payload=payload,
         constraints=TaskConstraints(timeout_ms=args.timeout_ms),
         source_node_id=_query_source_node_id,
+        routing_policy=routing_policy,
     )
     print(f"[iicp-node] Discovering nodes for {args.intent}...", file=sys.stderr)
+    if routing_policy.profile != "sensitive":
+        print(
+            "[iicp-node] privacy: the selected remote executor can read prompts it executes; "
+            "use --routing-profile sensitive for fail-closed no-remote dispatch.",
+            file=sys.stderr,
+        )
     try:
         resp = await client.submit_async(req)
     except Exception as exc:  # noqa: BLE001

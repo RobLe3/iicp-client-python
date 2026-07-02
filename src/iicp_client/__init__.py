@@ -39,6 +39,11 @@ from iicp_client.policy import (
     prohibited_intent_reason,
 )
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
+from iicp_client.routing_policy import (
+    ROUTING_POLICY_REFUSAL_CODE,
+    filter_nodes_for_routing_policy,
+    resolved_policy,
+)
 from iicp_client.qualify import (
     EXPOSURE_MODES,
     ServiceQualification,
@@ -55,13 +60,14 @@ from iicp_client.types import (
     ClientConfig,
     DiscoverOptions,
     NodeList,
+    RoutingPolicy,
     TaskAuth,
     TaskConstraints,
     TaskRequest,
     TaskResponse,
 )
 
-__version__ = "0.7.79"
+__version__ = "0.7.80"
 __all__ = [
     "IicpClient",
     "IicpError",
@@ -96,8 +102,11 @@ __all__ = [
     "PeerManager",
     "POLICY_REFUSAL_CODE",
     "PROHIBITED_INTENT_RULES",
+    "ROUTING_POLICY_REFUSAL_CODE",
     "ensure_intent_allowed",
+    "filter_nodes_for_routing_policy",
     "prohibited_intent_reason",
+    "resolved_policy",
     "ClientConfig",
     "TaskAuth",
     "TaskConstraints",
@@ -112,6 +121,7 @@ __all__ = [
     "CooperativeInferencePolicy",
     "DiscoverOptions",
     "NodeList",
+    "RoutingPolicy",
     "PricingConfig",
     "ProbeResult",
     "build_pricing_block",
