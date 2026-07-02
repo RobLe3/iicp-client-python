@@ -88,41 +88,59 @@ class TestPerformSelfUpdate:
             updater.subprocess, "run",
             lambda *a, **k: pytest.fail("must not shell out when pip is present"),
         )
-        assert updater._ensure_pip() is True
+        assert updater._ensure_pip() is None
 
     def test_ensure_pip_bootstraps_with_ensurepip_when_missing(self, monkeypatch):
         states = iter([False, True])  # absent, then present after ensurepip
         monkeypatch.setattr(updater, "_pip_available", lambda: next(states))
         ran = []
         monkeypatch.setattr(updater.subprocess, "run", lambda cmd, **k: ran.append(cmd))
-        assert updater._ensure_pip() is True
+        assert updater._ensure_pip() is None
         assert ran and ran[0][:3] == [updater.sys.executable, "-m", "ensurepip"]
 
-    def test_ensure_pip_false_when_bootstrap_fails(self, monkeypatch):
+    def test_ensure_pip_reports_ensurepip_failed_when_bootstrap_fails(self, monkeypatch):
         monkeypatch.setattr(updater, "_pip_available", lambda: False)
 
         def boom(cmd, **k):
             raise updater.subprocess.CalledProcessError(1, cmd)
 
         monkeypatch.setattr(updater.subprocess, "run", boom)
-        assert updater._ensure_pip() is False
+        assert updater._ensure_pip() == "ensurepip_failed"
+
+    def test_ensure_pip_reports_pip_missing_after_bootstrap(self, monkeypatch):
+        monkeypatch.setattr(updater, "_pip_available", lambda: False)
+        monkeypatch.setattr(updater.subprocess, "run", lambda *a, **k: None)
+        assert updater._ensure_pip() == "pip_missing"
 
     def test_perform_self_update_aborts_when_pip_unavailable(self, monkeypatch):
-        monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: False)
+        monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: "ensurepip_failed")
         monkeypatch.setattr(
             updater.subprocess, "run",
             lambda *a, **k: pytest.fail("must not pip-install without pip"),
         )
         assert updater.perform_self_update() is False
+        assert updater.auto_update_status_payload()["sdk_update_error_class"] == "ensurepip_failed"
 
     def test_perform_self_update_installs_after_bootstrap(self, monkeypatch):
-        monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: True)
+        updater.record_update_check("0.7.80", "old_error")
+        monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: None)
         ran = []
         monkeypatch.setattr(updater.subprocess, "run", lambda cmd, **k: ran.append(cmd))
         assert updater.perform_self_update() is True
         assert ran and ran[0][:5] == [
             updater.sys.executable, "-m", "pip", "install", "--upgrade",
         ]
+        assert updater.auto_update_status_payload()["sdk_update_error_class"] is None
+
+    def test_perform_self_update_reports_pip_upgrade_failed(self, monkeypatch):
+        monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: None)
+
+        def boom(cmd, **k):
+            raise updater.subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(updater.subprocess, "run", boom)
+        assert updater.perform_self_update() is False
+        assert updater.auto_update_status_payload()["sdk_update_error_class"] == "pip_upgrade_failed"
 
 
 def _spy():

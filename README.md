@@ -36,7 +36,7 @@ What good looks like:
 ```bash
 iicp-node --help       # shows query, serve, proxy, mcp-gateway, credits, ...
 which iicp-node        # points to your Python environment
-iicp-node --version    # prints iicp-node 0.7.80 or newer
+iicp-node --version    # prints iicp-node 0.7.81 or newer
 ```
 
 The query command contacts the public directory, discovers a matching live node,
@@ -115,13 +115,13 @@ base URL. Full guide: <https://iicp.network/docs/proxy>
 
 ## Provider upgrade note
 
-> **Upgrade note (0.7.80)** — clients now support remote-routing policy profiles
-> that can refuse unsafe remote dispatch before any prompt leaves the caller.
-> Use `--routing-profile sensitive` for fail-closed no-remote behavior,
-> `eu-restricted` for EU/EEA node filtering, or `strict-policy` when a
-> no-retention node policy manifest is required.
+> **Upgrade note (0.7.81)** — pipx or `--without-pip` provider installs can now
+> bootstrap `pip` with `ensurepip` before the hourly self-upgrade. If the
+> bootstrap or upgrade still fails, the node reports a concrete updater error
+> class in heartbeat metadata instead of silently staying downlevel.
 >
-> Existing provider reachability fixes from 0.7.79 remain intact.
+> Existing routing-policy and reachability fixes from 0.7.80/0.7.79 remain
+> intact.
 
 ### Keeping provider nodes current
 
@@ -135,7 +135,7 @@ If a node is older than 0.7.67, perform one manual upgrade/restart first,
 especially for Dockerized Python or TypeScript providers: early updater wiring
 did not reliably cover every normal `serve` path. For Docker, use a Compose
 `restart: unless-stopped` policy (or `docker run --restart unless-stopped`) so
-0.7.80 can intentionally exit from a confirmed tunnel-dead state and let Docker
+0.7.81 can intentionally exit from a confirmed tunnel-dead state and let Docker
 bring it back cleanly.
 
 ---

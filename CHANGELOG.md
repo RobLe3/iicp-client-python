@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 within the scope of the IICP Software axis (see [`VERSIONING.md`](https://github.com/RobLe3/iicp.network/blob/main/project/VERSIONING.md)
 in the main repo).
 
+## [0.7.81] — 2026-07-02
+
+### Fixed — pipx self-updater bootstrap
+- The background provider self-updater now bootstraps `pip` with stdlib
+  `ensurepip` when the active interpreter has no `pip` (common for pipx app
+  venvs and `python -m venv --without-pip`), so hourly upgrades no longer
+  silently no-op forever.
+- Updater failures now preserve a heartbeat-visible `sdk_update_error_class`
+  such as `ensurepip_failed`, `pip_missing`, or `pip_upgrade_failed`, making
+  downlevel drift diagnosable from the directory.
+
 ## [0.7.80] — 2026-07-02
 
 ### Added — remote-routing policy profiles

@@ -97,16 +97,25 @@ def _pip_available() -> bool:
         return False
 
 
-def _ensure_pip(timeout: float = 120.0) -> bool:
+def _set_update_error_class(error_class: str | None) -> None:
+    """Update only the updater error class without changing latest/timestamp."""
+    with _status_lock:
+        _status["sdk_update_error_class"] = error_class
+
+
+def _ensure_pip(timeout: float = 120.0) -> str | None:
     """Make `python -m pip` runnable, bootstrapping it with ensurepip if absent.
 
     pipx-managed installs build their application venv *without* pip (as do
     venvs created with `--without-pip`), so `python -m pip install …` raises
     "No module named pip"; the caught exception meant the self-updater silently
     never upgraded in those environments. ensurepip is part of the stdlib and
-    installs pip into the active venv, so we bootstrap it on demand."""
+    installs pip into the active venv, so we bootstrap it on demand.
+
+    Returns None when pip is available, otherwise a heartbeat-safe error class.
+    """
     if _pip_available():
-        return True
+        return None
     try:
         subprocess.run(
             [sys.executable, "-m", "ensurepip", "--upgrade"],
@@ -116,8 +125,8 @@ def _ensure_pip(timeout: float = 120.0) -> bool:
             stderr=subprocess.DEVNULL,
         )
     except Exception:  # noqa: BLE001 — no ensurepip / bootstrap failed → can't self-update
-        return False
-    return _pip_available()
+        return "ensurepip_failed"
+    return None if _pip_available() else "pip_missing"
 
 
 def perform_self_update(spec: str = "iicp-client", timeout: float = 600.0) -> bool:
@@ -125,7 +134,10 @@ def perform_self_update(spec: str = "iicp-client", timeout: float = 600.0) -> bo
 
     Ensures pip exists first (pipx app-venvs ship without it), so the updater
     actually upgrades instead of failing every tick with "No module named pip"."""
-    if not _ensure_pip():
+    _set_update_error_class(None)
+    pip_error = _ensure_pip()
+    if pip_error:
+        _set_update_error_class(pip_error)
         return False
     try:
         subprocess.run(
@@ -135,6 +147,7 @@ def perform_self_update(spec: str = "iicp-client", timeout: float = 600.0) -> bo
         )
         return True
     except Exception:  # noqa: BLE001 — any failure → "did not upgrade", retry next tick
+        _set_update_error_class("pip_upgrade_failed")
         return False
 
 
