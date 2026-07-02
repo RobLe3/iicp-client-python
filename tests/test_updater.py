@@ -78,6 +78,53 @@ class TestUpdateCli:
 # ── P2 auto-updater (#521) ──────────────────────────────────────────────────────
 
 
+class TestPerformSelfUpdate:
+    """pipx app-venvs ship without pip; the updater must bootstrap it via
+    ensurepip instead of silently failing every tick."""
+
+    def test_ensure_pip_is_noop_when_pip_present(self, monkeypatch):
+        monkeypatch.setattr(updater, "_pip_available", lambda: True)
+        monkeypatch.setattr(
+            updater.subprocess, "run",
+            lambda *a, **k: pytest.fail("must not shell out when pip is present"),
+        )
+        assert updater._ensure_pip() is True
+
+    def test_ensure_pip_bootstraps_with_ensurepip_when_missing(self, monkeypatch):
+        states = iter([False, True])  # absent, then present after ensurepip
+        monkeypatch.setattr(updater, "_pip_available", lambda: next(states))
+        ran = []
+        monkeypatch.setattr(updater.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+        assert updater._ensure_pip() is True
+        assert ran and ran[0][:3] == [updater.sys.executable, "-m", "ensurepip"]
+
+    def test_ensure_pip_false_when_bootstrap_fails(self, monkeypatch):
+        monkeypatch.setattr(updater, "_pip_available", lambda: False)
+
+        def boom(cmd, **k):
+            raise updater.subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(updater.subprocess, "run", boom)
+        assert updater._ensure_pip() is False
+
+    def test_perform_self_update_aborts_when_pip_unavailable(self, monkeypatch):
+        monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: False)
+        monkeypatch.setattr(
+            updater.subprocess, "run",
+            lambda *a, **k: pytest.fail("must not pip-install without pip"),
+        )
+        assert updater.perform_self_update() is False
+
+    def test_perform_self_update_installs_after_bootstrap(self, monkeypatch):
+        monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: True)
+        ran = []
+        monkeypatch.setattr(updater.subprocess, "run", lambda cmd, **k: ran.append(cmd))
+        assert updater.perform_self_update() is True
+        assert ran and ran[0][:5] == [
+            updater.sys.executable, "-m", "pip", "install", "--upgrade",
+        ]
+
+
 def _spy():
     calls = []
     return calls, (lambda *a: calls.append(a))
