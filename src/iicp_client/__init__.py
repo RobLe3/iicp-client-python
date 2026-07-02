@@ -39,16 +39,16 @@ from iicp_client.policy import (
     prohibited_intent_reason,
 )
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
-from iicp_client.routing_policy import (
-    ROUTING_POLICY_REFUSAL_CODE,
-    filter_nodes_for_routing_policy,
-    resolved_policy,
-)
 from iicp_client.qualify import (
     EXPOSURE_MODES,
     ServiceQualification,
     qualify_service,
     qualify_service_async,
+)
+from iicp_client.routing_policy import (
+    ROUTING_POLICY_REFUSAL_CODE,
+    filter_nodes_for_routing_policy,
+    resolved_policy,
 )
 from iicp_client.scheduler import is_queue_eligible, qos_priority
 from iicp_client.token_validator import TokenValidator

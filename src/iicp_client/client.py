@@ -307,7 +307,11 @@ class IicpClient:
                 "(set IICP_CX_ALLOW_PLAINTEXT=1 or routing_profile=debug_override only for transitional debugging).",
                 _node_short_id(node.node_id),
             )
-        if not decision.eligible and decision.skipped_keyless and len(decision.rejected_reasons) == decision.skipped_keyless:
+        if (
+            not decision.eligible
+            and decision.skipped_keyless
+            and len(decision.rejected_reasons) == decision.skipped_keyless
+        ):
             raise IicpError(
                 code="IICP-CX-REQUIRED",
                 message=(

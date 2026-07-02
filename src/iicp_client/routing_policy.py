@@ -7,8 +7,8 @@ still receives only the intent/constraints discovery query, never the prompt.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from iicp_client.types import Node, RoutingPolicy
 
