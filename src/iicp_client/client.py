@@ -18,6 +18,7 @@ import httpx
 
 from iicp_client._http import _traceparent, get_json, post_json
 from iicp_client.errors import IicpError
+from iicp_client.policy import ensure_intent_allowed
 from iicp_client.types import (
     ChatChoice,
     ChatMessage,
@@ -250,6 +251,9 @@ class IicpClient:
                 route_evidence=n.get("route_evidence") if isinstance(n.get("route_evidence"), str) else None,
                 routing_hint=n.get("routing_hint") if isinstance(n.get("routing_hint"), str) else None,
                 browser_usable=browser_usable_bool,
+                node_policy_manifest=(
+                    n.get("node_policy_manifest") if isinstance(n.get("node_policy_manifest"), dict) else None
+                ),
             ))
         return NodeList(nodes=nodes, query_ms=elapsed)
 
@@ -467,3 +471,6 @@ class IicpClient:
                 component="proxy",
                 retryable=False,
             )
+        # Compliance guard: fail closed before discovery for intent families
+        # aligned with EU AI Act prohibited practices.
+        ensure_intent_allowed(intent)

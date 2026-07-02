@@ -32,6 +32,12 @@ from iicp_client.nat_detection import (
 from iicp_client.node import IicpNode, NodeConfig
 from iicp_client.otel_tracer import task_execute_span, task_validate_span
 from iicp_client.peer_manager import PeerManager
+from iicp_client.policy import (
+    POLICY_REFUSAL_CODE,
+    PROHIBITED_INTENT_RULES,
+    ensure_intent_allowed,
+    prohibited_intent_reason,
+)
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
 from iicp_client.qualify import (
     EXPOSURE_MODES,
@@ -88,6 +94,10 @@ __all__ = [
     "models_diverge",
     "run_audit_pass",
     "PeerManager",
+    "POLICY_REFUSAL_CODE",
+    "PROHIBITED_INTENT_RULES",
+    "ensure_intent_allowed",
+    "prohibited_intent_reason",
     "ClientConfig",
     "TaskAuth",
     "TaskConstraints",

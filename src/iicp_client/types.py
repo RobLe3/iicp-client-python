@@ -140,6 +140,8 @@ class Node:
     route_evidence: str | None = None
     routing_hint: str | None = None
     browser_usable: bool | None = None
+    # Phase-1 compliance: public, self-attested node policy manifest.
+    node_policy_manifest: dict[str, Any] | None = None
 
 
 @dataclass

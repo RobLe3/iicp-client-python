@@ -52,6 +52,11 @@ GOOD_NODES = {
             "routing_hint": "https_direct",
             "browser_usable": True,
             "cx_public_key": CX_KEY_FIXTURE,
+            "node_policy_manifest": {
+                "jurisdiction": "DE",
+                "training_use": "none",
+                "evidence": "self_attested",
+            },
         }
     ]
 }
@@ -73,6 +78,15 @@ def test_sdk03_rejects_invalid_intent_urn():
         client.submit(TaskRequest(intent="bad-intent", payload={}))
     assert exc_info.value.code == "IICP-E001"
     assert not exc_info.value.retryable
+
+
+def test_policy_refuses_prohibited_intent_before_discovery(respx_mock):
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    with pytest.raises(IicpError) as exc_info:
+        client.submit(TaskRequest(intent="urn:iicp:intent:social-scoring:score:v1", payload={}))
+    assert exc_info.value.code == "IICP-POLICY-001"
+    assert not exc_info.value.retryable
+    assert len(respx_mock.calls) == 0
 
 
 def test_sdk03_accepts_valid_intent_urn(respx_mock):
@@ -106,6 +120,7 @@ def test_discover_returns_node_list():
     assert result.nodes[0].route_evidence == "directory_observed"
     assert result.nodes[0].routing_hint == "https_direct"
     assert result.nodes[0].browser_usable is True
+    assert result.nodes[0].node_policy_manifest["jurisdiction"] == "DE"
 
 
 @respx.mock
