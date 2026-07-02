@@ -874,7 +874,7 @@ class IicpNode:
             classify,
             env_check_every_heartbeats,
             env_grace_checks,
-            registry_node_presence,
+            registry_route_status,
             supervised_recovery_enabled,
         )
 
@@ -893,13 +893,15 @@ class IicpNode:
                 # #494 — detect model list drift and re-register if needed.
                 await self._maybe_reregister_on_model_drift()
                 if recovery_check_every > 0 and seq % recovery_check_every == 0:
-                    presence = await registry_node_presence(
+                    route_status = await registry_route_status(
                         self._http,
                         self._cfg.directory_url,
                         self._cfg.node_id,
                     )
+                    presence = route_status.presence
                     public_available = bool(self._runtime_available)
-                    if (not public_available) or presence is DirectoryPresence.ABSENT:
+                    route_needs_promotion = route_status.route_needs_promotion
+                    if (not public_available) or route_needs_promotion or presence is DirectoryPresence.ABSENT:
                         recovery_failures += 1
                     elif presence is DirectoryPresence.PRESENT:
                         recovery_failures = 0
@@ -907,7 +909,7 @@ class IicpNode:
                     backend_attention = self._backend_stability_snapshot().is_draining()
                     state, action = classify(
                         local_health_ok=True,
-                        public_available=public_available,
+                        public_available=public_available and not route_needs_promotion,
                         directory_presence=presence,
                         consecutive_failures=recovery_failures,
                         grace_checks=recovery_grace,
@@ -921,6 +923,11 @@ class IicpNode:
                             recovery_failures,
                             recovery_grace,
                         )
+                        if route_needs_promotion:
+                            logger.warning(
+                                "Recovery check: direct IPv6 route is still self-attested; "
+                                "supervised restart will retry tunnel/relay promotion after grace."
+                            )
                     if action is RecoveryAction.REREGISTER:
                         try:
                             token = await self.register()

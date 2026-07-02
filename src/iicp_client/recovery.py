@@ -9,6 +9,7 @@ restart eligibility.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from enum import StrEnum
 
 import httpx
@@ -44,6 +45,12 @@ class DirectoryPresence(StrEnum):
     PRESENT = "present"
     ABSENT = "absent"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class RegistryRouteStatus:
+    presence: DirectoryPresence
+    route_needs_promotion: bool = False
 
 
 def node_registry_prefix(node_id: str) -> str:
@@ -132,3 +139,51 @@ async def registry_node_presence(
     if resp.status_code == 404:
         return DirectoryPresence.ABSENT
     return DirectoryPresence.UNKNOWN
+
+
+def route_needs_promotion_from_registry_json(data: dict) -> bool:
+    """Return True for direct IPv6 routes that are only self-attested."""
+    node = data.get("node") if isinstance(data.get("node"), dict) else data
+    summary = node.get("status_summary") if isinstance(node.get("status_summary"), dict) else {}
+
+    if summary.get("state") == "direct_unverified":
+        return True
+
+    route_evidence = node.get("route_evidence") or summary.get("evidence_source")
+    routing_hint = node.get("routing_hint") or summary.get("routing_hint")
+    browser_usable = node.get("browser_usable")
+    if browser_usable is None:
+        browser_usable = summary.get("browser_usable")
+
+    return (
+        routing_hint == "http_ipv6"
+        and route_evidence != "directory_observed"
+        and browser_usable is not True
+    )
+
+
+async def registry_route_status(
+    http: httpx.AsyncClient,
+    directory_url: str,
+    node_id: str,
+    *,
+    timeout: float = 5.0,
+) -> RegistryRouteStatus:
+    """Probe registry presence plus whether the advertised route needs promotion."""
+    url = f"{directory_url.rstrip('/')}/v1/registry/nodes/{node_registry_prefix(node_id)}"
+    try:
+        resp = await http.get(url, timeout=timeout)
+    except Exception:  # noqa: BLE001 — diagnostic probe, not a serving-path failure
+        return RegistryRouteStatus(DirectoryPresence.UNKNOWN)
+    if 200 <= resp.status_code < 300:
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            data = {}
+        return RegistryRouteStatus(
+            DirectoryPresence.PRESENT,
+            route_needs_promotion_from_registry_json(data) if isinstance(data, dict) else False,
+        )
+    if resp.status_code == 404:
+        return RegistryRouteStatus(DirectoryPresence.ABSENT)
+    return RegistryRouteStatus(DirectoryPresence.UNKNOWN)
