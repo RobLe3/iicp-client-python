@@ -147,11 +147,22 @@ def _node_rejection_reason(
     manifest = node.node_policy_manifest if isinstance(node.node_policy_manifest, dict) else None
     if policy.require_policy_manifest and not manifest:
         return "missing_policy_manifest"
+    if policy.profile == "strict_policy" and not _manifest_signed_verified(manifest):
+        return "policy_manifest_not_signed"
     if policy.require_no_payload_retention and not _declares_no_payload_retention(manifest):
         return "payload_retention_not_none"
     if policy.known_operator_only:
         return "known_operator_not_verified"
     return None
+
+
+def _manifest_signed_verified(manifest: dict | None) -> bool:
+    if not manifest:
+        return False
+    verification = manifest.get("verification")
+    if isinstance(verification, dict) and verification.get("status") == "signed_valid":
+        return True
+    return manifest.get("evidence") == "signed_verified"
 
 
 def _region_allowed(region: str, allowed: Iterable[str]) -> bool:

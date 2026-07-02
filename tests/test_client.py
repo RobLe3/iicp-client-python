@@ -480,6 +480,8 @@ def test_routing_policy_strict_requires_no_payload_retention_manifest():
             "jurisdiction": "DE",
             "training_use": "none",
             "retention": {"task_payload": "provider_defined"},
+            "evidence": "signed_verified",
+            "verification": {"status": "signed_valid"},
         },
     )
     respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [retained]}))
@@ -494,6 +496,33 @@ def test_routing_policy_strict_requires_no_payload_retention_manifest():
 
     assert exc_info.value.code == "IICP-POLICY-ROUTING"
     assert "payload_retention_not_none" in exc_info.value.message
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_routing_policy_strict_requires_signed_policy_manifest():
+    unsigned = dict(
+        GOOD_NODES["nodes"][0],
+        cx_public_key=_cx_key("cx-unsigned"),
+        node_policy_manifest={
+            "jurisdiction": "DE",
+            "training_use": "none",
+            "retention": {"task_payload": "none"},
+            "evidence": "self_attested",
+        },
+    )
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [unsigned]}))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+
+    with pytest.raises(IicpError) as exc_info:
+        client.chat(
+            [ChatMessage(role="user", content="hello")],
+            ChatOptions(model="m", routing_policy=RoutingPolicy(profile="strict_policy")),
+        )
+
+    assert exc_info.value.code == "IICP-POLICY-ROUTING"
+    assert "policy_manifest_not_signed" in exc_info.value.message
     assert route.call_count == 0
 
 
