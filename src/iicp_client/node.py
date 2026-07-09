@@ -1141,7 +1141,12 @@ class IicpNode:
                             relay_session.forward_task(task, timeout=120.0), loop
                         ).result(timeout=125)
                         resp_body = json.dumps(
-                            {"task_id": task.get("task_id", ""), "status": "completed", **result}
+                            {
+                                "task_id": task.get("task_id", ""),
+                                "status": "completed",
+                                **result,
+                                "generated_by_ai": True,
+                            }
                         ).encode()
                         self._json_response(200, resp_body)
                     except Exception as exc:  # noqa: BLE001
@@ -1350,7 +1355,7 @@ class IicpNode:
                         session.forward_task(task, timeout=120.0), loop
                     ).result(timeout=125)
                     resp_body = json.dumps(
-                        {"task_id": task.get("task_id", ""), "status": "completed", **result}
+                        {"task_id": task.get("task_id", ""), "status": "completed", **result, "generated_by_ai": True}
                     ).encode()
                     self._json_response(200, resp_body, cors=True)
                 except Exception as exc:  # noqa: BLE001
@@ -1645,6 +1650,7 @@ class IicpNode:
                             {
                                 "task_id": task_id,
                                 "status": "completed",
+                                "generated_by_ai": True,
                                 **result,
                             }
                         ).encode()

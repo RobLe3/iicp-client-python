@@ -35,7 +35,9 @@ from iicp_client.peer_manager import PeerManager
 from iicp_client.policy import (
     POLICY_REFUSAL_CODE,
     PROHIBITED_INTENT_RULES,
+    classify_intent,
     ensure_intent_allowed,
+    intent_risk_reason,
     prohibited_intent_reason,
 )
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
@@ -67,7 +69,7 @@ from iicp_client.types import (
     TaskResponse,
 )
 
-__version__ = "0.7.82"
+__version__ = "0.7.83"
 __all__ = [
     "IicpClient",
     "IicpError",
@@ -104,6 +106,8 @@ __all__ = [
     "PROHIBITED_INTENT_RULES",
     "ROUTING_POLICY_REFUSAL_CODE",
     "ensure_intent_allowed",
+    "classify_intent",
+    "intent_risk_reason",
     "filter_nodes_for_routing_policy",
     "prohibited_intent_reason",
     "resolved_policy",

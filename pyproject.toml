@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iicp-client"
-version = "0.7.82"
+version = "0.7.83"
 description = "Use the open IICP AI mesh from Python without running a node"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -94,6 +94,7 @@ dev = [
 packages = ["src/iicp_client"]
 
 [tool.pytest.ini_options]
+markers = ["ticketed_dispatch: test controls the ticket endpoint explicitly"]
 asyncio_mode = "auto"
 # Hard per-test timeout so a hung test fails fast in CI with a specific
 # traceback instead of consuming the whole runner. Locally the full suite

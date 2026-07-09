@@ -8,11 +8,16 @@ remote nodes.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib.resources import files
+from typing import Any
 
 from iicp_client.errors import IicpError
 
 POLICY_REFUSAL_CODE = "IICP-POLICY-001"
+INTENT_RISK_CATEGORIES = ("prohibited", "high_risk", "transparency_risk", "minimal_or_general")
 
 
 @dataclass(frozen=True)
@@ -79,19 +84,45 @@ def prohibited_intent_reason(intent: str) -> str | None:
     return None
 
 
+@lru_cache(maxsize=1)
+def _taxonomy() -> dict[str, Any]:
+    path = files("iicp_client.data").joinpath("intent-risk-taxonomy.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def classify_intent(intent: str) -> str:
+    """Classify a declared intent URN using the packaged canonical taxonomy."""
+
+    normalized = intent.strip().lower()
+    for rule in _taxonomy().get("rules", []):
+        if any(str(fragment) in normalized for fragment in rule.get("fragments", [])):
+            return str(rule.get("category", "minimal_or_general"))
+    return "minimal_or_general"
+
+
+def intent_risk_reason(intent: str) -> str | None:
+    normalized = intent.strip().lower()
+    for rule in _taxonomy().get("rules", []):
+        if any(str(fragment) in normalized for fragment in rule.get("fragments", [])):
+            return f"{rule.get('label', 'restricted intent')} ({rule.get('rule_id', 'unknown')})"
+    return None
+
+
 def ensure_intent_allowed(intent: str) -> None:
     """Raise ``IicpError`` if the intent is refused before discovery/routing."""
 
-    reason = prohibited_intent_reason(intent)
-    if reason is None:
+    category = classify_intent(intent)
+    if category not in {"prohibited", "high_risk"}:
         return
+
+    reason = intent_risk_reason(intent) or category
 
     raise IicpError(
         code=POLICY_REFUSAL_CODE,
         message=(
             "Intent refused by IICP client policy before discovery/routing: "
-            f"{reason}. Use a lawful, documented, human-reviewed compliance path "
-            "outside the public mesh for restricted/high-risk workflows."
+            f"{reason} [{category}]. Use an explicit private, documented, human-reviewed "
+            "compliance path outside the public mesh for restricted/high-risk workflows."
         ),
         component="sdk",
         retryable=False,

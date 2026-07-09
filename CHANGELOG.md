@@ -9,10 +9,15 @@ in the main repo).
 
 ## [Unreleased]
 
+## [0.7.83] — 2026-07-09
+
 ### Added — policy-manifest identity routing
 - Added `required_manifest_identity_level` to routing policies so strict callers can require `signed_valid`, `operator_bound`, or `known_operator` node policy manifests before any prompt is dispatched.
 - Rejected or rotated/revoked manifests fail closed with redacted routing-policy reasons and no task POST to the rejected node.
 - Expanded the packaged `mcp-gateway` dangerous-tool denylist for public-unknown callers and redacted upstream MCP error details to avoid echoing tool-input or secret text.
+- Prefer short-lived ticketed route discovery and fall back only when an older directory explicitly lacks the endpoint.
+- Refuse prohibited and high-risk declared intents locally from the packaged canonical risk taxonomy.
+- Mark model responses as AI-generated and add the compatibility-proxy response header without changing standard response bodies.
 
 ## [0.7.82] — 2026-07-09
 

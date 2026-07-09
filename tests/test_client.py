@@ -90,6 +90,14 @@ def test_policy_refuses_prohibited_intent_before_discovery(respx_mock):
     assert len(respx_mock.calls) == 0
 
 
+def test_policy_refuses_high_risk_intent_before_discovery(respx_mock):
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+    with pytest.raises(IicpError) as exc_info:
+        client.submit(TaskRequest(intent="urn:iicp:intent:credit:decision:v1", payload={}))
+    assert exc_info.value.code == "IICP-POLICY-001"
+    assert len(respx_mock.calls) == 0
+
+
 def test_sdk03_accepts_valid_intent_urn(respx_mock):
     respx_mock.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": []}))
     client = IicpClient(ClientConfig(directory_url=DIRECTORY))
@@ -205,6 +213,51 @@ def test_submit_happy_path():
     assert resp.result == {"answer": 42}
     assert resp.metrics.node_id == "node-abc"
     assert resp.metrics.tokens_used == 100
+    assert resp.generated_by_ai is True
+
+
+@respx.mock
+@pytest.mark.ticketed_dispatch
+def test_submit_prefers_ticketed_routes_and_records_redacted_ticket_prefix():
+    ticket = respx.post(f"{DIRECTORY}/v1/dispatch/ticket").mock(
+        return_value=httpx.Response(201, json={
+            "ticket": "secret-ticket-token",
+            "ticket_id_prefix": "abc123def456",
+            "node_id": "node-abc",
+            "route": GOOD_NODES["nodes"][0],
+        })
+    )
+    respx.post(TASK_URL).mock(return_value=httpx.Response(200, json={
+        "task_id": "t-ticket",
+        "status": "success",
+        "result": {"answer": 42},
+    }))
+
+    resp = IicpClient(ClientConfig(directory_url=DIRECTORY, max_retries=1)).submit(
+        TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={"messages": []})
+    )
+
+    assert ticket.called
+    assert resp.dispatch_ticket_id_prefix == "abc123def456"
+    assert not respx.get(DISCOVER_URL).called
+    assert "secret-ticket-token" not in str(resp)
+
+
+@respx.mock
+@pytest.mark.ticketed_dispatch
+def test_ticket_policy_refusal_does_not_downgrade_to_legacy_discovery():
+    respx.post(f"{DIRECTORY}/v1/dispatch/ticket").mock(
+        return_value=httpx.Response(422, json={"error": {"code": "validation_error"}})
+    )
+    legacy = respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=GOOD_NODES))
+
+    with pytest.raises(IicpError) as exc_info:
+        IicpClient(ClientConfig(directory_url=DIRECTORY)).submit(
+            TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={})
+        )
+
+    assert exc_info.value.code == "IICP-DISPATCH-TICKET-422"
+    assert not legacy.called
 
 
 @respx.mock

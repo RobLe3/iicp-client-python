@@ -38,6 +38,15 @@ def _patch_client(response: MagicMock):
     return patch("iicp_client.proxy.clients.directory.httpx.AsyncClient", return_value=mock_ctx)
 
 
+def _patch_ticket_client(*responses: httpx.Response):
+    mock_instance = AsyncMock()
+    mock_instance.post = AsyncMock(side_effect=responses)
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    return patch("iicp_client.proxy.clients.directory.httpx.AsyncClient", return_value=mock_ctx), mock_instance
+
+
 # ---------------------------------------------------------------------------
 # discover() — happy path
 # ---------------------------------------------------------------------------
@@ -65,6 +74,51 @@ async def test_discover_returns_empty_list_on_empty_nodes():
     with _patch_client(_mock_response({"nodes": []})):
         result = await _make_client().discover()
     assert result == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.ticketed_dispatch
+async def test_discover_prefers_ticketed_routes_and_uses_bounded_exclusions():
+    endpoint = "https://dir.example.com/v1/dispatch/ticket"
+    first = httpx.Response(201, request=httpx.Request("POST", endpoint), json={
+        "ticket": "secret-one",
+        "ticket_id_prefix": "ticket-one",
+        "node_id": "node-11111111",
+        "route": {"endpoint": "https://node-one.example.com"},
+    })
+    second = httpx.Response(201, request=httpx.Request("POST", endpoint), json={
+        "ticket": "secret-two",
+        "ticket_id_prefix": "ticket-two",
+        "node_id": "node-22222222",
+        "route": {"endpoint": "https://node-two.example.com"},
+    })
+    patcher, mock_instance = _patch_ticket_client(first, second)
+
+    with patcher:
+        result = await _make_client().discover(intent="urn:iicp:intent:llm:chat:v1", limit=2)
+
+    assert [node["node_id"] for node in result] == ["node-11111111", "node-22222222"]
+    assert result[0]["dispatch_ticket_id_prefix"] == "ticket-one"
+    assert "ticket" not in result[0]
+    assert mock_instance.post.call_args_list[1].kwargs["json"]["exclude_node_id_prefixes"] == ["node-111"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.ticketed_dispatch
+async def test_ticket_policy_error_does_not_downgrade_to_legacy_discovery():
+    endpoint = "https://dir.example.com/v1/dispatch/ticket"
+    refusal = httpx.Response(
+        422,
+        request=httpx.Request("POST", endpoint),
+        json={"error": {"code": "validation_error"}},
+    )
+    patcher, _ = _patch_ticket_client(refusal)
+
+    with patcher, patch.object(DirectoryClient, "_fetch_discover_once", new_callable=AsyncMock) as legacy:
+        with pytest.raises(httpx.HTTPStatusError):
+            await _make_client().discover(intent="urn:iicp:intent:llm:chat:v1")
+
+    legacy.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

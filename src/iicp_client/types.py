@@ -48,6 +48,9 @@ class ClientConfig:
     node_token: str | None = None
     # Phase 6 (#585): default client-side policy applied before remote dispatch.
     routing_policy: RoutingPolicy = field(default_factory=RoutingPolicy)
+    # auto prefers short-lived ticketed routes and falls back only when an older
+    # directory explicitly lacks the endpoint. ticketed and legacy force a mode.
+    route_discovery_mode: str = "auto"
 
 
 @dataclass
@@ -88,6 +91,8 @@ class TaskResponse:
     result: dict[str, Any] | None
     metrics: TaskMetrics
     error: IicpError | None = None
+    generated_by_ai: bool = True
+    dispatch_ticket_id_prefix: str | None = None
 
 
 @dataclass
@@ -127,6 +132,7 @@ class ChatResponse:
     usage: ChatUsage
     model: str
     iicp_node_id: str
+    generated_by_ai: bool = True
 
 
 @dataclass
@@ -168,6 +174,7 @@ class Node:
     browser_usable: bool | None = None
     # Phase-1 compliance: public, self-attested node policy manifest.
     node_policy_manifest: dict[str, Any] | None = None
+    dispatch_ticket_id_prefix: str | None = None
 
 
 @dataclass

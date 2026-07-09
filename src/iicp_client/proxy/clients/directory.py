@@ -9,6 +9,7 @@ DIR-FED-05 (transparently follow 307) and DIR-FED-06 (≤3 consecutive redirects
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import ssl
 import time
@@ -57,6 +58,46 @@ class DirectoryClient:
         # (TLS+DNS trust). When set, replica responses without a valid sig are
         # REJECTED — proxy refuses to use unverifiable node lists.
         self._did_resolver = did_resolver
+        self._route_discovery_mode = os.getenv("IICP_ROUTE_DISCOVERY_MODE", "auto").strip().lower()
+        if self._route_discovery_mode not in {"auto", "ticketed", "legacy"}:
+            self._route_discovery_mode = "auto"
+
+    async def _ticketed_routes(self, params: dict[str, Any], limit: int) -> list[dict[str, Any]] | None:
+        """Return ticketed routes, or None only when an older directory lacks the endpoint."""
+
+        excluded: list[str] = []
+        routes: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=self._timeout, verify=_tls_context()) as client:
+            for _ in range(max(1, min(limit, 10))):
+                resp = await client.post(
+                    f"{self._base_url}/v1/dispatch/ticket",
+                    json={**params, "exclude_node_id_prefixes": excluded.copy()},
+                )
+                try:
+                    body = resp.json()
+                except ValueError:
+                    body = {}
+                error_code = body.get("error", {}).get("code") if isinstance(body, dict) else None
+                if resp.status_code == 201:
+                    route = body.get("route")
+                    if not isinstance(route, dict) or not isinstance(body.get("node_id"), str):
+                        raise httpx.HTTPStatusError("Malformed ticketed route", request=resp.request, response=resp)
+                    route = {
+                        **route,
+                        "node_id": body["node_id"],
+                        "dispatch_ticket_id_prefix": body.get("ticket_id_prefix"),
+                    }
+                    routes.append(route)
+                    excluded.append(body["node_id"][:8])
+                    continue
+                if resp.status_code == 404 and error_code == "no_route_available":
+                    break
+                if resp.status_code in {404, 405, 501} or (
+                    resp.status_code == 503 and error_code == "not_configured"
+                ):
+                    return None
+                resp.raise_for_status()
+        return routes
 
     def _redirect_target_or_none(self, base_url: str) -> str | None:
         """Return cached redirect target if still valid; else None and evict stale."""
@@ -252,6 +293,13 @@ class DirectoryClient:
         # Laravel boolean validation accepts 1/0, not "true"/"false" strings.
         if cip_capable is not None:
             params["cip_capable"] = 1 if cip_capable else 0
+
+        if intent and self._route_discovery_mode != "legacy":
+            ticketed = await self._ticketed_routes(params, limit)
+            if ticketed is not None:
+                return ticketed
+            if self._route_discovery_mode == "ticketed":
+                raise RuntimeError("Directory does not support ticketed dispatch")
 
         with proxy_discover_span(intent or "") as span:
             current_base = self._redirect_target_or_none(self._base_url) or self._base_url

@@ -162,6 +162,10 @@ def create_app(cfg: ProxyConfig) -> FastAPI:
         uvicorn's default Server header) so clients/tools can tell what answered."""
         response = await call_next(request)
         response.headers["Server"] = "iicp-proxy"
+        if response.status_code < 400 and request.url.path in {
+            "/v1/chat/completions", "/api/chat", "/api/generate", "/v1/messages"
+        }:
+            response.headers["X-IICP-Generated-By-AI"] = "true"
         return response
 
     @app.get("/metrics", include_in_schema=False)

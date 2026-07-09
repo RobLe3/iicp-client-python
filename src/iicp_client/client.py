@@ -46,6 +46,10 @@ _INTENT_RE = re.compile(r"^urn:iicp:intent:[a-z0-9_:/-]+$")
 _MAX_TIMEOUT_MS = 120_000
 
 
+class _LegacyDiscoveryRequired(Exception):
+    """Internal signal: this directory predates ticketed dispatch."""
+
+
 def _is_ssrf_safe(url: str) -> bool:
     """Return True if url is safe to connect to as a node endpoint (SSRF guard, #388)."""
     parsed = urlparse(url)
@@ -100,6 +104,11 @@ class IicpClient:
         if self._cfg.timeout_ms > _MAX_TIMEOUT_MS:
             # SDK-04: reject oversized timeouts at construction time
             raise ValueError(f"timeout_ms must be ≤ {_MAX_TIMEOUT_MS}; got {self._cfg.timeout_ms}")
+        if self._cfg.route_discovery_mode not in {"auto", "ticketed", "legacy"}:
+            raise ValueError("route_discovery_mode must be auto, ticketed, or legacy")
+        env_route_mode = os.getenv("IICP_ROUTE_DISCOVERY_MODE")
+        if self._cfg.route_discovery_mode == "auto" and env_route_mode in {"auto", "ticketed", "legacy"}:
+            self._cfg.route_discovery_mode = env_route_mode
         # Routing env overrides; keep epsilon as the backward-compatible default.
         _env_eps = os.environ.get("IICP_ROUTING_EPSILON")
         if _env_eps is not None:
@@ -183,6 +192,106 @@ class IicpClient:
     # Public async API
     # ------------------------------------------------------------------
 
+    def _node_from_route(self, raw: dict[str, Any], *, ticket_id_prefix: str | None = None) -> Node | None:
+        endpoint = raw.get("endpoint")
+        node_id = raw.get("node_id")
+        if not isinstance(endpoint, str) or not isinstance(node_id, str) or not _is_ssrf_safe(endpoint):
+            return None
+        cx_key = raw.get("cx_public_key") or raw.get("public_key")
+        browser_usable = raw.get("browser_usable")
+        return Node(
+            node_id=node_id,
+            endpoint=endpoint,
+            score=float(raw.get("score", 0.0)),
+            available=bool(raw.get("available", True)),
+            region=str(raw.get("region", "")),
+            latency_estimate_ms=raw.get("latency_estimate_ms"),
+            reputation_score=raw.get("reputation_score"),
+            health_label=raw.get("health_label"),
+            exposure_mode=raw.get("exposure_mode"),
+            cx_public_key=cx_key if isinstance(cx_key, dict) else None,
+            transport=raw.get("transport") if isinstance(raw.get("transport"), list) else None,
+            directory_observed_reachable=(
+                raw.get("directory_observed_reachable")
+                if isinstance(raw.get("directory_observed_reachable"), bool)
+                else None
+            ),
+            route_evidence=raw.get("route_evidence") if isinstance(raw.get("route_evidence"), str) else None,
+            routing_hint=raw.get("routing_hint") if isinstance(raw.get("routing_hint"), str) else None,
+            browser_usable=browser_usable if isinstance(browser_usable, bool) else None,
+            node_policy_manifest=(
+                raw.get("node_policy_manifest") if isinstance(raw.get("node_policy_manifest"), dict) else None
+            ),
+            dispatch_ticket_id_prefix=ticket_id_prefix,
+        )
+
+    async def _ticketed_candidates(
+        self,
+        intent: str,
+        options: DiscoverOptions,
+        traceparent: str | None,
+    ) -> list[Node]:
+        payload: dict[str, Any] = {"intent": intent, "limit": min(options.limit, 50)}
+        if options.region or self._cfg.region:
+            payload["region"] = options.region or self._cfg.region
+        if options.qos:
+            payload["qos"] = options.qos
+        if options.min_reputation is not None:
+            payload["min_reputation"] = options.min_reputation
+        if options.model:
+            payload["model"] = options.model
+
+        endpoint = f"{self._cfg.directory_url.rstrip('/')}/v1/dispatch/ticket"
+        excluded: list[str] = []
+        candidates: list[Node] = []
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if traceparent:
+            headers["traceparent"] = traceparent
+
+        async with httpx.AsyncClient(timeout=5.0, verify=self._cfg.tls_verify) as client:
+            for _ in range(max(1, self._cfg.max_retries)):
+                response = await client.post(
+                    endpoint,
+                    json={**payload, "exclude_node_id_prefixes": excluded},
+                    headers=headers,
+                )
+                try:
+                    data = response.json()
+                except ValueError:
+                    data = {}
+                error_code = data.get("error", {}).get("code") if isinstance(data, dict) else None
+
+                if response.status_code == 201:
+                    route = data.get("route", {})
+                    if isinstance(route, dict):
+                        route = {**route, "node_id": data.get("node_id", route.get("node_id"))}
+                        node = self._node_from_route(route, ticket_id_prefix=data.get("ticket_id_prefix"))
+                        if node is not None:
+                            candidates.append(node)
+                            excluded.append(node.node_id[:8])
+                            continue
+                    raise IicpError(
+                        code="IICP-DISPATCH-TICKET-MALFORMED",
+                        message="Directory returned malformed ticketed route material",
+                        component="directory",
+                        retryable=False,
+                    )
+
+                if response.status_code == 404 and error_code == "no_route_available":
+                    break
+                if response.status_code in {404, 405, 501} or (
+                    response.status_code == 503 and error_code == "not_configured"
+                ):
+                    raise _LegacyDiscoveryRequired
+                raise IicpError(
+                    code=f"IICP-DISPATCH-TICKET-{response.status_code}",
+                    message=f"Ticketed dispatch refused ({error_code or response.status_code})",
+                    component="directory",
+                    retryable=response.status_code >= 500,
+                )
+
+        return candidates
+
     async def discover_async(
         self,
         intent: str,
@@ -219,48 +328,19 @@ class IicpClient:
         raw_nodes = data.get("nodes", [])
         nodes = []
         for n in raw_nodes:
-            endpoint = n["endpoint"]
-            if not _is_ssrf_safe(endpoint):
+            node = self._node_from_route(n)
+            if node is None:
                 logging.getLogger(__name__).warning(
                     "SDK: skipping node %s — endpoint %s is not publicly routable (SSRF guard)",
                     n.get("node_id", "?")[:8],
-                    endpoint,
+                    n.get("endpoint", "?"),
                 )
                 continue
-            browser_usable = n.get("browser_usable")
-            browser_usable_bool = bool(browser_usable) if isinstance(browser_usable, bool) else None
             if opts.browser_usable_only and not (
-                browser_usable_bool if browser_usable_bool is not None else _is_browser_usable_endpoint(endpoint)
+                node.browser_usable if node.browser_usable is not None else _is_browser_usable_endpoint(node.endpoint)
             ):
                 continue
-            # Directory discover now treats `cx_public_key` as canonical;
-            # `public_key` is accepted only as a deprecated compatibility alias.
-            # Accept both so live keyed nodes do not get treated as plaintext-only.
-            cx_key = n.get("cx_public_key") or n.get("public_key")
-            nodes.append(Node(
-                node_id=n["node_id"],
-                endpoint=endpoint,
-                score=float(n.get("score", 0.0)),
-                available=bool(n.get("available", True)),
-                region=n.get("region", ""),
-                latency_estimate_ms=n.get("latency_estimate_ms"),
-                reputation_score=n.get("reputation_score"),
-                health_label=n.get("health_label"),
-                exposure_mode=n.get("exposure_mode"),
-                cx_public_key=cx_key if isinstance(cx_key, dict) else None,
-                transport=n.get("transport") if isinstance(n.get("transport"), list) else None,
-                directory_observed_reachable=(
-                    n.get("directory_observed_reachable")
-                    if isinstance(n.get("directory_observed_reachable"), bool)
-                    else None
-                ),
-                route_evidence=n.get("route_evidence") if isinstance(n.get("route_evidence"), str) else None,
-                routing_hint=n.get("routing_hint") if isinstance(n.get("routing_hint"), str) else None,
-                browser_usable=browser_usable_bool,
-                node_policy_manifest=(
-                    n.get("node_policy_manifest") if isinstance(n.get("node_policy_manifest"), dict) else None
-                ),
-            ))
+            nodes.append(node)
         return NodeList(nodes=nodes, query_ms=elapsed)
 
     async def submit_async(self, request: TaskRequest) -> TaskResponse:
@@ -272,16 +352,24 @@ class IicpClient:
         """
         self._validate_intent(request.intent)
         tp = _traceparent()  # SDK-06: one trace per operation, shared across calls
-        node_list = await self.discover_async(
-            request.intent,
-            DiscoverOptions(
-                region=request.constraints.region or self._cfg.region,
-                # Do not filter by qos — qos is a task execution hint, not a
-                # node capability filter. Most nodes don't declare qos support
-                # in registration, so filtering by qos=interactive returns 0.
-            ),
-            traceparent=tp,
-        )
+        discover_options = DiscoverOptions(region=request.constraints.region or self._cfg.region)
+        if self._cfg.route_discovery_mode == "legacy":
+            node_list = await self.discover_async(request.intent, discover_options, traceparent=tp)
+        else:
+            try:
+                node_list = NodeList(
+                    nodes=await self._ticketed_candidates(request.intent, discover_options, tp),
+                    query_ms=0,
+                )
+            except _LegacyDiscoveryRequired:
+                if self._cfg.route_discovery_mode == "ticketed":
+                    raise IicpError(
+                        code="IICP-DISPATCH-TICKET-UNAVAILABLE",
+                        message="Directory does not support ticketed dispatch",
+                        component="directory",
+                        retryable=False,
+                    ) from None
+                node_list = await self.discover_async(request.intent, discover_options, traceparent=tp)
         if not node_list.nodes:
             raise IicpError(
                 code="IICP-E006",
@@ -388,6 +476,8 @@ class IicpClient:
                             tokens_used=raw.get("usage", {}).get("total_tokens"),
                             node_id=node.node_id,
                         ),
+                        generated_by_ai=True,
+                        dispatch_ticket_id_prefix=node.dispatch_ticket_id_prefix,
                     )
                 except IicpError as exc:
                     last_exc = exc
@@ -460,6 +550,7 @@ class IicpClient:
             ),
             model=result.get("model", opts.model or ""),
             iicp_node_id=response.metrics.node_id,
+            generated_by_ai=True,
         )
 
     # ------------------------------------------------------------------

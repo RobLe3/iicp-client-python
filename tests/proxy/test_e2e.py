@@ -36,9 +36,9 @@ class _MockHandler(BaseHTTPRequestHandler):
     def log_message(self, *_a):  # silence
         pass
 
-    def _json(self, body: dict) -> None:
+    def _json(self, body: dict, status: int = 200) -> None:
         data = json.dumps(body).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(data)))
         self.end_headers()
@@ -62,7 +62,20 @@ class _MockHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):  # noqa: N802
-        if self.path == "/v1/task":
+        if self.path == "/api/v1/dispatch/ticket":
+            n = int(self.headers.get("content-length", 0))
+            self.rfile.read(n)
+            self._json({
+                "ticket": "e2e-route-ticket-not-forwarded",
+                "ticket_id_prefix": "e2e-ticket-1",
+                "node_id": "mock-node-1",
+                "route": {
+                    "endpoint": self.server.node_endpoint,  # type: ignore[attr-defined]
+                    "region": "test",
+                    "available": True,
+                },
+            }, status=201)
+        elif self.path == "/v1/task":
             n = int(self.headers.get("content-length", 0))
             self.rfile.read(n)
             self._json({
@@ -123,6 +136,7 @@ def test_e2e_all_surfaces_through_real_proxy_process():
         with _post(base + "/v1/chat/completions", {"model": "iicp", "messages": msgs}) as r:
             assert r.status == 200
             assert r.headers.get("Server") == "iicp-proxy"
+            assert r.headers.get("X-IICP-Generated-By-AI") == "true"
             d = json.loads(r.read())
             assert d["choices"][0]["message"]["content"] == "E2E reply"
 
@@ -130,6 +144,7 @@ def test_e2e_all_surfaces_through_real_proxy_process():
         with _post(base + "/api/chat", {"model": "iicp", "stream": False, "messages": msgs}) as r:
             assert r.status == 200
             assert r.headers.get("Server") == "iicp-proxy"
+            assert r.headers.get("X-IICP-Generated-By-AI") == "true"
             d = json.loads(r.read())
             assert d["message"]["content"] == "E2E reply"
 
@@ -137,6 +152,7 @@ def test_e2e_all_surfaces_through_real_proxy_process():
         with _post(base + "/v1/messages", {"model": "iicp", "max_tokens": 32, "messages": msgs}) as r:
             assert r.status == 200
             assert r.headers.get("Server") == "iicp-proxy"
+            assert r.headers.get("X-IICP-Generated-By-AI") == "true"
             d = json.loads(r.read())
             assert d["content"][0]["text"] == "E2E reply"
     finally:
