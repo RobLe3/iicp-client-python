@@ -11,6 +11,7 @@ import pytest
 import respx
 from httpx import Response
 
+from iicp_client.identity import NodeIdentity, load_node, save_node
 from iicp_client.node import IicpNode, NodeConfig
 
 
@@ -65,6 +66,47 @@ async def test_reregister_when_model_list_drifts():
     assert registered_models == {"phi3:mini"}, (
         f"re-register must use live model set; got {registered_models}"
     )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reregister_persists_refreshed_credentials_for_saved_node(monkeypatch, tmp_path):
+    """Saved node files must follow recovery re-register credentials.
+
+    Regression guard for the credits-401 drift observed when a running node had
+    live credentials but ~/.iicp/nodes/<name>.json still held an old token.
+    """
+    monkeypatch.setenv("IICP_HOME", str(tmp_path))
+    save_node(
+        NodeIdentity(
+            node_id="drift-node-1",
+            operator_id="op-test",
+            name="drift",
+            backend_url="http://mock-backend",
+            model="phi3:mini",
+            directory_url="http://mock-dir",
+            node_token="old-token",
+            node_hmac_key="old-hmac",
+        )
+    )
+
+    respx.post("http://mock-dir/v1/register").mock(
+        return_value=Response(200, json={"node_token": "tok-drift-1", "node_hmac_key": "hk-drift-1"})
+    )
+    respx.get("http://mock-backend/api/tags").mock(
+        return_value=Response(200, json={"models": [{"name": "phi3:mini"}]})
+    )
+
+    node = IicpNode(_cfg(capabilities=["llama3.2:1b"]))
+    node.set_saved_node_name("drift")
+    node._registered_models = frozenset(["phi3:mini", "llama3.2:1b"])
+
+    await node._maybe_reregister_on_model_drift()
+
+    saved = load_node("drift")
+    assert saved is not None
+    assert saved.node_token == "tok-drift-1"
+    assert saved.node_hmac_key == "hk-drift-1"
 
 
 @pytest.mark.asyncio

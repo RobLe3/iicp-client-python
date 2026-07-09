@@ -464,6 +464,10 @@ class IicpNode:
             self._cx_private_key = None
         # #494 — models registered at last register(); used for drift detection in heartbeat.
         self._registered_models: frozenset[str] = frozenset()
+        # Saved node identity name loaded by `iicp-node serve --node NAME`.
+        # When present, refreshed registration credentials are persisted so
+        # read-only commands such as `credits` do not drift behind the running node.
+        self._saved_node_name: str | None = None
         # #553 / WQ-114 — provider-local backend stability observer.
         # Updated by heartbeat/model probes; consumed by /iicp/health and the
         # task admission gate. The public form is deliberately redacted.
@@ -477,6 +481,39 @@ class IicpNode:
 
     def set_runtime_available(self, available: bool) -> None:
         self._runtime_available = bool(available)
+
+    def set_saved_node_name(self, name: str | None) -> None:
+        """Persist refreshed directory credentials into this saved node identity.
+
+        This is opt-in for `iicp-node serve --node NAME`; library users that
+        construct transient nodes do not write local config files.
+        """
+        cleaned = (name or "").strip()
+        self._saved_node_name = cleaned or None
+
+    def _persist_saved_credentials(self, token: str) -> None:
+        if not self._saved_node_name or not token:
+            return
+        try:
+            from iicp_client.identity import load_node, save_node
+
+            saved = load_node(self._saved_node_name)
+            if saved is None:
+                logger.warning(
+                    "Saved node config %s not found; cannot persist refreshed node credentials",
+                    self._saved_node_name,
+                )
+                return
+            saved.node_token = token
+            if self._node_hmac_key:
+                saved.node_hmac_key = self._node_hmac_key
+            save_node(saved)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not persist refreshed node credentials for saved node %s: %s",
+                self._saved_node_name,
+                exc,
+            )
 
     def apply_nat_profile(self, profile: Any) -> None:
         """Populate transport_endpoint + NAT observability fields from a
@@ -694,6 +731,7 @@ class IicpNode:
             hk = data.get("node_hmac_key", "")
             if hk:
                 self._node_hmac_key = str(hk)
+        self._persist_saved_credentials(str(token))
         logger.info("Registered node %s, token acquired", self._cfg.node_id)
         # #494 — track the model set registered so heartbeat can detect drift.
         _reg = [self._cfg.model] if self._cfg.model else []

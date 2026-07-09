@@ -847,8 +847,23 @@ async def _cmd_doctor_async(args: argparse.Namespace) -> int:
             health_error = str(exc)
             local_health_ok = False
         presence = await registry_node_presence(client, directory_url, saved.node_id)
+        credential_status = "missing_token"
+        if saved.node_token:
+            try:
+                cred_resp = await client.get(
+                    directory_url.rstrip("/") + f"/v1/credits/summary?node_id={saved.node_id}",
+                    headers={"Authorization": f"Bearer {saved.node_token}"},
+                    timeout=5.0,
+                )
+                credential_status = (
+                    "stale_or_invalid" if cred_resp.status_code == 401 else "ok" if cred_resp.is_success else "error"
+                )
+            except Exception:  # noqa: BLE001
+                credential_status = "error"
 
-    backend_state = ((health or {}).get("backend_stability") or {}).get("backend_state")
+    backend_block = ((health or {}).get("backend_stability") or {})
+    backend_state = backend_block.get("backend_state")
+    backend_reason = backend_block.get("reason_class") or "unknown"
     backend_attention = backend_state == "draining"
     failures = 1 if (not local_health_ok or presence is DirectoryPresence.ABSENT) else 0
     state, action = classify(
@@ -873,6 +888,7 @@ async def _cmd_doctor_async(args: argparse.Namespace) -> int:
                     "local_health_ok": local_health_ok,
                     "local_health_error": health_error,
                     "directory_presence": presence.value,
+                    "saved_credential_status": credential_status,
                     "recovery_state": state.value,
                     "recommended_action": action.value,
                     "health": health,
@@ -888,6 +904,15 @@ async def _cmd_doctor_async(args: argparse.Namespace) -> int:
         print(f"  Local health detail     {health_error}")
     print(f"  Directory prefix        {prefix}")
     print(f"  Directory presence      {presence.value}")
+    print(f"  Saved credential        {credential_status}")
+    if credential_status == "stale_or_invalid":
+        print("  Credential detail       saved node token is stale; serving may be healthy while credits fail")
+    print(f"  Backend stability       {backend_state or 'unknown'} / {backend_reason}")
+    if backend_reason == "backend_cold":
+        print(
+            "  Backend detail          idle/cold backend; normally warms on first request, "
+            "not restart-worthy by itself"
+        )
     print(f"  Recovery state          {state.value}")
     print(f"  Recommended action      {action.value}")
     print("  Note                    restart is automatic only when supervised services set IICP_SUPERVISED=1")
@@ -1311,6 +1336,8 @@ async def _serve(args: argparse.Namespace) -> int:
         node_hmac_key=saved.node_hmac_key or "" if saved else "",
     )
     node = IicpNode(cfg)
+    if getattr(args, "node", None):
+        node.set_saved_node_name(args.node)
     # Phase 2 (#529/#55) — seed the previously-cached node_token so a
     # re-registration (e.g. after a tunnel-URL rotation) can prove ownership of
     # this node_id via `current_node_token` (IICP-E050 token path). Additive +

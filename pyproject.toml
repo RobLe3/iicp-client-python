@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iicp-client"
-version = "0.7.81"
+version = "0.7.82"
 description = "Use the open IICP AI mesh from Python without running a node"
 readme = "README.md"
 license = {text = "Apache-2.0"}
