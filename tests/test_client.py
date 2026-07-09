@@ -526,6 +526,66 @@ def test_routing_policy_strict_requires_signed_policy_manifest():
     assert route.call_count == 0
 
 
+@respx.mock
+def test_routing_policy_requires_operator_bound_manifest_identity_before_dispatch():
+    signed_only = dict(
+        GOOD_NODES["nodes"][0],
+        cx_public_key=_cx_key("cx-signed-only"),
+        node_policy_manifest={
+            "jurisdiction": "DE",
+            "retention": {"task_payload": "none"},
+            "evidence": "signed_verified",
+            "verification": {"status": "signed_valid"},
+            "manifest_identity_level": "signed_valid",
+        },
+    )
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [signed_only]}))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+
+    with pytest.raises(IicpError) as exc_info:
+        client.chat(
+            [ChatMessage(role="user", content="hello")],
+            ChatOptions(
+                model="m",
+                routing_policy=RoutingPolicy(required_manifest_identity_level="operator_bound"),
+            ),
+        )
+
+    assert exc_info.value.code == "IICP-POLICY-ROUTING"
+    assert "manifest_identity_level_too_low" in exc_info.value.message
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_routing_policy_allows_operator_bound_manifest_identity():
+    operator_bound = dict(
+        GOOD_NODES["nodes"][0],
+        cx_public_key=_cx_key("cx-operator-bound"),
+        node_policy_manifest={
+            "jurisdiction": "DE",
+            "retention": {"task_payload": "none"},
+            "evidence": "signed_verified",
+            "verification": {"status": "signed_valid"},
+            "manifest_identity_level": "operator_bound",
+        },
+    )
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [operator_bound]}))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY))
+
+    client.chat(
+        [ChatMessage(role="user", content="hello")],
+        ChatOptions(
+            model="m",
+            routing_policy=RoutingPolicy(required_manifest_identity_level="operator_bound"),
+        ),
+    )
+
+    assert route.call_count == 1
+
+
+
 # ---------------------------------------------------------------------------
 # SDK-06: node_token must not appear in IicpError message
 # ---------------------------------------------------------------------------

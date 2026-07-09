@@ -27,6 +27,7 @@ class RoutingPolicy:
     require_no_payload_retention: bool | None = None
     allow_remote_executor: bool | None = None
     known_operator_only: bool | None = None
+    required_manifest_identity_level: str | None = None
 
 
 @dataclass

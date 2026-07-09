@@ -95,6 +95,7 @@ def resolved_policy(policy: RoutingPolicy | None) -> RoutingPolicy:
             else bool(defaults["allow_remote_executor"])
         ),
         known_operator_only=bool(src.known_operator_only) if src.known_operator_only is not None else False,
+        required_manifest_identity_level=src.required_manifest_identity_level,
     )
 
 
@@ -151,8 +152,11 @@ def _node_rejection_reason(
         return "policy_manifest_not_signed"
     if policy.require_no_payload_retention and not _declares_no_payload_retention(manifest):
         return "payload_retention_not_none"
-    if policy.known_operator_only:
-        return "known_operator_not_verified"
+    required_level = policy.required_manifest_identity_level
+    if policy.known_operator_only and not required_level:
+        required_level = "known_operator"
+    if required_level:
+        return _manifest_identity_rejection_reason(manifest, required_level)
     return None
 
 
@@ -163,6 +167,32 @@ def _manifest_signed_verified(manifest: dict | None) -> bool:
     if isinstance(verification, dict) and verification.get("status") == "signed_valid":
         return True
     return manifest.get("evidence") == "signed_verified"
+
+
+_MANIFEST_IDENTITY_RANK = {
+    "self_attested": 0,
+    "signed_valid": 1,
+    "operator_bound": 2,
+    "known_operator": 3,
+    "rotated": -1,
+    "revoked": -1,
+}
+
+
+def _manifest_identity_rejection_reason(manifest: dict | None, required_level: str) -> str | None:
+    required = (required_level or "").strip().lower()
+    if required not in {"signed_valid", "operator_bound", "known_operator"}:
+        required = "known_operator"
+    if not manifest:
+        return "missing_manifest_identity"
+    level = str(manifest.get("manifest_identity_level") or "").strip().lower()
+    if not level:
+        return "missing_manifest_identity"
+    if level in {"revoked", "rotated"}:
+        return "policy_manifest_revoked_or_rotated"
+    if _MANIFEST_IDENTITY_RANK.get(level, -1) < _MANIFEST_IDENTITY_RANK[required]:
+        return "manifest_identity_level_too_low"
+    return None
 
 
 def _region_allowed(region: str, allowed: Iterable[str]) -> bool:

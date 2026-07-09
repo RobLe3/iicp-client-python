@@ -90,6 +90,22 @@ reply = await IicpClient().chat_async(
 )
 ```
 
+For stricter deployments, require a minimum policy-manifest identity level
+before any prompt leaves the client. This keeps the default open mesh behavior
+unchanged, but lets controllers fail closed on self-attested or rotated/revoked
+providers.
+
+```python
+reply = await IicpClient().chat_async(
+    [ChatMessage(role="user", content="Hello")],
+    ChatOptions(
+        routing_policy=RoutingPolicy(
+            required_manifest_identity_level="operator_bound",
+        ),
+    ),
+)
+```
+
 ## Migrate from existing AI tools
 
 Direct call:

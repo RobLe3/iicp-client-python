@@ -76,8 +76,11 @@ def test_tool_to_intent_urn():
 
 
 def test_dangerous_tools_filtered():
-    dangerous = {"bash", "shell", "exec", "run_command", "eval"}
-    tools = ["read_file", "bash", "list_dir", "exec"]
+    dangerous = {
+        "bash", "shell", "exec", "run_command", "eval",
+        "write_file", "browser_control", "credential_access", "system_control",
+    }
+    tools = ["read_file", "write_file", "browser_control", "list_dir", "exec"]
     active = [t for t in tools if t.lower() not in dangerous]
     assert active == ["read_file", "list_dir"]
 

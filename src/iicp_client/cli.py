@@ -2182,9 +2182,14 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     # (the required --tools allowlist + allow_tool_execution opt-in are) — a
     # best-effort safety net.
     _DANGEROUS = {
+        # shells / interpreters / process execution
         "bash", "sh", "zsh", "fish", "shell", "powershell", "pwsh", "cmd",
         "exec", "execute", "run_command", "run", "system", "eval",
         "python", "python3", "node", "ruby", "perl", "subprocess", "popen", "spawn",
+        # #601 tool-risk classes that must not be public-unknown by default
+        "write_file", "file_write", "filesystem_write", "delete_file", "remove_file",
+        "browser_control", "computer_use", "credential_access", "read_secret", "secrets",
+        "system_control", "service_control", "physical_world", "regulated_decision",
     }
 
     def _tool_to_intent(name: str) -> str:
@@ -2196,7 +2201,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     if not active_tools:
         sys.stderr.write(
             "ERROR: --tools is required. Provide a comma-separated list of MCP tool names.\n"
-            "  Example: iicp-node mcp-gateway --tools read_file,list_dir --mcp-url http://localhost:8001\n"
+            "  Example: iicp-node mcp-gateway --tools summarize_text,lookup_status --mcp-url http://localhost:8001\n"
         )
         return 2
 
@@ -2250,7 +2255,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         r.raise_for_status()
         data = r.json()
         if "error" in data:
-            raise ValueError(data["error"].get("message", "MCP error"))
+            raise ValueError("MCP tool returned an error")
         return data.get("result")
 
     class _Handler(BaseHTTPRequestHandler):
