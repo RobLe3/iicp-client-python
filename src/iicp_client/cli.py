@@ -2214,6 +2214,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     import httpx
+
     from iicp_client.mcp_policy import McpToolPolicy, tool_risk_label
 
     def _tool_to_intent(name: str) -> str:

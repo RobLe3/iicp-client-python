@@ -2,8 +2,8 @@
 """Fail-closed MCP tool-risk policy shared by the built-in gateway (#601)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 TOOL_RISK_KEYWORDS: dict[str, set[str]] = {
     "shell_exec": {"bash", "shell", "exec", "run_command", "command", "eval", "python_exec"},
@@ -13,7 +13,9 @@ TOOL_RISK_KEYWORDS: dict[str, set[str]] = {
     "network_fetch": {"fetch", "crawl", "http", "web_request", "search_web", "url"},
     "browser_control": {"browser", "computer_use", "click", "type", "screenshot", "navigate"},
     "credential_access": {"secret", "credential", "token", "ssh_key", "wallet", "password"},
-    "system_control": {"systemctl", "launchctl", "service_restart", "install_package", "firewall", "reboot", "shutdown"},
+    "system_control": {
+        "systemctl", "launchctl", "service_restart", "install_package", "firewall", "reboot", "shutdown",
+    },
     "physical_world": {"robot", "drone", "actuator", "iot_control", "medical_device", "industrial_control"},
     "regulated_decision": {"credit_score", "hire", "employment", "benefit_eligibility", "diagnose", "triage_patient"},
 }
