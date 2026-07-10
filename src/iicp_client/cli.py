@@ -242,6 +242,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Backend model name (e.g. qwen2.5:0.5b). env: IICP_BACKEND_MODEL",
     )
     serve.add_argument(
+        "--policy-manifest",
+        default=_env("IICP_POLICY_MANIFEST_FILE"),
+        help="Path to public node-policy JSON; signed locally with the operator key. env: IICP_POLICY_MANIFEST_FILE",
+    )
+    serve.add_argument(
         "--public-endpoint",
         default=_env("IICP_PUBLIC_ENDPOINT"),
         help="Externally reachable URL of this node. env: IICP_PUBLIC_ENDPOINT. "
@@ -365,9 +370,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(_env("IICP_RELAY_ACCEPT_PORT", "9485")),
         help="TCP port for the relay accept server (only used with --relay-capable). "
-        "Default: 9485. Note: relay bind authentication is pending (#510) — only "
-        "run a relay accept port on networks you trust until the signed-bind "
-        "mechanism ships. env: IICP_RELAY_ACCEPT_PORT",
+        "Default: 9485. Public relays should enforce directory-signed one-use bind "
+        "tickets with IICP_RELAY_REQUIRE_BIND_TICKET=1 and "
+        "IICP_RELAY_BIND_TICKET_PUBLIC_KEY. env: IICP_RELAY_ACCEPT_PORT",
     )
     serve.add_argument(
         "--log-dir",
@@ -1315,6 +1320,7 @@ async def _serve(args: argparse.Namespace) -> int:
     _op_display_name = None
     _op_created_at = None
     _op_integrity_hash = None
+    _policy_manifest = None
     _identity_notice = no_identity_notice(_op)
     if _identity_notice is not None:
         # #503 — anonymous registration accrues no founder/recognition standing;
@@ -1327,6 +1333,13 @@ async def _serve(args: argparse.Namespace) -> int:
         _op_display_name = _op.display_name or None
         _op_created_at = _op.created_at
         _op_integrity_hash = _op.operator_integrity_hash or None
+        if args.policy_manifest:
+            from iicp_client.policy_manifest import load_and_sign_policy_manifest
+
+            _policy_manifest = load_and_sign_policy_manifest(args.policy_manifest, _op)
+
+    if args.policy_manifest and _policy_manifest is None:
+        raise ValueError("--policy-manifest requires a key-backed operator identity")
 
     cfg = NodeConfig(
         node_id=node_id,
@@ -1344,6 +1357,7 @@ async def _serve(args: argparse.Namespace) -> int:
         operator_display_name=_op_display_name,
         operator_created_at=_op_created_at,
         operator_integrity_hash=_op_integrity_hash,
+        policy_manifest=_policy_manifest,
         # TC-9c — pre-load saved HMAC key so receipts work immediately on restart.
         node_hmac_key=saved.node_hmac_key or "" if saved else "",
     )

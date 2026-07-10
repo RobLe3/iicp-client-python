@@ -396,12 +396,13 @@ class RelayAcceptServer:
             return
         elif not bind_ticket:
             logger.warning(
-                "Relay accept: unsigned RELAY_BIND for worker=%s; #510 ticket auth not yet enforced",
+                "Relay accept: unsigned RELAY_BIND for worker=%s accepted in compatibility mode; "
+                "enable IICP_RELAY_REQUIRE_BIND_TICKET=1 for public relays",
                 worker_id,
             )
 
-        # #510 interim hardening: RELAY_BIND is unauthenticated, so refuse to
-        # displace an existing session whose socket is still alive (mid-session
+        # Compatibility hardening: an unsigned bind must never displace an
+        # existing session whose socket is still alive (mid-session
         # hijack). Rebind after socket death (legitimate reconnect) still works.
         existing = self.registry.get(worker_id)
         if existing is not None and existing.is_alive():

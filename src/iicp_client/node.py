@@ -304,6 +304,9 @@ class NodeConfig:
     operator_display_name: str | None = None
     operator_created_at: str | None = None
     operator_integrity_hash: str | None = None
+    # Optional locally signed public policy declaration (#588). The CLI builds
+    # this from --policy-manifest; every register/re-register reuses it.
+    policy_manifest: dict | None = None
     # Phase 3+ availability windows (ADR-006 / spec/iicp-dir.md §register
     # `availability`). Each entry: {"start": "HH:MM", "end": "HH:MM", "share": 0.0-1.0}
     # in local time. Shapes the effective capacity advertised to the directory and
@@ -667,6 +670,8 @@ class IicpNode:
                 payload["operator_created_at"] = self._cfg.operator_created_at
             if self._cfg.operator_integrity_hash:
                 payload["operator_integrity_hash"] = self._cfg.operator_integrity_hash
+        if self._cfg.policy_manifest:
+            payload["policy_manifest"] = self._cfg.policy_manifest
 
         # SDK self-identification — directory surfaces these on /v1/discover
         # so dashboards can render a language badge. Free-form so future SDKs
