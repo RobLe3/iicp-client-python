@@ -37,7 +37,7 @@ import time
 import uuid
 from typing import Any
 
-from iicp_client.relay_ticket import verify_relay_bind_ticket
+from iicp_client.relay_ticket import consume_relay_bind_ticket, verify_relay_bind_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +373,7 @@ class RelayAcceptServer:
             logger.warning("Relay accept: RELAY_BIND missing worker_id")
             return
 
+        claims = None
         if bind_ticket and self.bind_ticket_public_key_hex:
             claims = verify_relay_bind_ticket(
                 bind_ticket,
@@ -431,6 +432,11 @@ class RelayAcceptServer:
             logger.warning("Relay: at session capacity — rejecting bind for %s", worker_id)
             nack = _enc({1: "error", 2: worker_id, 3: "relay at session capacity"})
             writer.write(_make_frame(_MT_RELAY_ACK, nack))
+            await writer.drain()
+            return
+
+        if claims is not None and not consume_relay_bind_ticket(claims):
+            writer.write(_make_frame(_MT_RELAY_ACK, _enc({1: "error", 2: worker_id, 3: "relay bind ticket replayed"})))
             await writer.drain()
             return
 

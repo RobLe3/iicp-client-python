@@ -17,6 +17,7 @@ import asyncio
 import base64
 import concurrent.futures
 import json
+import secrets
 import socket
 import threading
 import time
@@ -40,7 +41,8 @@ def _signed_ticket(worker_id: str, relay_id: str) -> tuple[str, str]:
     sk = Ed25519PrivateKey.generate()
     pub_hex = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
     payload = json.dumps({
-        "v": 1, "typ": "relay-bind-ticket", "iss": "test", "sub": worker_id, "aud": relay_id,
+        "v": 1, "typ": "relay-bind-ticket", "jti": secrets.token_hex(16),
+        "iss": "test", "sub": worker_id, "aud": relay_id,
         "iat": 1, "exp": 9999999999,
     }, separators=(",", ":")).encode()
     b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
@@ -230,8 +232,20 @@ class TestRelayHttpPollEndpoints:
         monkeypatch.setenv("IICP_RELAY_BIND_TICKET_PUBLIC_KEY", pub_hex)
         monkeypatch.setenv("IICP_RELAY_REQUIRE_BIND_TICKET", "1")
 
-        status, _, _ = self._bind(relay, worker_id="w-http-ticket", models=[], extra={"bind_ticket": good_ticket})
+        status, accepted, _ = self._bind(
+            relay, worker_id="w-http-ticket", models=[], extra={"bind_ticket": good_ticket}
+        )
         assert status == 200
+        status, _, _ = relay.request(
+            "POST", "/v1/relay/unbind", {},
+            headers={"Authorization": f"Bearer {accepted['session_token']}"},
+        )
+        assert status == 204
+        status, body, _ = self._bind(
+            relay, worker_id="w-http-ticket", models=[], extra={"bind_ticket": good_ticket}
+        )
+        assert status == 409
+        assert "replayed" in body["error"]["message"]
         status, body, _ = self._bind(relay, worker_id="w-http-ticket-2", models=[], extra={"bind_ticket": bad_ticket})
         assert status == 401
         assert body["error"]["code"] == "IICP-E040"

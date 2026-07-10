@@ -1198,6 +1198,7 @@ class IicpNode:
                 bind_ticket = payload.get("bind_ticket") if isinstance(payload.get("bind_ticket"), str) else ""
                 ticket_public_key = os.getenv("IICP_RELAY_BIND_TICKET_PUBLIC_KEY", "")
                 require_bind_ticket = os.getenv("IICP_RELAY_REQUIRE_BIND_TICKET") == "1"
+                claims = None
                 if bind_ticket and ticket_public_key:
                     from iicp_client.relay_ticket import verify_relay_bind_ticket
 
@@ -1238,6 +1239,15 @@ class IicpNode:
                     ).encode()
                     self._json_response(503, err, cors=True)
                     return
+                if claims is not None:
+                    from iicp_client.relay_ticket import consume_relay_bind_ticket
+
+                    if not consume_relay_bind_ticket(claims):
+                        err = json.dumps(
+                            {"error": {"code": "IICP-E040", "message": "relay bind ticket replayed"}}
+                        ).encode()
+                        self._json_response(409, err, cors=True)
+                        return
                 from iicp_client.relay_session import HttpPollWorkerSession
 
                 models = payload.get("models") if isinstance(payload.get("models"), list) else []

@@ -6,7 +6,7 @@ import json
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from iicp_client.relay_ticket import verify_relay_bind_ticket
+from iicp_client.relay_ticket import RelayBindTicketReplayCache, verify_relay_bind_ticket
 
 
 def _b64url(data: bytes) -> str:
@@ -27,7 +27,7 @@ def _signed_ticket(claims: dict) -> tuple[str, str]:
 def test_relay_bind_ticket_accepts_valid_worker_and_audience():
     token, pub = _signed_ticket({
         "v": 1, "typ": "relay-bind-ticket", "iss": "test",
-        "sub": "worker-1", "aud": "relay-1", "iat": 1, "exp": 999_999,
+        "jti": "01" * 16, "sub": "worker-1", "aud": "relay-1", "iat": 1, "exp": 999_999,
     })
     claims = verify_relay_bind_ticket(token, pub, "worker-1", "relay-1", now_s=100)
     assert claims is not None
@@ -37,10 +37,23 @@ def test_relay_bind_ticket_accepts_valid_worker_and_audience():
 def test_relay_bind_ticket_rejects_wrong_worker_audience_expiry_and_tamper():
     token, pub = _signed_ticket({
         "v": 1, "typ": "relay-bind-ticket", "iss": "test",
-        "sub": "worker-1", "aud": "relay-1", "iat": 1, "exp": 999_999,
+        "jti": "02" * 16, "sub": "worker-1", "aud": "relay-1", "iat": 1, "exp": 999_999,
     })
     tampered = token[:-1] + ("1" if token[-1] != "1" else "0")
     assert verify_relay_bind_ticket(token, pub, "attacker", "relay-1", now_s=100) is None
     assert verify_relay_bind_ticket(token, pub, "worker-1", "relay-2", now_s=100) is None
     assert verify_relay_bind_ticket(token, pub, "worker-1", "relay-1", now_s=1_000_000) is None
     assert verify_relay_bind_ticket(tampered, pub, "worker-1", "relay-1", now_s=100) is None
+
+
+def test_relay_bind_ticket_replay_cache_is_one_use_and_expires():
+    token, pub = _signed_ticket({
+        "v": 1, "typ": "relay-bind-ticket", "jti": "03" * 16, "iss": "test",
+        "sub": "worker-1", "aud": "relay-1", "iat": 1, "exp": 200,
+    })
+    claims = verify_relay_bind_ticket(token, pub, "worker-1", "relay-1", now_s=100)
+    assert claims is not None
+    cache = RelayBindTicketReplayCache()
+    assert cache.consume(claims, now_s=100) is True
+    assert cache.consume(claims, now_s=101) is False
+    assert cache.consume(claims, now_s=201) is True

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import secrets
 import struct
 from unittest.mock import AsyncMock, MagicMock
 
@@ -207,6 +208,7 @@ def _signed_ticket(worker_id: str, relay_id: str) -> tuple[str, str]:
     ).hex()
     payload = base64.urlsafe_b64encode(json.dumps({
         "v": 1, "typ": "relay-bind-ticket", "iss": "test",
+        "jti": secrets.token_hex(16),
         "sub": worker_id, "aud": relay_id, "iat": 1, "exp": 9_999_999_999,
     }, separators=(",", ":")).encode()).decode().rstrip("=")
     sig = private.sign(b"iicp:relay-bind-ticket:v1\n" + payload.encode()).hex()
