@@ -64,6 +64,31 @@ def sign_rename(
     return base64.b64encode(sig).decode()
 
 
+def canonical_operator_self_service_bytes(action: str, fields: dict) -> bytes:
+    """Canonical #599/#609 operator self-service challenge bytes.
+
+    ``fields`` includes ``operator_pub``, ``nonce``, ``ts`` and action-specific
+    values, but never ``sig``. The action is inserted and all top-level keys are
+    sorted exactly as the directory verifier does.
+    """
+    payload = {"action": action, **{k: v for k, v in fields.items() if k != "sig"}}
+    return b"iicp:operator:self-service:v1\n" + json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def sign_operator_self_service(
+    operator_key: Ed25519PrivateKey, action: str, fields: dict
+) -> str:
+    """Sign an operator acceptance or DSR request without exposing the key."""
+    return base64.b64encode(
+        operator_key.sign(canonical_operator_self_service_bytes(action, fields))
+    ).decode()
+
+
 def operator_pub_b64(private_key: Ed25519PrivateKey) -> str:
     """Base64 of the operator's 32-byte ed25519 public key (as the directory stores)."""
     return base64.b64encode(private_key.public_key().public_bytes_raw()).decode()

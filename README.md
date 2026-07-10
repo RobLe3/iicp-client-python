@@ -48,6 +48,16 @@ keeps key-ready transport/relay paths confidential, but it is not
 executor-blind inference. For sensitive data, use local/browser inference or a
 fail-closed routing profile.
 
+## MCP gateway safety
+
+`iicp-node mcp-gateway --tools format_json,summarize_text` advertises only the
+tools you name. Shell, file, network, browser, credential, system-control and
+regulated-decision tools are denied by default. Enabling one requires all four
+controls: `--allow-dangerous-tools`, `--authz-policy ID`, `--sandbox container`
+and `--audit-redaction` (equivalent `IICP_MCP_*` environment variables exist).
+Policy receipts include risk/decision metadata and argument counts, never tool
+arguments, prompts, credentials or response content.
+
 ## Use from Python
 
 ```python

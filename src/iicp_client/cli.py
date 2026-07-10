@@ -554,6 +554,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_env("IICP_HOST", "::") or "::",
         help="Bind host (env IICP_HOST, default :: — dual-stack).",
     )
+    gw.add_argument(
+        "--allow-dangerous-tools", action="store_true",
+        default=_env_bool("IICP_MCP_ALLOW_DANGEROUS_TOOLS"),
+        help="Allow high-risk tools only when authz, sandbox and redacted audit controls are also configured.",
+    )
+    gw.add_argument("--authz-policy", default=_env("IICP_MCP_AUTHZ_POLICY", "") or "")
+    gw.add_argument("--sandbox", default=_env("IICP_MCP_SANDBOX", "") or "")
+    gw.add_argument(
+        "--audit-redaction", action="store_true",
+        default=_env_bool("IICP_MCP_AUDIT_REDACTION"),
+        help="Assert that gateway audit events exclude prompts, secrets and tool arguments.",
+    )
 
     return p
 
@@ -2202,32 +2214,34 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     import httpx
-
-    # Backstop denylist on top of the operator's explicit --tools allowlist
-    # (red-team pass 3): obvious shells, interpreters, and exec primitives an
-    # operator should never expose even by accident. Not the primary control
-    # (the required --tools allowlist + allow_tool_execution opt-in are) — a
-    # best-effort safety net.
-    _DANGEROUS = {
-        # shells / interpreters / process execution
-        "bash", "sh", "zsh", "fish", "shell", "powershell", "pwsh", "cmd",
-        "exec", "execute", "run_command", "run", "system", "eval",
-        "python", "python3", "node", "ruby", "perl", "subprocess", "popen", "spawn",
-        # #601 tool-risk classes that must not be public-unknown by default
-        "write_file", "file_write", "filesystem_write", "delete_file", "remove_file",
-        "browser_control", "computer_use", "credential_access", "read_secret", "secrets",
-        "system_control", "service_control", "physical_world", "regulated_decision",
-    }
+    from iicp_client.mcp_policy import McpToolPolicy, tool_risk_label
 
     def _tool_to_intent(name: str) -> str:
         safe = re.sub(r"[^a-z0-9_]", "_", name.lower())
         return f"urn:iicp:intent:mcp:{safe}:v1"
 
     raw_tools = [t.strip() for t in (args.tools or "").split(",") if t.strip()]
-    active_tools = [t for t in raw_tools if t.lower() not in _DANGEROUS]
-    if not active_tools:
+    tool_policy = McpToolPolicy(
+        allow_dangerous_tools=bool(getattr(args, "allow_dangerous_tools", False)),
+        authz_policy=str(getattr(args, "authz_policy", "") or ""),
+        sandbox_profile=str(getattr(args, "sandbox", "") or ""),
+        audit_redaction=bool(getattr(args, "audit_redaction", False)),
+    )
+    active_tools = [t for t in raw_tools if tool_policy.allows(t)]
+    denied_tools = [t for t in raw_tools if not tool_policy.allows(t)]
+    if denied_tools:
         sys.stderr.write(
-            "ERROR: --tools is required. Provide a comma-separated list of MCP tool names.\n"
+            "WARNING: denied high-risk MCP tools until all authz, sandbox and redacted-audit controls are configured: "
+            + ", ".join(denied_tools) + "\n"
+        )
+    if not active_tools:
+        reason = (
+            "all requested tools were denied by the MCP safety policy"
+            if raw_tools
+            else "--tools is required"
+        )
+        sys.stderr.write(
+            f"ERROR: {reason}. Provide safe tool names, or configure every dangerous-tool control.\n"
             "  Example: iicp-node mcp-gateway --tools summarize_text,lookup_status --mcp-url http://localhost:8001\n"
         )
         return 2
@@ -2242,6 +2256,10 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     node_token_env = _env("IICP_NODE_TOKEN", "") or ""
 
     intents = [_tool_to_intent(t) for t in active_tools]
+    capabilities = [
+        {"intent": intent, "models": [f"mcp:{tool}"], "max_tokens": 65536}
+        for tool, intent in zip(active_tools, intents, strict=True)
+    ]
     _live: dict = {"token": node_token_env, "mcp_rpc_id": 0}
 
     def _register() -> str:
@@ -2249,9 +2267,17 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             "node_id": node_id,
             "region": region,
             "endpoint": public_endpoint,
-            "intents": intents,
-            "mcp_tools": active_tools,
-            "protocol_version": "1.0",
+            "capabilities": capabilities,
+            "limits": {"max_concurrent": 1, "tokens_per_min": 65536},
+            "backend": "custom",
+            "policy": {
+                "allow_remote_inference": False,
+                "allow_tool_execution": True,
+                "allow_file_access": any(
+                    tool_risk_label(tool) in {"file_read", "file_write"}
+                    for tool in active_tools
+                ),
+            },
         }
         headers = {"Authorization": f"Bearer {_live['token']}"} if _live["token"] else {}
         r = httpx.post(f"{directory_url}/register", json=payload, headers=headers, timeout=10.0)
@@ -2303,6 +2329,12 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
                     "status": "ok",
                     "node_id": node_id,
                     "active_tools": active_tools,
+                    "mcp_policy": {
+                        "dangerous_tools_enabled": tool_policy.dangerous_ready,
+                        "authz_policy": tool_policy.authz_policy or None,
+                        "sandbox_profile": tool_policy.sandbox_profile or None,
+                        "audit_redacted": tool_policy.audit_redaction,
+                    },
                     "mcp_server": mcp_url,
                     "timestamp": int(time.time()),
                 })
@@ -2328,22 +2360,30 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             if not tool_name:
                 self._send_json(400, {"error": "Cannot determine tool name from payload or intent"})
                 return
-            if tool_name.lower() in _DANGEROUS:
-                self._send_json(403, {"error": "Tool not permitted"})
+            arguments = payload.get("arguments", {})
+            argument_count = len(arguments) if isinstance(arguments, dict) else 0
+            if not tool_policy.allows(tool_name):
+                self._send_json(403, {
+                    "error": "Tool not permitted by MCP risk policy",
+                    "policy_receipt": tool_policy.receipt(tool_name, "denied", argument_count),
+                })
                 return
             if active_tools and tool_name not in active_tools:
                 self._send_json(404, {"error": "Tool not available on this gateway"})
                 return
             task_id = body.get("task_id", str(uuid.uuid4()))
             try:
-                result = _call_mcp(tool_name, payload.get("arguments", {}))
+                result = _call_mcp(tool_name, arguments if isinstance(arguments, dict) else {})
             except httpx.HTTPError:
                 self._send_json(502, {"error": "MCP server unreachable"})
                 return
             except ValueError as exc:
                 self._send_json(422, {"error": str(exc)})
                 return
-            self._send_json(200, {"task_id": task_id, "status": "completed", "result": result})
+            self._send_json(200, {
+                "task_id": task_id, "status": "completed", "result": result,
+                "policy_receipt": tool_policy.receipt(tool_name, "allowed", argument_count),
+            })
 
     # Register + start
     try:

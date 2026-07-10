@@ -20,6 +20,7 @@ import respx
 from httpx import Response
 
 from iicp_client import cli
+from iicp_client.mcp_policy import McpToolPolicy, tool_risk_label
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,13 +77,23 @@ def test_tool_to_intent_urn():
 
 
 def test_dangerous_tools_filtered():
-    dangerous = {
-        "bash", "shell", "exec", "run_command", "eval",
-        "write_file", "browser_control", "credential_access", "system_control",
-    }
-    tools = ["read_file", "write_file", "browser_control", "list_dir", "exec"]
-    active = [t for t in tools if t.lower() not in dangerous]
-    assert active == ["read_file", "list_dir"]
+    policy = McpToolPolicy()
+    tools = ["format_json", "read_file", "write_file", "browser_control", "exec", "drone_control"]
+    assert [t for t in tools if policy.allows(t)] == ["format_json"]
+
+
+def test_dangerous_tools_require_all_controls_and_receipt_is_redacted():
+    partial = McpToolPolicy(True, "operator-key", "container", False)
+    assert not partial.allows("write_file")
+    complete = McpToolPolicy(True, "operator-key", "container", True)
+    assert complete.allows("write_file")
+    receipt = complete.receipt("write_file", "allowed", 2)
+    assert receipt["tool_risk"] == "file_write"
+    assert receipt["argument_content"] == "excluded"
+    assert "arguments" not in receipt
+    assert "GDPR_CANARY_TOOL_INPUT" not in json.dumps(receipt)
+    assert tool_risk_label("read_secret") == "credential_access"
+    assert tool_risk_label("drone_control") == "physical_world"
 
 
 # ── test 4: round-trip (mock directory + mock MCP server) ────────────────────
@@ -117,7 +128,7 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
 
     args_ns = type("Args", (), {
         "mcp_url": mock_mcp,
-        "tools": "read_file,list_dir",
+        "tools": "format_json,summarize_text",
         "node_id": "gw-test-001",
         "public_endpoint": f"http://localhost:{port}",
         "directory_url": mock_dir,
@@ -144,7 +155,7 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
         health = json.loads(resp.read())
     assert health["status"] == "ok"
     assert health["node_id"] == "gw-test-001"
-    assert set(health["active_tools"]) == {"read_file", "list_dir"}
+    assert set(health["active_tools"]) == {"format_json", "summarize_text"}
 
     # Task dispatch
     import urllib.error
@@ -152,8 +163,8 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
 
     task_body = json.dumps({
         "task_id": "task-abc",
-        "intent": "urn:iicp:intent:mcp:read_file:v1",
-        "payload": {"tool_name": "read_file", "arguments": {"path": "/tmp/hello.txt"}},
+        "intent": "urn:iicp:intent:mcp:format_json:v1",
+        "payload": {"tool_name": "format_json", "arguments": {"value": {"ok": True}}},
     }).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/task",
@@ -168,12 +179,17 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
         result = json.loads(resp.read())
     assert result["status"] == "completed"
     assert result["task_id"] == "task-abc"
+    assert result["policy_receipt"]["argument_content"] == "excluded"
 
     # Verify registration used correct intents
     assert len(register_calls) == 1
     reg = register_calls[0]
-    assert "urn:iicp:intent:mcp:read_file:v1" in reg["intents"]
-    assert "urn:iicp:intent:mcp:list_dir:v1" in reg["intents"]
+    reg_intents = {cap["intent"] for cap in reg["capabilities"]}
+    assert "urn:iicp:intent:mcp:format_json:v1" in reg_intents
+    assert "urn:iicp:intent:mcp:summarize_text:v1" in reg_intents
+    assert reg["limits"] == {"max_concurrent": 1, "tokens_per_min": 65536}
+    assert reg["policy"]["allow_tool_execution"] is True
+    assert "mcp_tools" not in reg
     assert reg["node_id"] == "gw-test-001"
 
     # Graceful shutdown

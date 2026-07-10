@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from iicp_client.delegation import (
     canonical_bytes,
+    canonical_operator_self_service_bytes,
     canonical_rename_bytes,
     issue_delegation,
     operator_pub_b64,
@@ -32,6 +33,22 @@ def test_canonical_bytes_matches_cross_language_kat():
 
 def test_canonical_rename_bytes_matches_cross_language_kat():
     assert canonical_rename_bytes("New Name", "T3BQdWI=", 1893456000) == RENAME_KAT
+
+
+def test_operator_self_service_bytes_match_cross_language_kat():
+    fields = {
+        "operator_pub": "T3BQdWI=",
+        "nonce": "nonce-1234567890",
+        "ts": 1893456000,
+        "terms_version": "2026-07",
+        "dpa_version": "2026-07",
+    }
+    expected = (
+        b'iicp:operator:self-service:v1\n{"action":"accept","dpa_version":"2026-07",'
+        b'"nonce":"nonce-1234567890","operator_pub":"T3BQdWI=",'
+        b'"terms_version":"2026-07","ts":1893456000}'
+    )
+    assert canonical_operator_self_service_bytes("accept", fields) == expected
 
 
 def test_sign_rename_verifies_with_operator_pubkey():
