@@ -219,12 +219,16 @@ def test_submit_happy_path():
 @respx.mock
 @pytest.mark.ticketed_dispatch
 def test_submit_prefers_ticketed_routes_and_records_redacted_ticket_prefix():
-    ticket = respx.post(f"{DIRECTORY}/v1/dispatch/ticket").mock(
+    fixture = __import__("json").loads((__import__("pathlib").Path(__file__).parents[1] / "parity" / "dispatch-route-ticket-v1.json").read_text())
+    directory = fixture["valid"]["claims"]["iss"]
+    route = {**GOOD_NODES["nodes"][0], "node_id": fixture["valid"]["claims"]["node_id"]}
+    respx.get(f"{directory}/v1/directory-key").mock(return_value=httpx.Response(200, json={"public_key": fixture["public_key_hex"], "algorithm": "ed25519"}))
+    ticket = respx.post(f"{directory}/v1/dispatch/ticket").mock(
         return_value=httpx.Response(201, json={
-            "ticket": "secret-ticket-token",
+            "ticket": fixture["valid"]["token"],
             "ticket_id_prefix": "abc123def456",
-            "node_id": "node-abc",
-            "route": GOOD_NODES["nodes"][0],
+            "node_id": fixture["valid"]["claims"]["node_id"],
+            "route": route,
         })
     )
     respx.post(TASK_URL).mock(return_value=httpx.Response(200, json={
@@ -233,14 +237,14 @@ def test_submit_prefers_ticketed_routes_and_records_redacted_ticket_prefix():
         "result": {"answer": 42},
     }))
 
-    resp = IicpClient(ClientConfig(directory_url=DIRECTORY, max_retries=1)).submit(
+    resp = IicpClient(ClientConfig(directory_url=directory, max_retries=1)).submit(
         TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={"messages": []})
     )
 
     assert ticket.called
     assert resp.dispatch_ticket_id_prefix == "abc123def456"
     assert not respx.get(DISCOVER_URL).called
-    assert "secret-ticket-token" not in str(resp)
+    assert fixture["valid"]["token"] not in str(resp)
 
 
 @respx.mock

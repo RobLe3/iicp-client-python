@@ -18,6 +18,7 @@ import httpx
 
 from iicp_client._http import _traceparent, get_json, post_json
 from iicp_client.errors import IicpError
+from iicp_client.dispatch_ticket import verify_dispatch_route_ticket
 from iicp_client.policy import ensure_intent_allowed
 from iicp_client.routing_policy import (
     ROUTING_POLICY_REFUSAL_CODE,
@@ -132,6 +133,7 @@ class IicpClient:
             pass
         # Phase 2 (#496): consumer token cache — (target_node_id, intent) → (token, exp_unix)
         self._ct_cache: dict[tuple[str, str], tuple[str, int]] = {}
+        self._dispatch_ticket_key: str | None = None
 
     # ------------------------------------------------------------------
     # Phase 2 consumer token acquisition (#496)
@@ -262,6 +264,17 @@ class IicpClient:
                 error_code = data.get("error", {}).get("code") if isinstance(data, dict) else None
 
                 if response.status_code == 201:
+                    ticket = data.get("ticket") if isinstance(data, dict) else None
+                    node_id = data.get("node_id") if isinstance(data, dict) else None
+                    if self._dispatch_ticket_key is None:
+                        key_response = await client.get(f"{self._cfg.directory_url.rstrip('/')}/v1/directory-key", headers=headers)
+                        if key_response.status_code == 200:
+                            key_data = key_response.json()
+                            key = key_data.get("public_key") if isinstance(key_data, dict) else None
+                            if isinstance(key, str): self._dispatch_ticket_key = key
+                    issuer = self._cfg.directory_url.rstrip('/').removesuffix('/api')
+                    if not (isinstance(ticket, str) and isinstance(node_id, str) and self._dispatch_ticket_key and verify_dispatch_route_ticket(ticket, self._dispatch_ticket_key, issuer, node_id, intent)):
+                        raise IicpError(code="IICP-DISPATCH-TICKET-UNVERIFIED", message="Directory returned an unverifiable dispatch ticket", component="directory", retryable=False)
                     route = data.get("route", {})
                     if isinstance(route, dict):
                         route = {**route, "node_id": data.get("node_id", route.get("node_id"))}
