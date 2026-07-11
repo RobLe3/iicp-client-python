@@ -68,10 +68,13 @@ def canonical_operator_self_service_bytes(action: str, fields: dict) -> bytes:
     """Canonical #599/#609 operator self-service challenge bytes.
 
     ``fields`` includes ``operator_pub``, ``nonce``, ``ts`` and action-specific
-    values, but never ``sig``. The action is inserted and all top-level keys are
+    values, but never ``sig`` or the successor proof ``new_key_sig``. The action is inserted and all top-level keys are
     sorted exactly as the directory verifier does.
     """
-    payload = {"action": action, **{k: v for k, v in fields.items() if k != "sig"}}
+    payload = {
+        "action": action,
+        **{k: v for k, v in fields.items() if k not in {"sig", "new_key_sig"}},
+    }
     return b"iicp:operator:self-service:v1\n" + json.dumps(
         payload,
         sort_keys=True,

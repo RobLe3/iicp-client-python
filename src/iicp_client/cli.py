@@ -30,6 +30,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -514,6 +515,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Confirm a restrict or anonymize action after the retained-record notice.",
     )
+    op_key = op_sub.add_parser("key", help="Rotate or revoke the local cryptographic operator key.")
+    op_key.add_argument("action", choices=("rotate", "revoke"))
+    op_key.add_argument("--directory-url", default=None, help="IICP directory base URL.")
+    op_key.add_argument("--yes", action="store_true", help="Confirm a key rotation or revocation.")
 
     # ── proxy (ADR-050) — local OpenAI/Ollama/Anthropic-compat gateway ────────────
     proxy = sub.add_parser(
@@ -1111,6 +1116,153 @@ async def _cmd_operator_dsr_async(args: argparse.Namespace) -> int:
             sys.stdout.write(f"Receipt reference: {tracking_id}\n")
         if retention:
             sys.stdout.write(f"Retained records: {retention}\n")
+    return 0
+
+
+def _operator_backup_path() -> str:
+    """Return a non-secret dated local archive path for the retiring identity."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return str(config_dir() / f"operator-before-rotation-{stamp}.json")
+
+
+def _write_private_json(path: str, body: dict) -> None:
+    """Create, never overwrite, a local mode-0600 migration artifact."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(body, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+
+async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
+    """Rotate/revoke an accountless operator key without exposing secret material (#618)."""
+    action = args.action
+    if not args.yes:
+        sys.stderr.write(
+            "This changes the cryptographic operator identity used by all saved nodes. "
+            "Founder recognition and node-backed credits continue on a normal rotation. Re-run with --yes.\n"
+        )
+        return 2
+    op = load_operator()
+    if op is None or not op.is_key_backed():
+        sys.stderr.write("ERROR: a key-backed local operator identity is required.\n")
+        return 1
+    directory_url = args.directory_url or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
+    base = directory_url.rstrip("/") + "/v1/operator"
+
+    # A plaintext identity needs one passphrase only because the retiring key is
+    # archived encrypted. Existing encrypted identities reuse their unlock secret.
+    unlock = _operator_passphrase("Operator passphrase: ", confirm=False) if op.is_encrypted() else None
+    try:
+        old_plain = op.decrypt_at_rest(unlock) if op.is_encrypted() else op
+        old_key = old_plain.signing_key()
+    except ValueError as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        return 1
+
+    backup_path: str | None = None
+    successor: OperatorIdentity | None = None
+    try:
+        if action == "rotate":
+            backup_password = unlock or os.environ.get("IICP_OPERATOR_BACKUP_PASSPHRASE")
+            if not backup_password:
+                backup_password = _operator_passphrase("New backup passphrase: ", confirm=True)
+            if not backup_password:
+                sys.stderr.write("ERROR: an encrypted backup passphrase is required.\n")
+                return 1
+            backup_path = _operator_backup_path()
+            # Pre-create the archive before changing the remote identity; remove it
+            # if the directory rejects the rotation.
+            _write_private_json(backup_path, old_plain.encrypt_at_rest(backup_password).to_dict())
+            successor = OperatorIdentity.generate(
+                display_name=old_plain.display_name, contact=old_plain.contact
+            )
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            challenge = await client.post(base + "/challenge", json={"operator_pub": old_plain.operator_id})
+            challenge.raise_for_status()
+            nonce = challenge.json().get("nonce")
+            if not isinstance(nonce, str):
+                raise ValueError("directory challenge response was incomplete")
+            payload: dict[str, object] = {
+                "operator_pub": old_plain.operator_id,
+                "nonce": nonce,
+                "ts": int(time.time()),
+            }
+            if action == "rotate":
+                assert successor is not None
+                payload["new_operator_pub"] = successor.operator_id
+                payload["reason_class"] = "operator_rotation"
+                payload["sig"] = sign_operator_self_service(old_key, "key_rotate", payload)
+                successor_fields = {
+                    "operator_pub": old_plain.operator_id,
+                    "new_operator_pub": successor.operator_id,
+                    "nonce": nonce,
+                    "ts": payload["ts"],
+                    "rotation_epoch": None,
+                }
+                payload["new_key_sig"] = sign_operator_self_service(
+                    successor.signing_key(), "key_rotate_successor", successor_fields
+                )
+                response = await client.post(base + "/key/rotate", json=payload)
+            else:
+                payload["confirm"] = True
+                payload["reason_class"] = "operator_request"
+                payload["sig"] = sign_operator_self_service(old_key, "key_revoke", payload)
+                response = await client.post(base + "/key/revoke", json=payload)
+    except Exception as exc:  # noqa: BLE001
+        if backup_path:
+            try:
+                os.unlink(backup_path)
+            except OSError:
+                pass
+        sys.stderr.write(f"ERROR: operator key {action} failed: {exc}\n")
+        return 1
+
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if response.status_code >= 400:
+        if backup_path:
+            try:
+                os.unlink(backup_path)
+            except OSError:
+                pass
+        sys.stderr.write(f"ERROR: directory rejected operator key {action}: {body.get('error', {}).get('message', response.status_code)}\n")
+        return 1
+
+    receipt = {
+        "schema": "iicp.operator-key-receipt.v1",
+        "action": action,
+        "status": body.get("status"),
+        "operator_fingerprint": body.get("operator_fingerprint"),
+        "linked_nodes": body.get("linked_nodes"),
+        "receipt_id_prefix": body.get("receipt_id_prefix"),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    receipt_path = str(config_dir() / f"operator-{action}-receipt-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json")
+    _write_private_json(receipt_path, receipt)
+    if action == "rotate":
+        assert successor is not None and backup_path is not None
+        # Persist only after the remote dual-key rotation and local encrypted
+        # archive both succeeded. Saved node records reference the new identity;
+        # running processes pick this up through their normal heartbeat/recovery.
+        save_operator(successor)
+        migrated = 0
+        for node in list_nodes():
+            if node.operator_id == old_plain.operator_id:
+                node.operator_id = successor.operator_id
+                save_node(node)
+                migrated += 1
+        sys.stdout.write(
+            f"Operator identity migrated; {migrated} saved node(s) will re-register with the new key.\n"
+            f"Encrypted old-key backup: {backup_path}\nRedacted receipt: {receipt_path}\n"
+        )
+    else:
+        sys.stdout.write(
+            "Operator identity revoked. Managed nodes will fail closed on their next registration; "
+            f"redacted receipt: {receipt_path}\n"
+        )
     return 0
 
 
@@ -2698,6 +2850,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_cmd_operator_rename_async(args))
         if args.op_cmd == "dsr":
             return asyncio.run(_cmd_operator_dsr_async(args))
+        if args.op_cmd == "key":
+            return asyncio.run(_cmd_operator_key_async(args))
         if args.op_cmd == "encrypt":
             return _cmd_operator_encrypt(args)
         if args.op_cmd == "decrypt":

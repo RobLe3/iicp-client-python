@@ -51,6 +51,19 @@ def test_operator_self_service_bytes_match_cross_language_kat():
     assert canonical_operator_self_service_bytes("accept", fields) == expected
 
 
+def test_rotation_old_key_signature_excludes_successor_proof():
+    fields = {
+        "operator_pub": "old",
+        "new_operator_pub": "new",
+        "nonce": "nonce-1234567890",
+        "ts": 1_893_456_000,
+        "new_key_sig": "must-not-be-signed-by-old-key",
+    }
+    actual = canonical_operator_self_service_bytes("key_rotate", fields)
+    assert b"new_key_sig" not in actual
+    assert b'"action":"key_rotate"' in actual
+
+
 def test_sign_rename_verifies_with_operator_pubkey():
     # The operator_pub used to sign IS the operator_id (== base64 ed25519 pubkey, #464),
     # so the directory verifies the rename with the very key it stores.
