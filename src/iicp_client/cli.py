@@ -1133,6 +1133,24 @@ def _write_private_json(path: str, body: dict) -> None:
         handle.write("\n")
 
 
+def _write_operator_handoff_marker(node_names: list[str]) -> str:
+    """Persist a redacted, one-pass supervised restart marker after rotation."""
+    stamp = int(time.time())
+    path = str(config_dir() / f"operator-handoff-pending-{stamp}.json")
+    _write_private_json(
+        path,
+        {
+            "schema": "iicp.operator-handoff.v1",
+            "action": "rotate",
+            "created_at_unix": stamp,
+            "grace_seconds": 300,
+            "affected_node_names": node_names,
+            "restart_attempted": False,
+        },
+    )
+    return path
+
+
 async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
     """Rotate/revoke an accountless operator key without exposing secret material (#618)."""
     action = args.action
@@ -1249,14 +1267,18 @@ async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
         # running processes pick this up through their normal heartbeat/recovery.
         save_operator(successor)
         migrated = 0
+        node_names: list[str] = []
         for node in list_nodes():
             if node.operator_id == old_plain.operator_id:
                 node.operator_id = successor.operator_id
+                node_names.append(node.name)
                 save_node(node)
                 migrated += 1
+        handoff_path = _write_operator_handoff_marker(node_names)
         sys.stdout.write(
             f"Operator identity migrated; {migrated} saved node(s) will re-register with the new key.\n"
             f"Encrypted old-key backup: {backup_path}\nRedacted receipt: {receipt_path}\n"
+            f"Supervised handoff marker: {handoff_path} (one restart pass after 5 minutes).\n"
         )
     else:
         sys.stdout.write(
