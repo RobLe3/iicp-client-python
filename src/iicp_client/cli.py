@@ -34,7 +34,6 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass as _dc
-from importlib.metadata import version as _pkg_version
 
 from iicp_client import IicpNode, NodeConfig
 from iicp_client.backends import BACKEND_TYPES, get_backend_handler
@@ -150,10 +149,11 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="iicp-node",
         description="Run an IICP provider node backed by an OpenAI-compatible server.",
     )
-    try:
-        _ver = _pkg_version("iicp-client")
-    except Exception:
-        _ver = "unknown"
+    # Keep CLI self-reporting tied to the runtime package module, not ambient
+    # distribution metadata.  This keeps editable/source checks honest and the
+    # installed wheel derives both values from the same release source.
+    from iicp_client import __version__ as _ver
+
     p.add_argument("--version", "-V", action="version", version=f"iicp-node {_ver}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -493,6 +493,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "to unlock it headlessly during `serve`.",
     )
     op_sub.add_parser("decrypt", help="Remove at-rest encryption — restore the plaintext secret.")
+    op_dsr = op_sub.add_parser(
+        "dsr",
+        help="Exercise your directory data-rights controls with a local operator-key signature.",
+    )
+    op_dsr.add_argument("action", choices=("export", "restrict", "anonymize"))
+    op_dsr.add_argument(
+        "--directory-url",
+        default=None,
+        help="IICP directory base URL (defaults to env / iicp.network).",
+    )
+    op_dsr.add_argument("--tracking-id", default=None, help="Optional local reference for this request.")
+    op_dsr.add_argument(
+        "--output",
+        default=None,
+        help="Required for export: new local file for the redacted export (created mode 0600).",
+    )
+    op_dsr.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm a restrict or anonymize action after the retained-record notice.",
+    )
 
     # ── proxy (ADR-050) — local OpenAI/Ollama/Anthropic-compat gateway ────────────
     proxy = sub.add_parser(
@@ -992,6 +1013,101 @@ async def _cmd_operator_rename_async(args: argparse.Namespace) -> int:
     op.display_name = body.get("display_name", new_name) if isinstance(body, dict) else new_name
     save_operator(op)
     print(f"Renamed operator display_name to {op.display_name!r}.")
+    return 0
+
+
+async def _cmd_operator_dsr_async(args: argparse.Namespace) -> int:
+    """Run a protected operator DSR action without ever exposing the local key.
+
+    The directory challenge is signed locally. Exports deliberately require an
+    explicit new output path: printing a personal-data export into a terminal,
+    shell history, or CI log is not a safe default.
+    """
+    import json
+    import os
+    import time
+    import uuid
+
+    import httpx
+
+    from iicp_client.delegation import sign_operator_self_service
+
+    action = args.action
+    output_path = args.output
+    if action == "export" and not output_path:
+        sys.stderr.write("ERROR: export requires --output <new-file>; it is not printed to the terminal.\n")
+        return 2
+    if output_path and os.path.exists(output_path):
+        sys.stderr.write("ERROR: --output already exists; choose a new path to avoid replacing an export.\n")
+        return 2
+    if action != "export":
+        sys.stderr.write(
+            "This action restricts or anonymizes directory records. Minimal signed ledger, security and accounting "
+            "records may be retained and are explained in the receipt.\n"
+        )
+        if not args.yes:
+            sys.stderr.write("Re-run with --yes to confirm.\n")
+            return 2
+
+    op = load_operator()
+    if op is None:
+        sys.stderr.write("ERROR: no operator identity — run `iicp-node init` first.\n")
+        return 1
+    if not op.is_key_backed():
+        sys.stderr.write("ERROR: this legacy operator identity cannot sign a rights request; regenerate a key-backed identity.\n")
+        return 1
+
+    directory_url = args.directory_url or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
+    base = directory_url.rstrip("/") + "/v1/operator"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            challenge = await client.post(base + "/challenge", json={"operator_pub": op.operator_id})
+            challenge.raise_for_status()
+            nonce = challenge.json().get("nonce")
+            if not isinstance(nonce, str):
+                raise ValueError("directory challenge response was incomplete")
+            payload: dict[str, object] = {
+                "operator_pub": op.operator_id,
+                "nonce": nonce,
+                "ts": int(time.time()),
+                "tracking_id": args.tracking_id or f"dsr-{uuid.uuid4()}",
+            }
+            if action != "export":
+                payload["confirm"] = True
+            payload["sig"] = sign_operator_self_service(op.signing_key(), f"dsr_{action}", payload)
+            response = await client.post(base + f"/dsr/{action}", json=payload)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"ERROR: rights request failed: {exc}\n")
+        return 1
+
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if response.status_code >= 400:
+        message = body.get("error", {}).get("message") if isinstance(body, dict) else None
+        sys.stderr.write(f"ERROR: directory rejected rights request: {message or response.status_code}\n")
+        return 1
+
+    if action == "export":
+        try:
+            fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(body, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+        except OSError as exc:
+            sys.stderr.write(f"ERROR: unable to save export safely: {exc}\n")
+            return 1
+        sys.stdout.write(f"Saved redacted directory export to {output_path} (mode 0600).\n")
+    else:
+        sys.stdout.write(f"Directory {action} request completed.\n")
+    if isinstance(body, dict):
+        tracking_id = body.get("tracking_id")
+        retention = body.get("retention_notice") or body.get("retention_reason")
+        if tracking_id:
+            sys.stdout.write(f"Receipt reference: {tracking_id}\n")
+        if retention:
+            sys.stdout.write(f"Retained records: {retention}\n")
     return 0
 
 
@@ -2577,6 +2693,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "operator":
         if args.op_cmd == "rename":
             return asyncio.run(_cmd_operator_rename_async(args))
+        if args.op_cmd == "dsr":
+            return asyncio.run(_cmd_operator_dsr_async(args))
         if args.op_cmd == "encrypt":
             return _cmd_operator_encrypt(args)
         if args.op_cmd == "decrypt":
