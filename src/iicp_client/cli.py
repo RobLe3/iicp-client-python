@@ -1213,33 +1213,30 @@ def _complete_handoff_for_node(node_name: str) -> None:
 
 
 async def _supervised_handoff_restart(node_name: str) -> None:
-    """Exit once after grace; systemd/Docker/launchd restart the fresh identity."""
+    """Observe handoffs created after serve starts, then exit once after grace."""
     if not node_name or not _env_bool("IICP_SUPERVISED"):
         return
-    for path in _handoff_marker_paths():
-        marker = _read_handoff_marker(path)
-        if marker is None:
-            continue
-        delay = _handoff_restart_delay(marker, node_name, int(time.time()))
-        if delay is None:
-            continue
-        if delay:
-            await asyncio.sleep(delay)
+    while True:
+        for path in _handoff_marker_paths():
             marker = _read_handoff_marker(path)
             if marker is None:
-                return
+                continue
             if _handoff_restart_delay(marker, node_name, int(time.time())) != 0:
-                return
-        requested = set(marker.get("restart_requested_node_names") or [])
-        requested.add(node_name)
-        marker["restart_requested_node_names"] = sorted(requested)
-        if _write_handoff_marker(path, marker):
-            logger.warning(
-                "Operator handoff grace period complete — exiting with code %d so the supervisor reloads the successor identity.",
-                TUNNEL_DEAD_EXIT_CODE,
-            )
-            os._exit(TUNNEL_DEAD_EXIT_CODE)
-        return
+                continue
+            requested = set(marker.get("restart_requested_node_names") or [])
+            requested.add(node_name)
+            marker["restart_requested_node_names"] = sorted(requested)
+            if _write_handoff_marker(path, marker):
+                logger.warning(
+                    "Operator handoff grace period complete — exiting with code %d so the supervisor reloads the successor identity.",
+                    TUNNEL_DEAD_EXIT_CODE,
+                )
+                os._exit(TUNNEL_DEAD_EXIT_CODE)
+        # Rotation is normally invoked in a separate CLI process, after this
+        # provider is already serving. Polling is deliberately small and reads
+        # redacted local state only; it makes that handoff observable without a
+        # control-plane callback or a second supervisor.
+        await asyncio.sleep(15)
 
 
 async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
