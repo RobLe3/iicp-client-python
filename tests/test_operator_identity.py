@@ -99,3 +99,19 @@ def test_no_identity_notice_silent_for_key_backed_identity():
 
     op = OperatorIdentity.generate(display_name="Keyed")
     assert no_identity_notice(op) is None
+
+
+def test_operator_handoff_restart_delay_is_single_pass():
+    from iicp_client.cli import _handoff_restart_delay
+
+    marker = {
+        "affected_node_names": ["ollama"],
+        "restart_requested_node_names": [],
+        "completed_node_names": [],
+        "created_at_unix": 100,
+        "grace_seconds": 300,
+    }
+    assert _handoff_restart_delay(marker, "ollama", 200) == 200
+    assert _handoff_restart_delay(marker, "ollama", 400) == 0
+    marker["restart_requested_node_names"] = ["ollama"]
+    assert _handoff_restart_delay(marker, "ollama", 400) is None

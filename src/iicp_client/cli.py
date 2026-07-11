@@ -1134,7 +1134,7 @@ def _write_private_json(path: str, body: dict) -> None:
 
 
 def _write_operator_handoff_marker(node_names: list[str]) -> str:
-    """Persist a redacted, one-pass supervised restart marker after rotation."""
+    """Persist a redacted supervisor-native restart marker after rotation."""
     stamp = int(time.time())
     path = str(config_dir() / f"operator-handoff-pending-{stamp}.json")
     _write_private_json(
@@ -1145,10 +1145,101 @@ def _write_operator_handoff_marker(node_names: list[str]) -> str:
             "created_at_unix": stamp,
             "grace_seconds": 300,
             "affected_node_names": node_names,
-            "restart_attempted": False,
+            "restart_requested_node_names": [],
+            "completed_node_names": [],
         },
     )
     return path
+
+
+def _handoff_marker_paths() -> list[str]:
+    return sorted(
+        str(path)
+        for path in config_dir().glob("operator-handoff-pending-*.json")
+        if path.is_file()
+    )
+
+
+def _handoff_restart_delay(marker: dict, node_name: str, now: int) -> int | None:
+    """Return the remaining grace time, or None when this service is already done."""
+    affected = set(marker.get("affected_node_names") or [])
+    requested = set(marker.get("restart_requested_node_names") or [])
+    completed = set(marker.get("completed_node_names") or [])
+    if node_name not in affected or node_name in requested or node_name in completed:
+        return None
+    created = marker.get("created_at_unix")
+    if not isinstance(created, int):
+        return None
+    grace = marker.get("grace_seconds", 300)
+    if not isinstance(grace, int) or grace < 0:
+        grace = 300
+    return max(0, created + grace - now)
+
+
+def _read_handoff_marker(path: str) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            body = json.load(handle)
+        return body if isinstance(body, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_handoff_marker(path: str, marker: dict) -> bool:
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(marker, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        return True
+    except OSError:
+        return False
+
+
+def _complete_handoff_for_node(node_name: str) -> None:
+    for path in _handoff_marker_paths():
+        marker = _read_handoff_marker(path)
+        if marker is None or node_name not in set(marker.get("affected_node_names") or []):
+            continue
+        completed = set(marker.get("completed_node_names") or [])
+        completed.add(node_name)
+        if set(marker.get("affected_node_names") or []).issubset(completed):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        else:
+            marker["completed_node_names"] = sorted(completed)
+            _write_handoff_marker(path, marker)
+
+
+async def _supervised_handoff_restart(node_name: str) -> None:
+    """Exit once after grace; systemd/Docker/launchd restart the fresh identity."""
+    if not node_name or not _env_bool("IICP_SUPERVISED"):
+        return
+    for path in _handoff_marker_paths():
+        marker = _read_handoff_marker(path)
+        if marker is None:
+            continue
+        delay = _handoff_restart_delay(marker, node_name, int(time.time()))
+        if delay is None:
+            continue
+        if delay:
+            await asyncio.sleep(delay)
+            marker = _read_handoff_marker(path)
+            if marker is None:
+                return
+            if _handoff_restart_delay(marker, node_name, int(time.time())) != 0:
+                return
+        requested = set(marker.get("restart_requested_node_names") or [])
+        requested.add(node_name)
+        marker["restart_requested_node_names"] = sorted(requested)
+        if _write_handoff_marker(path, marker):
+            logger.warning(
+                "Operator handoff grace period complete — exiting with code %d so the supervisor reloads the successor identity.",
+                TUNNEL_DEAD_EXIT_CODE,
+            )
+            os._exit(TUNNEL_DEAD_EXIT_CODE)
+        return
 
 
 async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
@@ -1914,6 +2005,7 @@ async def _serve(args: argparse.Namespace) -> int:
                             save_node(saved)
                         except OSError:
                             pass
+                    _complete_handoff_for_node(args.node)
                 break
             except Exception as exc:  # noqa: BLE001
                 if attempt >= 3:
@@ -1949,9 +2041,13 @@ async def _serve(args: argparse.Namespace) -> int:
     if getattr(args, "with_proxy", False):
         proxy_task = asyncio.create_task(_run_cohosted_proxy())
     update_stop = _start_provider_auto_update()
+    handoff_task = asyncio.create_task(
+        _supervised_handoff_restart(getattr(args, "node", "") or "")
+    )
     try:
         await node.serve(handler, host=args.host, port=args.port, node_token=token)
     finally:
+        handoff_task.cancel()
         if update_stop is not None:
             update_stop.set()
         if proxy_task is not None:
