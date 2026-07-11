@@ -1054,7 +1054,10 @@ async def _cmd_operator_dsr_async(args: argparse.Namespace) -> int:
         sys.stderr.write("ERROR: no operator identity — run `iicp-node init` first.\n")
         return 1
     if not op.is_key_backed():
-        sys.stderr.write("ERROR: this legacy operator identity cannot sign a rights request; regenerate a key-backed identity.\n")
+        sys.stderr.write(
+            "ERROR: this legacy operator identity cannot sign a rights request; "
+            "regenerate a key-backed identity.\n"
+        )
         return 1
 
     directory_url = args.directory_url or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")

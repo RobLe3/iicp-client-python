@@ -12,8 +12,8 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from iicp_client.cli import main
 from iicp_client.delegation import canonical_operator_self_service_bytes, canonical_rename_bytes
