@@ -265,6 +265,21 @@ def _resolve_backend_url(monkeypatch, *extra: str) -> str:
     return args.backend_url
 
 
+def _resolve_saved_directory(monkeypatch, node_name: str) -> str:
+    """Resolve a saved-node directory without opening a port or contacting it."""
+    parser = cli._build_parser()
+    args = parser.parse_args(["serve", "--node", node_name, "--model", "test-model", "--skip-registration"])
+    args.auto_detect_nat_explicit = None
+
+    def _stop(*a, **k):
+        raise _StopAfterResolution
+
+    monkeypatch.setattr(cli, "_find_available_port", _stop)
+    with pytest.raises(_StopAfterResolution):
+        asyncio.run(cli._serve(args))
+    return args.directory_url
+
+
 def test_serve_backend_url_defaults_to_ollama(iicp_home, monkeypatch):
     url = _resolve_backend_url(monkeypatch)
     assert url == "http://localhost:11434"
@@ -278,6 +293,13 @@ def test_serve_backend_url_anthropic_default(iicp_home, monkeypatch):
 def test_serve_explicit_backend_url_wins(iicp_home, monkeypatch):
     url = _resolve_backend_url(monkeypatch, "--backend-url", "http://example.test:1234")
     assert url == "http://example.test:1234"
+
+
+def test_serve_saved_node_directory_url_is_not_shadowed_by_public_default(iicp_home, monkeypatch):
+    node = _make_node("saved-directory")
+    node.directory_url = "http://directory.test/api"
+    save_node(node)
+    assert _resolve_saved_directory(monkeypatch, node.name) == "http://directory.test/api"
 
 
 # --------------------------------------------------------------------------- #

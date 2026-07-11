@@ -255,7 +255,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--directory-url",
-        default=_env("IICP_DIRECTORY_URL", "https://iicp.network/api"),
+        # Keep this unset until --node can contribute its saved directory URL.
+        # Applying the public default here would silently shadow saved config.
+        default=_env("IICP_DIRECTORY_URL"),
         help="IICP directory base URL. env: IICP_DIRECTORY_URL",
     )
     serve.add_argument(
@@ -1638,6 +1640,10 @@ async def _serve(args: argparse.Namespace) -> int:
             if getattr(args, "backend_type", "") == "anthropic"
             else "http://localhost:11434"
         )
+    # A bare serve still has the documented public default, but only after the
+    # saved-node merge above has had a chance to supply its directory.
+    if not args.directory_url:
+        args.directory_url = "https://iicp.network/api"
 
     # Onboarding: if no --model given, auto-select the first model the backend advertises
     # so a bare `iicp-node serve` just works (parity with Rust/TS).
