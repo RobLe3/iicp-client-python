@@ -132,3 +132,23 @@ def test_operator_handoff_claim_is_single_pass(tmp_path, monkeypatch):
     }))
     assert _claim_supervised_handoff_restart("ollama", now=400) is True
     assert _claim_supervised_handoff_restart("ollama", now=400) is False
+
+
+def test_operator_handoff_completion_requires_a_claimed_restart(tmp_path, monkeypatch):
+    import json
+    from iicp_client.cli import _complete_handoff_for_node
+
+    monkeypatch.setenv("IICP_HOME", str(tmp_path))
+    marker_path = tmp_path / "operator-handoff-pending-test.json"
+    marker = {
+        "affected_node_names": ["ollama"],
+        "restart_requested_node_names": [],
+        "completed_node_names": [],
+    }
+    marker_path.write_text(json.dumps(marker))
+    _complete_handoff_for_node("ollama")
+    assert marker_path.exists()
+    marker["restart_requested_node_names"] = ["ollama"]
+    marker_path.write_text(json.dumps(marker))
+    _complete_handoff_for_node("ollama")
+    assert not marker_path.exists()

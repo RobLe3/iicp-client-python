@@ -1203,6 +1203,11 @@ def _complete_handoff_for_node(node_name: str) -> None:
         marker = _read_handoff_marker(path)
         if marker is None or node_name not in set(marker.get("affected_node_names") or []):
             continue
+        # A separate rotation command can write a marker while this process is
+        # still finishing its initial registration. Only a successor that
+        # claimed its supervised restart may complete the marker.
+        if node_name not in set(marker.get("restart_requested_node_names") or []):
+            continue
         completed = set(marker.get("completed_node_names") or [])
         completed.add(node_name)
         if set(marker.get("affected_node_names") or []).issubset(completed):
