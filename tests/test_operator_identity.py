@@ -115,3 +115,20 @@ def test_operator_handoff_restart_delay_is_single_pass():
     assert _handoff_restart_delay(marker, "ollama", 400) == 0
     marker["restart_requested_node_names"] = ["ollama"]
     assert _handoff_restart_delay(marker, "ollama", 400) is None
+
+
+def test_operator_handoff_claim_is_single_pass(tmp_path, monkeypatch):
+    import json
+    from iicp_client.cli import _claim_supervised_handoff_restart
+
+    monkeypatch.setenv("IICP_HOME", str(tmp_path))
+    marker_path = tmp_path / "operator-handoff-pending-test.json"
+    marker_path.write_text(json.dumps({
+        "affected_node_names": ["ollama"],
+        "restart_requested_node_names": [],
+        "completed_node_names": [],
+        "created_at_unix": 100,
+        "grace_seconds": 300,
+    }))
+    assert _claim_supervised_handoff_restart("ollama", now=400) is True
+    assert _claim_supervised_handoff_restart("ollama", now=400) is False

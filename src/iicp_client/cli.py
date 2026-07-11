@@ -38,6 +38,7 @@ from dataclasses import dataclass as _dc
 
 from iicp_client import IicpNode, NodeConfig
 from iicp_client.backends import BACKEND_TYPES, get_backend_handler
+from iicp_client.delegation import sign_operator_self_service
 from iicp_client.identity import (
     NodeIdentity,
     OperatorIdentity,
@@ -1214,35 +1215,52 @@ def _complete_handoff_for_node(node_name: str) -> None:
             _write_handoff_marker(path, marker)
 
 
-async def _supervised_handoff_restart(node_name: str) -> None:
-    """Observe handoffs created after serve starts, then exit once after grace."""
+def _claim_supervised_handoff_restart(node_name: str, now: int | None = None) -> bool:
+    """Atomically claim one eligible redacted handoff marker for ``node_name``."""
+    now = int(time.time()) if now is None else now
+    for path in _handoff_marker_paths():
+        marker = _read_handoff_marker(path)
+        if marker is None or _handoff_restart_delay(marker, node_name, now) != 0:
+            continue
+        requested = set(marker.get("restart_requested_node_names") or [])
+        requested.add(node_name)
+        marker["restart_requested_node_names"] = sorted(requested)
+        if _write_handoff_marker(path, marker):
+            return True
+    return False
+
+
+def _start_supervised_handoff_restart(node_name: str) -> None:
+    """Watch local handoffs independently of the provider server event loop.
+
+    The HTTP provider owns its own long-running serve loop. A daemon thread
+    keeps the supervisor handoff observable even if that loop does not yield to
+    an asyncio background task on a particular backend/runtime.
+    """
     if not node_name or not _env_bool("IICP_SUPERVISED"):
         return
-    while True:
-        for path in _handoff_marker_paths():
-            marker = _read_handoff_marker(path)
-            if marker is None:
-                continue
-            if _handoff_restart_delay(marker, node_name, int(time.time())) != 0:
-                continue
-            requested = set(marker.get("restart_requested_node_names") or [])
-            requested.add(node_name)
-            marker["restart_requested_node_names"] = sorted(requested)
-            if _write_handoff_marker(path, marker):
+
+    def _watch() -> None:
+        while True:
+            if _claim_supervised_handoff_restart(node_name):
                 logger.warning(
                     "Operator handoff grace period complete — exiting with code %d so the supervisor reloads the successor identity.",
                     TUNNEL_DEAD_EXIT_CODE,
                 )
                 os._exit(TUNNEL_DEAD_EXIT_CODE)
-        # Rotation is normally invoked in a separate CLI process, after this
-        # provider is already serving. Polling is deliberately small and reads
-        # redacted local state only; it makes that handoff observable without a
-        # control-plane callback or a second supervisor.
-        await asyncio.sleep(15)
+            # Rotation normally runs in a separate CLI process, after this
+            # provider is already serving. Poll local redacted state only.
+            time.sleep(15)
+
+    import threading
+
+    threading.Thread(target=_watch, name="iicp-operator-handoff", daemon=True).start()
 
 
 async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
     """Rotate/revoke an accountless operator key without exposing secret material (#618)."""
+    import httpx
+
     action = args.action
     if not args.yes:
         sys.stderr.write(
@@ -2044,13 +2062,10 @@ async def _serve(args: argparse.Namespace) -> int:
     if getattr(args, "with_proxy", False):
         proxy_task = asyncio.create_task(_run_cohosted_proxy())
     update_stop = _start_provider_auto_update()
-    handoff_task = asyncio.create_task(
-        _supervised_handoff_restart(getattr(args, "node", "") or "")
-    )
+    _start_supervised_handoff_restart(getattr(args, "node", "") or "")
     try:
         await node.serve(handler, host=args.host, port=args.port, node_token=token)
     finally:
-        handoff_task.cancel()
         if update_stop is not None:
             update_stop.set()
         if proxy_task is not None:
