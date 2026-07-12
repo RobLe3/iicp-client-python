@@ -51,6 +51,7 @@ class ClientConfig:
     # auto prefers short-lived ticketed routes and falls back only when an older
     # directory explicitly lacks the endpoint. ticketed and legacy force a mode.
     route_discovery_mode: str = "auto"
+    profile_request: "ProfileRequest | None" = None
 
 
 @dataclass
@@ -93,6 +94,7 @@ class TaskResponse:
     error: IicpError | None = None
     generated_by_ai: bool = True
     dispatch_ticket_id_prefix: str | None = None
+    routing_receipt: dict[str, Any] | None = None
 
 
 @dataclass
@@ -146,6 +148,25 @@ class DiscoverOptions:
     # normal HTTPS page may call. Native clients keep the default False so IPv6
     # HTTP/native nodes remain eligible.
     browser_usable_only: bool = False
+    profile_request: "ProfileRequest | None" = None
+
+
+@dataclass
+class ProfileRequest:
+    """Optional additive directory capability request for a draft profile."""
+
+    profile_id: str
+    profile_version: str
+    profile_fixture_sha256: str
+    required: bool = False
+
+
+@dataclass
+class ProfileNegotiation:
+    requested: bool
+    status: str | None = None
+    reason: str | None = None
+    dispatch_allowed: bool | None = None
 
 
 @dataclass
@@ -182,3 +203,4 @@ class Node:
 class NodeList:
     nodes: list[Node]
     query_ms: int
+    profile_negotiation: ProfileNegotiation | None = None

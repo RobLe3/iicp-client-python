@@ -37,6 +37,7 @@ from iicp_client.types import (
     DiscoverOptions,
     Node,
     NodeList,
+    ProfileNegotiation,
     TaskAuth,
     TaskConstraints,
     TaskMetrics,
@@ -328,6 +329,13 @@ class IicpClient:
             params["min_reputation"] = opts.min_reputation
         if opts.model:
             params["model"] = opts.model
+        if opts.profile_request:
+            params.update({
+                "profile_id": opts.profile_request.profile_id,
+                "profile_version": opts.profile_request.profile_version,
+                "profile_fixture_sha256": opts.profile_request.profile_fixture_sha256,
+                "profile_required": str(opts.profile_request.required).lower(),
+            })
 
         import time
 
@@ -343,6 +351,23 @@ class IicpClient:
         elapsed = int((time.monotonic() - t0) * 1000)
 
         raw_nodes = data.get("nodes", [])
+        raw_negotiation = data.get("profile_negotiation")
+        negotiation = None
+        if isinstance(raw_negotiation, dict):
+            negotiation = ProfileNegotiation(
+                requested=bool(raw_negotiation.get("requested", False)),
+                status=raw_negotiation.get("status") if isinstance(raw_negotiation.get("status"), str) else None,
+                reason=raw_negotiation.get("reason") if isinstance(raw_negotiation.get("reason"), str) else None,
+                dispatch_allowed=raw_negotiation.get("dispatch_allowed") if isinstance(raw_negotiation.get("dispatch_allowed"), bool) else None,
+            )
+        if opts.profile_request and opts.profile_request.required and (
+            negotiation is None or negotiation.status != "compatible" or negotiation.dispatch_allowed is not True
+        ):
+            raise IicpError(
+                "unsupported_pre_normative_profile",
+                "required pre-normative profile is not supported by the directory",
+                "directory",
+            )
         nodes = []
         for n in raw_nodes:
             node = self._node_from_route(n)
@@ -358,7 +383,7 @@ class IicpClient:
             ):
                 continue
             nodes.append(node)
-        return NodeList(nodes=nodes, query_ms=elapsed)
+        return NodeList(nodes=nodes, query_ms=elapsed, profile_negotiation=negotiation)
 
     async def submit_async(self, request: TaskRequest) -> TaskResponse:
         """Discover → select best node → submit task.
@@ -369,8 +394,11 @@ class IicpClient:
         """
         self._validate_intent(request.intent)
         tp = _traceparent()  # SDK-06: one trace per operation, shared across calls
-        discover_options = DiscoverOptions(region=request.constraints.region or self._cfg.region)
-        if self._cfg.route_discovery_mode == "legacy":
+        discover_options = DiscoverOptions(
+            region=request.constraints.region or self._cfg.region,
+            profile_request=self._cfg.profile_request,
+        )
+        if self._cfg.route_discovery_mode == "legacy" or self._cfg.profile_request is not None:
             node_list = await self.discover_async(request.intent, discover_options, traceparent=tp)
         else:
             try:
@@ -495,6 +523,17 @@ class IicpClient:
                         ),
                         generated_by_ai=True,
                         dispatch_ticket_id_prefix=node.dispatch_ticket_id_prefix,
+                        routing_receipt={
+                            "receipt_version": "iicp-routing-receipt-v1",
+                            "selection_profile": self._cfg.routing_strategy if node_list.profile_negotiation else "directory_ticket_v1",
+                            "eligible_candidate_count": len(decision.eligible),
+                            "selected_node_id_prefix": _node_short_id(node.node_id),
+                            "profile_negotiation": (
+                                {"status": node_list.profile_negotiation.status, "reason": node_list.profile_negotiation.reason}
+                                if node_list.profile_negotiation else None
+                            ),
+                            "redaction": "prompt_response_endpoint_token_excluded",
+                        },
                     )
                 except IicpError as exc:
                     last_exc = exc
