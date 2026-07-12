@@ -44,3 +44,21 @@ def test_pre_normative_profile_fixture_is_complete_and_reasoned():
     assert fixture["result_contract"]["unsupported_status"] == "unsupported_pre_normative_profile"
     assert len(fixture["scenarios"]) == 9
     assert all(item["expected_reason"] for item in fixture["scenarios"])
+
+
+def test_profile_fixture_native_policy_scenarios_use_real_routing_gate():
+    from iicp_client.routing_policy import filter_nodes_for_routing_policy
+    from iicp_client.types import Node, RoutingPolicy
+
+    fixture = json.loads((Path(__file__).resolve().parents[1] / "parity/profile-compatibility-v0.json").read_text())
+    for scenario in fixture["native_policy_scenarios"]:
+        raw = scenario["node"]
+        node = Node(
+            node_id=f"fixture-{scenario['name']}", endpoint="https://node.example.test", score=0.5,
+            available=True, region=raw["region"],
+            cx_public_key={"algorithm": "X25519", "key": "fixture", "key_id": "fixture"} if raw.get("cx_public_key") else None,
+            node_policy_manifest=raw.get("node_policy_manifest"),
+        )
+        decision = filter_nodes_for_routing_policy([node], RoutingPolicy(**scenario["policy"]))
+        assert decision.eligible == []
+        assert decision.rejected_reasons == [scenario["expected_reason"]]
