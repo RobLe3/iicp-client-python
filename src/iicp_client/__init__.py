@@ -40,6 +40,7 @@ from iicp_client.policy import (
     intent_risk_reason,
     prohibited_intent_reason,
 )
+from iicp_client.profile_compatibility import ProfileCompatibilityDecision, evaluate_pre_normative_profile
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
 from iicp_client.qualify import (
     EXPOSURE_MODES,
@@ -111,6 +112,8 @@ __all__ = [
     "filter_nodes_for_routing_policy",
     "prohibited_intent_reason",
     "resolved_policy",
+    "ProfileCompatibilityDecision",
+    "evaluate_pre_normative_profile",
     "ClientConfig",
     "TaskAuth",
     "TaskConstraints",

@@ -39,11 +39,23 @@ def test_policy_manifest_signs_canonical_operator_bound_payload(tmp_path):
 
 def test_pre_normative_profile_fixture_is_complete_and_reasoned():
     fixture = json.loads((Path(__file__).resolve().parents[1] / "parity/profile-compatibility-v0.json").read_text())
-    assert fixture["fixture_version"] == "0.2.0-draft"
+    assert fixture["fixture_version"] == "0.3.0-draft"
     assert fixture["status"] == "pre-normative"
     assert fixture["result_contract"]["unsupported_status"] == "unsupported_pre_normative_profile"
-    assert len(fixture["scenarios"]) == 9
+    assert len(fixture["scenarios"]) == 11
     assert all(item["expected_reason"] for item in fixture["scenarios"])
+
+
+def test_profile_fixture_scenarios_use_native_compatibility_evaluator():
+    from iicp_client.profile_compatibility import evaluate_pre_normative_profile
+
+    fixture = json.loads((Path(__file__).resolve().parents[1] / "parity/profile-compatibility-v0.json").read_text())
+    for scenario in fixture["scenarios"]:
+        decision = evaluate_pre_normative_profile(
+            scenario["request"], scenario["provider"], fixture["intent_aliases"], scenario.get("now_s", 0),
+        )
+        assert decision.eligible == (scenario["expected"] == "eligible"), scenario["name"]
+        assert decision.reason == scenario["expected_reason"], scenario["name"]
 
 
 def test_profile_fixture_native_policy_scenarios_use_real_routing_gate():
