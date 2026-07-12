@@ -1,5 +1,6 @@
 import base64
 import json
+from pathlib import Path
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -34,3 +35,12 @@ def test_policy_manifest_signs_canonical_operator_bound_payload(tmp_path):
     bad = replace(op, operator_id=base64.b64encode(bytes(32)).decode())
     with pytest.raises(ValueError, match="does not match"):
         load_and_sign_policy_manifest(path, bad, now=datetime(2026, 7, 10, tzinfo=UTC))
+
+
+def test_pre_normative_profile_fixture_is_complete_and_reasoned():
+    fixture = json.loads((Path(__file__).resolve().parents[1] / "parity/profile-compatibility-v0.json").read_text())
+    assert fixture["fixture_version"] == "0.2.0-draft"
+    assert fixture["status"] == "pre-normative"
+    assert fixture["result_contract"]["unsupported_status"] == "unsupported_pre_normative_profile"
+    assert len(fixture["scenarios"]) == 9
+    assert all(item["expected_reason"] for item in fixture["scenarios"])
