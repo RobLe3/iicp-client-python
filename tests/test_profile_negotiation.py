@@ -1,7 +1,22 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from iicp_client import ClientConfig, DiscoverOptions, IicpClient, ProfileRequest
 from iicp_client.errors import IicpError
+
+
+FIXTURE = Path(__file__).parents[1] / "parity" / "profile-negotiation-v0.json"
+
+
+def test_profile_negotiation_fixture_matches_wire_contract():
+    fixture = json.loads(FIXTURE.read_text())
+    assert fixture["fixture_version"] == "0.2.0-draft"
+    assert fixture["profile_fixture_sha256"] == "4137ecf91b4748a2b368cf4428b4604c6947f8879d77402cc7937d11d24b2aaf"
+    for case in fixture["cases"]:
+        if case["expected"].get("requested"):
+            assert len(case["request"]["profile_fixture_sha256"]) == 64
 
 
 @pytest.mark.asyncio
