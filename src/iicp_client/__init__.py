@@ -41,6 +41,7 @@ from iicp_client.policy import (
     prohibited_intent_reason,
 )
 from iicp_client.profile_compatibility import ProfileCompatibilityDecision, evaluate_pre_normative_profile
+from iicp_client.selection import weighted_v1_order
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
 from iicp_client.qualify import (
     EXPOSURE_MODES,
@@ -114,6 +115,7 @@ __all__ = [
     "resolved_policy",
     "ProfileCompatibilityDecision",
     "evaluate_pre_normative_profile",
+    "weighted_v1_order",
     "ClientConfig",
     "TaskAuth",
     "TaskConstraints",

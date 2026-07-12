@@ -26,6 +26,7 @@ from iicp_client.routing_policy import (
     resolved_policy,
     routing_policy_refusal_message,
 )
+from iicp_client.selection import weighted_v1_order
 from iicp_client.types import (
     ChatChoice,
     ChatMessage,
@@ -118,7 +119,7 @@ class IicpClient:
             except ValueError:
                 pass
         _env_strategy = os.environ.get("IICP_ROUTING_STRATEGY")
-        if _env_strategy in {"deterministic", "epsilon", "softmax_top_k"}:
+        if _env_strategy in {"deterministic", "epsilon", "softmax_top_k", "weighted_v1"}:
             self._cfg.routing_strategy = _env_strategy
         try:
             self._cfg.routing_top_k = max(1, int(os.environ.get("IICP_ROUTING_TOP_K", self._cfg.routing_top_k)))
@@ -176,6 +177,8 @@ class IicpClient:
         strategy = self._cfg.routing_strategy
         if strategy == "deterministic" or len(all_nodes) <= 1:
             return all_nodes[:top_n]
+        if strategy == "weighted_v1":
+            return weighted_v1_order(all_nodes, top_n, random.random())
         if strategy == "softmax_top_k":
             pool = all_nodes[: max(1, min(len(all_nodes), self._cfg.routing_top_k))]
             tau = max(0.001, self._cfg.routing_softmax_tau)
@@ -207,6 +210,7 @@ class IicpClient:
             score=float(raw.get("score", 0.0)),
             available=bool(raw.get("available", True)),
             region=str(raw.get("region", "")),
+            load=float(raw.get("load", 0.0) or 0.0),
             latency_estimate_ms=raw.get("latency_estimate_ms"),
             reputation_score=raw.get("reputation_score"),
             health_label=raw.get("health_label"),
