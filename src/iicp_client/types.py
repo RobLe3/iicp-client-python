@@ -51,7 +51,7 @@ class ClientConfig:
     # auto prefers short-lived ticketed routes and falls back only when an older
     # directory explicitly lacks the endpoint. ticketed and legacy force a mode.
     route_discovery_mode: str = "auto"
-    profile_request: "ProfileRequest | None" = None
+    profile_request: ProfileRequest | None = None
 
 
 @dataclass
@@ -148,7 +148,7 @@ class DiscoverOptions:
     # normal HTTPS page may call. Native clients keep the default False so IPv6
     # HTTP/native nodes remain eligible.
     browser_usable_only: bool = False
-    profile_request: "ProfileRequest | None" = None
+    profile_request: ProfileRequest | None = None
 
 
 @dataclass

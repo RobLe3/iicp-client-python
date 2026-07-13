@@ -57,7 +57,5 @@ def get_backend_handler(backend_type: str, **kwargs) -> TaskHandler:
     try:
         factory = _FACTORIES[backend_type]
     except KeyError:
-        raise ValueError(
-            f"unknown backend_type {backend_type!r}; choose one of {list(BACKEND_TYPES)}"
-        ) from None
+        raise ValueError(f"unknown backend_type {backend_type!r}; choose one of {list(BACKEND_TYPES)}") from None
     return factory(**kwargs)

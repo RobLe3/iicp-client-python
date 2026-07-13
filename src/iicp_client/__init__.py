@@ -40,9 +40,8 @@ from iicp_client.policy import (
     intent_risk_reason,
     prohibited_intent_reason,
 )
-from iicp_client.profile_compatibility import ProfileCompatibilityDecision, evaluate_pre_normative_profile
-from iicp_client.selection import weighted_v1_order
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
+from iicp_client.profile_compatibility import ProfileCompatibilityDecision, evaluate_pre_normative_profile
 from iicp_client.qualify import (
     EXPOSURE_MODES,
     ServiceQualification,
@@ -55,6 +54,7 @@ from iicp_client.routing_policy import (
     resolved_policy,
 )
 from iicp_client.scheduler import is_queue_eligible, qos_priority
+from iicp_client.selection import weighted_v1_order
 from iicp_client.token_validator import TokenValidator
 from iicp_client.trust_auditor import AuditReport, models_diverge, run_audit_pass
 from iicp_client.types import (

@@ -69,8 +69,7 @@ def _cbor2() -> Any:
         import cbor2  # type: ignore[import-untyped]
     except ImportError as exc:
         raise ImportError(
-            "cbor2 is required for relay worker. "
-            "Install with: pip install 'iicp-client[iicp-tcp]'"
+            "cbor2 is required for relay worker. Install with: pip install 'iicp-client[iicp-tcp]'"
         ) from exc
     return cbor2
 
@@ -173,7 +172,9 @@ class RelayWorkerClient:
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Relay worker %s: session error: %s — reconnecting in %.0fs",
-                    self._worker_id, exc, delay,
+                    self._worker_id,
+                    exc,
+                    delay,
                 )
             await asyncio.sleep(delay)
             delay = min(delay * 2, _MAX_RECONNECT_DELAY_S)
@@ -185,7 +186,9 @@ class RelayWorkerClient:
         )
         logger.debug(
             "Relay worker %s: connected to %s:%d",
-            self._worker_id, self._relay_host, self._relay_port,
+            self._worker_id,
+            self._relay_host,
+            self._relay_port,
         )
         try:
             await self._handshake(reader, writer)
@@ -242,7 +245,9 @@ class RelayWorkerClient:
 
             logger.info(
                 "Relay worker %s: bound to relay %s:%d",
-                self._worker_id, self._relay_host, self._relay_port,
+                self._worker_id,
+                self._relay_host,
+                self._relay_port,
             )
             if self._on_bind:
                 try:
@@ -319,10 +324,12 @@ class RelayWorkerClient:
             result = {"error": str(exc)}
 
         try:
-            response_payload = _enc({
-                15: call_id,
-                5: json.dumps(result).encode(),
-            })
+            response_payload = _enc(
+                {
+                    15: call_id,
+                    5: json.dumps(result).encode(),
+                }
+            )
             writer.write(_make_frame(_MT_RESPONSE, response_payload))
             await writer.drain()
         except Exception as exc:  # noqa: BLE001

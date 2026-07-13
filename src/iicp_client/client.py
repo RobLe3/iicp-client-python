@@ -17,8 +17,8 @@ from urllib.parse import urlparse
 import httpx
 
 from iicp_client._http import _traceparent, get_json, post_json
-from iicp_client.errors import IicpError
 from iicp_client.dispatch_ticket import verify_dispatch_route_ticket
+from iicp_client.errors import IicpError
 from iicp_client.policy import ensure_intent_allowed
 from iicp_client.routing_policy import (
     ROUTING_POLICY_REFUSAL_CODE,
@@ -141,9 +141,7 @@ class IicpClient:
     # Phase 2 consumer token acquisition (#496)
     # ------------------------------------------------------------------
 
-    async def _acquire_consumer_token(
-        self, target_node_id: str, intent: str, timeout_s: float = 5.0
-    ) -> str | None:
+    async def _acquire_consumer_token(self, target_node_id: str, intent: str, timeout_s: float = 5.0) -> str | None:
         node_token = self._cfg.node_token
         if not node_token:
             return None
@@ -172,7 +170,6 @@ class IicpClient:
         except Exception:
             pass
         return None
-
 
     def _select_candidates(self, all_nodes: list[Node], top_n: int) -> list[Node]:
         strategy = self._cfg.routing_strategy
@@ -272,14 +269,27 @@ class IicpClient:
                     ticket = data.get("ticket") if isinstance(data, dict) else None
                     node_id = data.get("node_id") if isinstance(data, dict) else None
                     if self._dispatch_ticket_key is None:
-                        key_response = await client.get(f"{self._cfg.directory_url.rstrip('/')}/v1/directory-key", headers=headers)
+                        key_response = await client.get(
+                            f"{self._cfg.directory_url.rstrip('/')}/v1/directory-key", headers=headers
+                        )
                         if key_response.status_code == 200:
                             key_data = key_response.json()
                             key = key_data.get("public_key") if isinstance(key_data, dict) else None
-                            if isinstance(key, str): self._dispatch_ticket_key = key
-                    issuer = self._cfg.directory_url.rstrip('/').removesuffix('/api')
-                    if not (isinstance(ticket, str) and isinstance(node_id, str) and self._dispatch_ticket_key and verify_dispatch_route_ticket(ticket, self._dispatch_ticket_key, issuer, node_id, intent)):
-                        raise IicpError(code="IICP-DISPATCH-TICKET-UNVERIFIED", message="Directory returned an unverifiable dispatch ticket", component="directory", retryable=False)
+                            if isinstance(key, str):
+                                self._dispatch_ticket_key = key
+                    issuer = self._cfg.directory_url.rstrip("/").removesuffix("/api")
+                    if not (
+                        isinstance(ticket, str)
+                        and isinstance(node_id, str)
+                        and self._dispatch_ticket_key
+                        and verify_dispatch_route_ticket(ticket, self._dispatch_ticket_key, issuer, node_id, intent)
+                    ):
+                        raise IicpError(
+                            code="IICP-DISPATCH-TICKET-UNVERIFIED",
+                            message="Directory returned an unverifiable dispatch ticket",
+                            component="directory",
+                            retryable=False,
+                        )
                     route = data.get("route", {})
                     if isinstance(route, dict):
                         route = {**route, "node_id": data.get("node_id", route.get("node_id"))}
@@ -330,12 +340,14 @@ class IicpClient:
         if opts.model:
             params["model"] = opts.model
         if opts.profile_request:
-            params.update({
-                "profile_id": opts.profile_request.profile_id,
-                "profile_version": opts.profile_request.profile_version,
-                "profile_fixture_sha256": opts.profile_request.profile_fixture_sha256,
-                "profile_required": str(opts.profile_request.required).lower(),
-            })
+            params.update(
+                {
+                    "profile_id": opts.profile_request.profile_id,
+                    "profile_version": opts.profile_request.profile_version,
+                    "profile_fixture_sha256": opts.profile_request.profile_fixture_sha256,
+                    "profile_required": str(opts.profile_request.required).lower(),
+                }
+            )
 
         import time
 
@@ -358,10 +370,14 @@ class IicpClient:
                 requested=bool(raw_negotiation.get("requested", False)),
                 status=raw_negotiation.get("status") if isinstance(raw_negotiation.get("status"), str) else None,
                 reason=raw_negotiation.get("reason") if isinstance(raw_negotiation.get("reason"), str) else None,
-                dispatch_allowed=raw_negotiation.get("dispatch_allowed") if isinstance(raw_negotiation.get("dispatch_allowed"), bool) else None,
+                dispatch_allowed=raw_negotiation.get("dispatch_allowed")
+                if isinstance(raw_negotiation.get("dispatch_allowed"), bool)
+                else None,
             )
-        if opts.profile_request and opts.profile_request.required and (
-            negotiation is None or negotiation.status != "compatible" or negotiation.dispatch_allowed is not True
+        if (
+            opts.profile_request
+            and opts.profile_request.required
+            and (negotiation is None or negotiation.status != "compatible" or negotiation.dispatch_allowed is not True)
         ):
             raise IicpError(
                 "unsupported_pre_normative_profile",
@@ -485,6 +501,7 @@ class IicpClient:
             # the caller explicitly sets IICP_CX_ALLOW_PLAINTEXT=1 for transitional debugging.
             if node.cx_public_key:
                 from iicp_client._confidentiality import encrypt_payload
+
                 body["iicp_conf"] = encrypt_payload(request.payload, node.cx_public_key, task_id, request.intent)
             else:
                 logging.getLogger(__name__).warning(
@@ -525,12 +542,18 @@ class IicpClient:
                         dispatch_ticket_id_prefix=node.dispatch_ticket_id_prefix,
                         routing_receipt={
                             "receipt_version": "iicp-routing-receipt-v1",
-                            "selection_profile": self._cfg.routing_strategy if node_list.profile_negotiation else "directory_ticket_v1",
+                            "selection_profile": self._cfg.routing_strategy
+                            if node_list.profile_negotiation
+                            else "directory_ticket_v1",
                             "eligible_candidate_count": len(decision.eligible),
                             "selected_node_id_prefix": _node_short_id(node.node_id),
                             "profile_negotiation": (
-                                {"status": node_list.profile_negotiation.status, "reason": node_list.profile_negotiation.reason}
-                                if node_list.profile_negotiation else None
+                                {
+                                    "status": node_list.profile_negotiation.status,
+                                    "reason": node_list.profile_negotiation.reason,
+                                }
+                                if node_list.profile_negotiation
+                                else None
                             ),
                             "redaction": "prompt_response_endpoint_token_excluded",
                         },

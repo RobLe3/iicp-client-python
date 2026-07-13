@@ -162,11 +162,7 @@ def route_needs_promotion_from_registry_json(data: dict) -> bool:
     if browser_usable is None:
         browser_usable = summary.get("browser_usable")
 
-    return (
-        routing_hint == "http_ipv6"
-        and route_evidence != "directory_observed"
-        and browser_usable is not True
-    )
+    return routing_hint == "http_ipv6" and route_evidence != "directory_observed" and browser_usable is not True
 
 
 async def registry_route_status(

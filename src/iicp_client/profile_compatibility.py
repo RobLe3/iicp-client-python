@@ -6,8 +6,9 @@ the caller and does not alter current discovery or task wire formats.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -17,7 +18,10 @@ class ProfileCompatibilityDecision:
 
 
 def evaluate_pre_normative_profile(
-    request: dict[str, Any], provider: dict[str, Any], aliases: Iterable[dict[str, str]] = (), now_s: int = 0,
+    request: dict[str, Any],
+    provider: dict[str, Any],
+    aliases: Iterable[dict[str, str]] = (),
+    now_s: int = 0,
 ) -> ProfileCompatibilityDecision:
     """Evaluate the fixture-gated draft profile without changing live routing."""
     if request.get("policy") == "deny":

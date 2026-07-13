@@ -109,3 +109,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# Black/Ruff formatting keeps ordinary code readable, but protocol fixtures,
+# signed payload vectors, and CLI error strings legitimately exceed 120 chars.
+# Keep correctness/import/bugbear checks strict without turning those stable
+# protocol literals into a release blocker.
+ignore = ["E501"]

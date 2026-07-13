@@ -6,7 +6,6 @@ import pytest
 from iicp_client import ClientConfig, DiscoverOptions, IicpClient, ProfileRequest
 from iicp_client.errors import IicpError
 
-
 FIXTURE = Path(__file__).parents[1] / "parity" / "profile-negotiation-v0.json"
 
 

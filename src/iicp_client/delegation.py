@@ -54,9 +54,7 @@ def canonical_rename_bytes(display_name: str, operator_pub_b64: str, ts: int) ->
     ).encode("utf-8")
 
 
-def sign_rename(
-    operator_key: Ed25519PrivateKey, display_name: str, operator_pub_b64: str, ts: int
-) -> str:
+def sign_rename(operator_key: Ed25519PrivateKey, display_name: str, operator_pub_b64: str, ts: int) -> str:
     """#460 — operator signs a display_name rename; returns base64 of the ed25519 signature.
     Only the operator key-holder can produce this, so the directory authenticates the
     mutation by the signature alone (no node token)."""
@@ -83,13 +81,9 @@ def canonical_operator_self_service_bytes(action: str, fields: dict) -> bytes:
     ).encode("utf-8")
 
 
-def sign_operator_self_service(
-    operator_key: Ed25519PrivateKey, action: str, fields: dict
-) -> str:
+def sign_operator_self_service(operator_key: Ed25519PrivateKey, action: str, fields: dict) -> str:
     """Sign an operator acceptance or DSR request without exposing the key."""
-    return base64.b64encode(
-        operator_key.sign(canonical_operator_self_service_bytes(action, fields))
-    ).decode()
+    return base64.b64encode(operator_key.sign(canonical_operator_self_service_bytes(action, fields))).decode()
 
 
 def operator_pub_b64(private_key: Ed25519PrivateKey) -> str:

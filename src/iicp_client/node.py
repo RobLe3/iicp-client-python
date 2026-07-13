@@ -462,9 +462,7 @@ class IicpNode:
         try:
             from iicp_client._confidentiality import load_or_create_node_cx_key
 
-            self._cx_public_key, self._cx_private_key = load_or_create_node_cx_key(
-                config.node_id, config.endpoint
-            )
+            self._cx_public_key, self._cx_private_key = load_or_create_node_cx_key(config.node_id, config.endpoint)
         except Exception as exc:
             logger.warning("IICP-CX provider key unavailable; node will not advertise CX: %s", exc)
             self._cx_public_key = None
@@ -602,9 +600,7 @@ class IicpNode:
             # Opportunistic prune so the map can't grow unbounded under churn.
             if len(self._task_rate_buckets) > 4096:
                 cutoff = now - self._task_rate_window_s
-                self._task_rate_buckets = {
-                    k: v for k, v in self._task_rate_buckets.items() if v[0] >= cutoff
-                }
+                self._task_rate_buckets = {k: v for k, v in self._task_rate_buckets.items() if v[0] >= cutoff}
             return count <= self._task_rate_limit
 
     # ── Directory operations ──────────────────────────────────────────────
@@ -852,8 +848,7 @@ class IicpNode:
             if resp.is_success:
                 data = resp.json()
                 return [
-                    m["id"] for m in data.get("data", [])
-                    if m.get("id") and m["id"] not in self._cfg.excluded_models
+                    m["id"] for m in data.get("data", []) if m.get("id") and m["id"] not in self._cfg.excluded_models
                 ]
         except Exception:  # noqa: BLE001
             pass
@@ -904,7 +899,8 @@ class IicpNode:
             return
         logger.info(
             "Model list drifted: registered=%s live=%s — re-registering",
-            sorted(self._registered_models), sorted(live_set),
+            sorted(self._registered_models),
+            sorted(live_set),
         )
         live_sorted = sorted(live_set)
         self._cfg.model = live_sorted[0]
@@ -922,10 +918,10 @@ class IicpNode:
             RecoveryAction,
             RecoveryState,
             classify,
+            effective_public_route_available,
             env_check_every_heartbeats,
             env_grace_checks,
             registry_route_status,
-            effective_public_route_available,
             supervised_recovery_enabled,
         )
 
@@ -1228,9 +1224,7 @@ class IicpNode:
                         self._json_response(401, err, cors=True)
                         return
                 elif require_bind_ticket:
-                    err = json.dumps(
-                        {"error": {"code": "IICP-E040", "message": "relay bind ticket required"}}
-                    ).encode()
+                    err = json.dumps({"error": {"code": "IICP-E040", "message": "relay bind ticket required"}}).encode()
                     self._json_response(401, err, cors=True)
                     return
                 elif not bind_ticket:
@@ -1294,9 +1288,7 @@ class IicpNode:
                     self._json_response(401, err, cors=True)
                     return
                 try:
-                    call = asyncio.run_coroutine_threadsafe(
-                        session.next_call(timeout=25.0), loop
-                    ).result(timeout=30)
+                    call = asyncio.run_coroutine_threadsafe(session.next_call(timeout=25.0), loop).result(timeout=30)
                 except Exception as exc:  # noqa: BLE001
                     err = json.dumps({"error": {"code": "IICP-E031", "message": f"pull failed: {exc}"}}).encode()
                     self._json_response(502, err, cors=True)
@@ -1379,9 +1371,9 @@ class IicpNode:
                     self.send_error(400, "invalid JSON body")
                     return
                 try:
-                    result = asyncio.run_coroutine_threadsafe(
-                        session.forward_task(task, timeout=120.0), loop
-                    ).result(timeout=125)
+                    result = asyncio.run_coroutine_threadsafe(session.forward_task(task, timeout=120.0), loop).result(
+                        timeout=125
+                    )
                     resp_body = json.dumps(
                         {"task_id": task.get("task_id", ""), "status": "completed", **result, "generated_by_ai": True}
                     ).encode()
@@ -1744,9 +1736,7 @@ class IicpNode:
         # native is reachable exactly when HTTP is (advertise-when-reachable); a CGNAT node
         # needs no second hole. bind_and_activate=False: we own the listening socket.
         server = ThreadingHTTPServer((host, port), _Handler, bind_and_activate=False)
-        native_server = IicpTcpServer(
-            host=host, port=port, node_id=self._cfg.node_id, handler=handler
-        )
+        native_server = IicpTcpServer(host=host, port=port, node_id=self._cfg.node_id, handler=handler)
         # Bind to the address family implied by `host` — the CLI defaults host to
         # "::" (IPv6), which a hardcoded AF_INET socket cannot bind (gaierror).
         family = _listen_family(host, port)
@@ -1836,9 +1826,7 @@ class IicpNode:
             from iicp_client.relay_session import RelayAcceptServer
 
             relay_port = getattr(self._cfg, "relay_accept_port", 9485)
-            relay_accept_srv = RelayAcceptServer(
-                self._relay_sessions, host=host, port=relay_port, http_port=port
-            )
+            relay_accept_srv = RelayAcceptServer(self._relay_sessions, host=host, port=relay_port, http_port=port)
             try:
                 await relay_accept_srv.start()
                 bg_tasks.append(

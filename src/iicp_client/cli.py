@@ -101,10 +101,13 @@ def relay_worker_fallback_allowed(relay_capable: bool) -> bool:
 
 
 def _exit_if_supervised_public_fallback_unrecovered() -> None:
-    if _tunnel_dead_behavior(
-        _tunnel_dead_policy_from_env(),
-        _env_bool("IICP_SUPERVISED"),
-    ) != "exit":
+    if (
+        _tunnel_dead_behavior(
+            _tunnel_dead_policy_from_env(),
+            _env_bool("IICP_SUPERVISED"),
+        )
+        != "exit"
+    ):
         return
     logger.error(
         "public fallback is still unavailable after tunnel/relay attempts. "
@@ -286,8 +289,7 @@ def _build_parser() -> argparse.ArgumentParser:
         # restore in _serve(). Passing the default value on the CLI no longer
         # silently loses to the saved config.
         default=None,
-        help="Concurrent task cap (excess gets 429 IICP-E021). "
-        "env: IICP_MAX_CONCURRENT (default 4)",
+        help="Concurrent task cap (excess gets 429 IICP-E021). env: IICP_MAX_CONCURRENT (default 4)",
     )
     serve.add_argument(
         "--node-id",
@@ -536,15 +538,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "does NOT register with the directory). Needs the [proxy] extra.",
     )
     proxy.add_argument(
-        "--port", type=int, default=int(_env("IICP_PROXY_PORT", "9483") or "9483"),
+        "--port",
+        type=int,
+        default=int(_env("IICP_PROXY_PORT", "9483") or "9483"),
         help="Listen port (env IICP_PROXY_PORT, default 9483 — reserved IICP proxy band).",
     )
     proxy.add_argument(
-        "--host", default=_env("IICP_PROXY_HOST", "127.0.0.1") or "127.0.0.1",
+        "--host",
+        default=_env("IICP_PROXY_HOST", "127.0.0.1") or "127.0.0.1",
         help="Bind host (env IICP_PROXY_HOST, default 127.0.0.1 — loopback only).",
     )
     proxy.add_argument(
-        "--config", default="proxy.toml",
+        "--config",
+        default="proxy.toml",
         help="Optional proxy.toml path (env IICP_PROXY_* override individual fields).",
     )
 
@@ -595,14 +601,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Bind host (env IICP_HOST, default :: — dual-stack).",
     )
     gw.add_argument(
-        "--allow-dangerous-tools", action="store_true",
+        "--allow-dangerous-tools",
+        action="store_true",
         default=_env_bool("IICP_MCP_ALLOW_DANGEROUS_TOOLS"),
         help="Allow high-risk tools only when authz, sandbox and redacted audit controls are also configured.",
     )
     gw.add_argument("--authz-policy", default=_env("IICP_MCP_AUTHZ_POLICY", "") or "")
     gw.add_argument("--sandbox", default=_env("IICP_MCP_SANDBOX", "") or "")
     gw.add_argument(
-        "--audit-redaction", action="store_true",
+        "--audit-redaction",
+        action="store_true",
         default=_env_bool("IICP_MCP_AUDIT_REDACTION"),
         help="Assert that gateway audit events exclude prompts, secrets and tool arguments.",
     )
@@ -645,13 +653,9 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
                     saved = with_token[0]
                 elif len(with_token) > 1:
                     # Multiple nodes have tokens — show all of them.
-                    directory_url = (
-                        args.directory_url
-                        or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
-                    )
+                    directory_url = args.directory_url or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
                     sys.stderr.write(
-                        f"[iicp-node] no --node given — showing credits for all"
-                        f" {len(with_token)} nodes:\n"
+                        f"[iicp-node] no --node given — showing credits for all {len(with_token)} nodes:\n"
                     )
                     # One node failing must not hide the others — show every
                     # node, then exit non-zero if any failed (2026-06-11).
@@ -662,19 +666,20 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
                             print()
                         rc = await _fetch_and_display_credits(
                             n.directory_url or directory_url,
-                            n.node_id, n.node_token, n.name,
-                            args.json, args.verify, wallet_state,
+                            n.node_id,
+                            n.node_token,
+                            n.name,
+                            args.json,
+                            args.verify,
+                            wallet_state,
                         )
                         if rc != 0:
                             sys.stderr.write(
-                                f"ERROR: credits fetch failed for node '{n.name}'"
-                                " — continuing with remaining nodes\n"
+                                f"ERROR: credits fetch failed for node '{n.name}' — continuing with remaining nodes\n"
                             )
                             failed += 1
                     if failed:
-                        sys.stderr.write(
-                            f"ERROR: {failed}/{len(with_token)} node(s) failed\n"
-                        )
+                        sys.stderr.write(f"ERROR: {failed}/{len(with_token)} node(s) failed\n")
                         return 1
                     return 0
                 else:
@@ -710,9 +715,7 @@ async def _cmd_credits_async(args: argparse.Namespace) -> int:
         return 1
 
     label = args.node or node_id
-    return await _fetch_and_display_credits(
-        directory_url, node_id, token, label, args.json, args.verify
-    )
+    return await _fetch_and_display_credits(directory_url, node_id, token, label, args.json, args.verify)
 
 
 async def _fetch_and_display_credits(
@@ -737,9 +740,7 @@ async def _fetch_and_display_credits(
     for attempt in (1, 2):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    url, headers={"Authorization": f"Bearer {token}"}
-                )
+                resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         except Exception as exc:  # noqa: BLE001
             last_err = f"request failed: {exc}"
             resp = None
@@ -799,8 +800,10 @@ async def _fetch_and_display_credits(
             print("  ─────────────────────────────")
             wallet_reconciles = wallet.get("reconciles")
             wallet_check = (
-                "✓ reconciles" if wallet_reconciles is True
-                else "✗ DOES NOT RECONCILE" if wallet_reconciles is False
+                "✓ reconciles"
+                if wallet_reconciles is True
+                else "✗ DOES NOT RECONCILE"
+                if wallet_reconciles is False
                 else "rollup"
             )
             print(
@@ -840,15 +843,11 @@ async def _fetch_and_display_credits(
             )
             return 1
         print(
-            f"  ✓ {vcount} award(s) cryptographically verified · {vsum:.3f} credits "
-            "(Ed25519, signed by the directory)"
+            f"  ✓ {vcount} award(s) cryptographically verified · {vsum:.3f} credits (Ed25519, signed by the directory)"
         )
         free_tier = earned - vsum
         if free_tier > 0.0001:
-            print(
-                f"  · {free_tier:.3f} credits are free-tier allocation "
-                "(directory-granted, not signed task awards)"
-            )
+            print(f"  · {free_tier:.3f} credits are free-tier allocation (directory-granted, not signed task awards)")
     return 0
 
 
@@ -880,9 +879,7 @@ async def _cmd_doctor_async(args: argparse.Namespace) -> int:
 
     saved = load_node(args.node) if args.node else None
     if saved is None:
-        sys.stderr.write(
-            f"ERROR: no saved config at ~/.iicp/nodes/{args.node}.json — run `iicp-node init` first.\n"
-        )
+        sys.stderr.write(f"ERROR: no saved config at ~/.iicp/nodes/{args.node}.json — run `iicp-node init` first.\n")
         return 1
 
     directory_url = args.directory_url or saved.directory_url or _env("IICP_DIRECTORY_URL", "https://iicp.network/api")
@@ -913,7 +910,7 @@ async def _cmd_doctor_async(args: argparse.Namespace) -> int:
             except Exception:  # noqa: BLE001
                 credential_status = "error"
 
-    backend_block = ((health or {}).get("backend_stability") or {})
+    backend_block = (health or {}).get("backend_stability") or {}
     backend_state = backend_block.get("backend_state")
     backend_reason = backend_block.get("reason_class") or "unknown"
     backend_attention = backend_state == "draining"
@@ -962,8 +959,7 @@ async def _cmd_doctor_async(args: argparse.Namespace) -> int:
     print(f"  Backend stability       {backend_state or 'unknown'} / {backend_reason}")
     if backend_reason == "backend_cold":
         print(
-            "  Backend detail          idle/cold backend; normally warms on first request, "
-            "not restart-worthy by itself"
+            "  Backend detail          idle/cold backend; normally warms on first request, not restart-worthy by itself"
         )
     print(f"  Recovery state          {state.value}")
     print(f"  Recommended action      {action.value}")
@@ -1069,8 +1065,7 @@ async def _cmd_operator_dsr_async(args: argparse.Namespace) -> int:
         return 1
     if not op.is_key_backed():
         sys.stderr.write(
-            "ERROR: this legacy operator identity cannot sign a rights request; "
-            "regenerate a key-backed identity.\n"
+            "ERROR: this legacy operator identity cannot sign a rights request; regenerate a key-backed identity.\n"
         )
         return 1
 
@@ -1162,11 +1157,7 @@ def _write_operator_handoff_marker(node_names: list[str]) -> str:
 
 
 def _handoff_marker_paths() -> list[str]:
-    return sorted(
-        str(path)
-        for path in config_dir().glob("operator-handoff-pending-*.json")
-        if path.is_file()
-    )
+    return sorted(str(path) for path in config_dir().glob("operator-handoff-pending-*.json") if path.is_file())
 
 
 def _handoff_restart_delay(marker: dict, node_name: str, now: int) -> int | None:
@@ -1310,9 +1301,7 @@ async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
             # Pre-create the archive before changing the remote identity; remove it
             # if the directory rejects the rotation.
             _write_private_json(backup_path, old_plain.encrypt_at_rest(backup_password).to_dict())
-            successor = OperatorIdentity.generate(
-                display_name=old_plain.display_name, contact=old_plain.contact
-            )
+            successor = OperatorIdentity.generate(display_name=old_plain.display_name, contact=old_plain.contact)
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             challenge = await client.post(base + "/challenge", json={"operator_pub": old_plain.operator_id})
@@ -1365,7 +1354,9 @@ async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
                 os.unlink(backup_path)
             except OSError:
                 pass
-        sys.stderr.write(f"ERROR: directory rejected operator key {action}: {body.get('error', {}).get('message', response.status_code)}\n")
+        sys.stderr.write(
+            f"ERROR: directory rejected operator key {action}: {body.get('error', {}).get('message', response.status_code)}\n"
+        )
         return 1
 
     receipt = {
@@ -1377,7 +1368,9 @@ async def _cmd_operator_key_async(args: argparse.Namespace) -> int:
         "receipt_id_prefix": body.get("receipt_id_prefix"),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    receipt_path = str(config_dir() / f"operator-{action}-receipt-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json")
+    receipt_path = str(
+        config_dir() / f"operator-{action}-receipt-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.json"
+    )
     _write_private_json(receipt_path, receipt)
     if action == "rotate":
         assert successor is not None and backup_path is not None
@@ -1521,8 +1514,7 @@ async def _verify_credit_awards(directory_url: str, node_id: str) -> tuple[float
                 # #458: prev_hash (tamper-evident chain) is bound into the signing input.
                 prev_hash = e.get("prev_hash") or genesis_root
                 signing_input = (
-                    f'{e.get("event_id", "")}:CREDIT_AWARD:{seq}:{int(e.get("ts_ms", 0))}'
-                    f":{payload_hash}:{prev_hash}"
+                    f"{e.get('event_id', '')}:CREDIT_AWARD:{seq}:{int(e.get('ts_ms', 0))}:{payload_hash}:{prev_hash}"
                 )
                 msg = hashlib.sha256(signing_input.encode()).digest()
                 try:
@@ -1680,9 +1672,7 @@ async def _serve(args: argparse.Namespace) -> int:
         _models = _ollama_models(args.backend_url, getattr(args, "backend_api_key", "") or "")
         if args.backend_type == "meshllm" and len(_models) > 1:
             sys.stderr.write(
-                "ERROR: MeshLLM advertises multiple models; select one with --model: "
-                + ", ".join(_models)
-                + "\n"
+                "ERROR: MeshLLM advertises multiple models; select one with --model: " + ", ".join(_models) + "\n"
             )
             return 2
         if _models:
@@ -1690,9 +1680,7 @@ async def _serve(args: argparse.Namespace) -> int:
             sys.stderr.write(f"no --model given — auto-selected '{args.model}' from {args.backend_url}\n")
 
     if args.backend_type == "meshllm" and args.model == "mesh" and not args.experimental:
-        sys.stderr.write(
-            "ERROR: MeshLLM model 'mesh' is experimental; pass --experimental explicitly to enable it.\n"
-        )
+        sys.stderr.write("ERROR: MeshLLM model 'mesh' is experimental; pass --experimental explicitly to enable it.\n")
         return 2
 
     if not args.backend_url or not args.model:
@@ -1916,12 +1904,7 @@ async def _serve(args: argparse.Namespace) -> int:
     # advertised direct endpoint is local/private or IPv6 without a verified
     # inbound pinhole, publish a Quick Tunnel by default. Operators can opt out
     # with --no-tunnel / IICP_TUNNEL=0.
-    if (
-        _tunnel_pref is not False
-        and _tunnel is None
-        and not relay_worker_ep
-        and not args.skip_registration
-    ):
+    if _tunnel_pref is not False and _tunnel is None and not relay_worker_ep and not args.skip_registration:
         reason = direct_tunnel_fallback_reason(
             public_endpoint,
             _nat_profile,
@@ -2215,8 +2198,7 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
         )
         if behavior == "exit":
             logger.error(
-                "supervised tunnel failure policy is exit — terminating with code %d "
-                "so the supervisor can restart.",
+                "supervised tunnel failure policy is exit — terminating with code %d so the supervisor can restart.",
                 TUNNEL_DEAD_EXIT_CODE,
             )
             os._exit(TUNNEL_DEAD_EXIT_CODE)  # noqa: SLF001 — watchdog thread must terminate process
@@ -2240,8 +2222,7 @@ def _open_tunnel_rung(node: IicpNode, local_port: int, *, forced: bool):
         pass  # not on the main thread — finally/atexit still cover normal exits
 
     logger.info(
-        "NAT rung 5%s: public https endpoint via Quick Tunnel — %s "
-        "(zero-account; URL rotates on restart)",
+        "NAT rung 5%s: public https endpoint via Quick Tunnel — %s (zero-account; URL rotates on restart)",
         " (forced)" if forced else "",
         tunnel.url,
     )
@@ -2268,9 +2249,7 @@ async def _auto_elect_relay(directory_url: str, intent: str, node_id: str) -> tu
         return None
 
     candidates = [
-        n
-        for n in data.get("nodes", [])
-        if n.get("relay_capable") and n.get("endpoint") and n.get("node_id") != node_id
+        n for n in data.get("nodes", []) if n.get("relay_capable") and n.get("endpoint") and n.get("node_id") != node_id
     ]
     if not candidates:
         return None
@@ -2682,14 +2661,11 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     if denied_tools:
         sys.stderr.write(
             "WARNING: denied high-risk MCP tools until all authz, sandbox and redacted-audit controls are configured: "
-            + ", ".join(denied_tools) + "\n"
+            + ", ".join(denied_tools)
+            + "\n"
         )
     if not active_tools:
-        reason = (
-            "all requested tools were denied by the MCP safety policy"
-            if raw_tools
-            else "--tools is required"
-        )
+        reason = "all requested tools were denied by the MCP safety policy" if raw_tools else "--tools is required"
         sys.stderr.write(
             f"ERROR: {reason}. Provide safe tool names, or configure every dangerous-tool control.\n"
             "  Example: iicp-node mcp-gateway --tools summarize_text,lookup_status --mcp-url http://localhost:8001\n"
@@ -2723,10 +2699,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             "policy": {
                 "allow_remote_inference": False,
                 "allow_tool_execution": True,
-                "allow_file_access": any(
-                    tool_risk_label(tool) in {"file_read", "file_write"}
-                    for tool in active_tools
-                ),
+                "allow_file_access": any(tool_risk_label(tool) in {"file_read", "file_write"} for tool in active_tools),
             },
         }
         headers = {"Authorization": f"Bearer {_live['token']}"} if _live["token"] else {}
@@ -2775,19 +2748,22 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
 
         def do_GET(self):
             if self.path == "/iicp/health":
-                self._send_json(200, {
-                    "status": "ok",
-                    "node_id": node_id,
-                    "active_tools": active_tools,
-                    "mcp_policy": {
-                        "dangerous_tools_enabled": tool_policy.dangerous_ready,
-                        "authz_policy": tool_policy.authz_policy or None,
-                        "sandbox_profile": tool_policy.sandbox_profile or None,
-                        "audit_redacted": tool_policy.audit_redaction,
+                self._send_json(
+                    200,
+                    {
+                        "status": "ok",
+                        "node_id": node_id,
+                        "active_tools": active_tools,
+                        "mcp_policy": {
+                            "dangerous_tools_enabled": tool_policy.dangerous_ready,
+                            "authz_policy": tool_policy.authz_policy or None,
+                            "sandbox_profile": tool_policy.sandbox_profile or None,
+                            "audit_redacted": tool_policy.audit_redaction,
+                        },
+                        "mcp_server": mcp_url,
+                        "timestamp": int(time.time()),
                     },
-                    "mcp_server": mcp_url,
-                    "timestamp": int(time.time()),
-                })
+                )
             else:
                 self._send_json(404, {"error": "not found"})
 
@@ -2813,10 +2789,13 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             arguments = payload.get("arguments", {})
             argument_count = len(arguments) if isinstance(arguments, dict) else 0
             if not tool_policy.allows(tool_name):
-                self._send_json(403, {
-                    "error": "Tool not permitted by MCP risk policy",
-                    "policy_receipt": tool_policy.receipt(tool_name, "denied", argument_count),
-                })
+                self._send_json(
+                    403,
+                    {
+                        "error": "Tool not permitted by MCP risk policy",
+                        "policy_receipt": tool_policy.receipt(tool_name, "denied", argument_count),
+                    },
+                )
                 return
             if active_tools and tool_name not in active_tools:
                 self._send_json(404, {"error": "Tool not available on this gateway"})
@@ -2830,10 +2809,15 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             except ValueError as exc:
                 self._send_json(422, {"error": str(exc)})
                 return
-            self._send_json(200, {
-                "task_id": task_id, "status": "completed", "result": result,
-                "policy_receipt": tool_policy.receipt(tool_name, "allowed", argument_count),
-            })
+            self._send_json(
+                200,
+                {
+                    "task_id": task_id,
+                    "status": "completed",
+                    "result": result,
+                    "policy_receipt": tool_policy.receipt(tool_name, "allowed", argument_count),
+                },
+            )
 
     # Register + start
     try:
@@ -2870,6 +2854,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             perform_self_update,
             reexec_cli,
         )
+
         if not auto_update_enabled():
             return
         interval = auto_update_interval_s()
@@ -2917,9 +2902,7 @@ def _cmd_update(args: object) -> int:
     latest = latest_pypi_version()
     verdict = check_update(__version__, latest)
     if latest is None:
-        sys.stdout.write(
-            f"iicp-client {verdict['current']} — could not reach PyPI to check for updates.\n"
-        )
+        sys.stdout.write(f"iicp-client {verdict['current']} — could not reach PyPI to check for updates.\n")
         return 0
     if verdict["outdated"]:
         sys.stdout.write(
@@ -2958,8 +2941,7 @@ def _cmd_service(args: object) -> int:
         sys.stdout.write(f"restart:  {unit.restart_hint}\n")
         sys.stdout.write(f"logs:     {unit.log_hint}\n")
         sys.stdout.write(
-            "Note: no classic --daemon fork is used; "
-            "the OS supervisor runs foreground `iicp-node serve`.\n"
+            "Note: no classic --daemon fork is used; the OS supervisor runs foreground `iicp-node serve`.\n"
         )
         return 0
     if cmd == "status":
@@ -2972,6 +2954,7 @@ def _cmd_service(args: object) -> int:
         sys.stdout.write(unit.uninstall_hint + "\n")
         return 0
     raise ValueError(f"unknown service subcommand: {cmd}")
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
@@ -2986,9 +2969,7 @@ def main(argv: list[str] | None = None) -> int:
         # rather than silently restoring a saved opt-in. (BooleanOptionalAction
         # collapses the on/off forms to a plain bool, losing explicitness.)
         args.auto_detect_nat_explicit = (
-            True
-            if ("--auto-detect-nat" in raw_argv or "--no-auto-detect-nat" in raw_argv)
-            else None
+            True if ("--auto-detect-nat" in raw_argv or "--no-auto-detect-nat" in raw_argv) else None
         )
         return asyncio.run(_serve(args))
     if args.cmd == "proxy":
