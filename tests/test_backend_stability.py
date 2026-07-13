@@ -106,3 +106,72 @@ async def test_observer_uses_read_only_lmstudio_models():
         )
     assert obs.backend_state == DRAINING
     assert route.called
+
+
+@respx.mock
+async def test_meshllm_requires_readyz_and_selected_model():
+    ready = respx.get("http://localhost:9337/readyz").mock(
+        return_value=httpx.Response(200, json={"status": "ready"})
+    )
+    inventory = respx.get("http://localhost:9337/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "model-a"}]})
+    )
+    async with httpx.AsyncClient() as client:
+        obs = await observe_backend_stability(
+            client,
+            backend_url="http://localhost:9337/v1",
+            backend="meshllm",
+            expected_model="model-a",
+        )
+    assert obs.backend_state == OK
+    assert ready.called
+    assert inventory.called
+
+
+@respx.mock
+async def test_meshllm_drains_when_readyz_or_selected_model_is_unavailable():
+    respx.get("http://localhost:9337/readyz").mock(return_value=httpx.Response(503))
+    async with httpx.AsyncClient() as client:
+        not_ready = await observe_backend_stability(
+            client,
+            backend_url="http://localhost:9337/v1",
+            backend="meshllm",
+            expected_model="model-a",
+        )
+    assert not_ready.backend_state == DRAINING
+    assert not_ready.reason_class == REASON_BACKEND_LOADING
+
+    respx.reset()
+    respx.get("http://localhost:9337/readyz").mock(return_value=httpx.Response(200))
+    respx.get("http://localhost:9337/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "other-model"}]})
+    )
+    async with httpx.AsyncClient() as client:
+        missing_model = await observe_backend_stability(
+            client,
+            backend_url="http://localhost:9337/v1",
+            backend="meshllm",
+            expected_model="model-a",
+        )
+    assert missing_model.backend_state == DRAINING
+    assert missing_model.reason_class == REASON_BACKEND_LOADING
+
+
+@respx.mock
+async def test_meshllm_drains_for_empty_or_invalid_model_inventory():
+    respx.get("http://localhost:9337/readyz").mock(return_value=httpx.Response(200))
+    inventory = respx.get("http://localhost:9337/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    async with httpx.AsyncClient() as client:
+        empty = await observe_backend_stability(
+            client, backend_url="http://localhost:9337/v1", backend="meshllm"
+        )
+    assert empty.backend_state == DRAINING
+
+    inventory.mock(return_value=httpx.Response(200, json={"unexpected": "shape"}))
+    async with httpx.AsyncClient() as client:
+        invalid = await observe_backend_stability(
+            client, backend_url="http://localhost:9337/v1", backend="meshllm"
+        )
+    assert invalid.backend_state == DRAINING

@@ -203,6 +203,37 @@ async def observe_backend_stability(
     flavor = _norm(backend)
 
     try:
+        if flavor == "meshllm":
+            ready = await client.get(f"{root}/readyz", headers=headers, timeout=timeout_s)
+            if not ready.is_success:
+                return BackendStabilityObservation(
+                    DRAINING, REASON_BACKEND_LOADING,
+                    drain_until=time.time() + 30,
+                    diagnostics={"ready": False},
+                )
+            inventory = await client.get(f"{root}/v1/models", headers=headers, timeout=timeout_s)
+            if not inventory.is_success:
+                return BackendStabilityObservation(
+                    DRAINING, REASON_BACKEND_LOADING,
+                    drain_until=time.time() + 30,
+                    diagnostics={"ready": False},
+                )
+            body = inventory.json()
+            raw_models = body.get("data") if isinstance(body, dict) else None
+            if not isinstance(raw_models, list):
+                return BackendStabilityObservation(
+                    DRAINING, REASON_BACKEND_LOADING,
+                    drain_until=time.time() + 30,
+                    diagnostics={"ready": False},
+                )
+            models = [item.get("id") for item in raw_models if isinstance(item, dict) and item.get("id")]
+            if not models or (expected_model and not any(_model_matches(model, expected_model) for model in models)):
+                return BackendStabilityObservation(
+                    DRAINING, REASON_BACKEND_LOADING,
+                    drain_until=time.time() + 30,
+                    diagnostics={"selected_model_ready": False},
+                )
+            return BackendStabilityObservation(diagnostics={"ready": True})
         if flavor in {"ollama", ""}:
             resp = await client.get(f"{root}/api/ps", headers=headers, timeout=timeout_s)
             if resp.is_success:

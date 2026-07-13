@@ -36,7 +36,7 @@ What good looks like:
 ```bash
 iicp-node --help       # shows query, serve, proxy, mcp-gateway, credits, ...
 which iicp-node        # points to your Python environment
-iicp-node --version    # prints iicp-node 0.7.87 or newer
+iicp-node --version    # prints iicp-node 0.7.88 or newer
 ```
 
 The query command contacts the public directory, discovers a matching live node,
@@ -141,7 +141,7 @@ base URL. Full guide: <https://iicp.network/docs/proxy>
 
 ## Keep provider nodes current
 
-The current public release line is **0.7.87**. Upgrade through your package
+The current public release line is **0.7.88**. Upgrade through your package
 manager before troubleshooting an older installation. Routing profiles can
 refuse remote dispatch before a prompt leaves the client; use `sensitive` for
 local-only work, `eu-restricted` for EU/EEA routing, or `strict-policy` when a
@@ -327,9 +327,26 @@ with `--backend-type` (env `IICP_BACKEND_TYPE`, default `openai_compat`):
 | `--backend-type` | Engine | Default backend URL | API |
 |------------------|--------|---------------------|-----|
 | `openai_compat` | Ollama, LM Studio, any OpenAI-compatible server | `http://localhost:11434` | OpenAI `/v1/*` |
+| `meshllm` | MeshLLM local distributed runtime | `http://localhost:9337/v1` | Stable chat only |
 | `vllm` | vLLM OpenAI server | `http://localhost:8000` | OpenAI `/v1/*` |
 | `llamacpp` | llama.cpp `llama-server` | `http://localhost:8080` | OpenAI `/v1/*` |
 | `anthropic` | Native Anthropic Messages API — first-class Claude | `https://api.anthropic.com` | Anthropic `/v1/messages` |
+
+### MeshLLM
+
+MeshLLM is a local OpenAI-compatible backend. Start its local gateway, then choose
+one advertised model explicitly (the stable IICP profile serves chat only):
+
+```bash
+iicp-node serve --backend-type meshllm --model <meshllm-model-id>
+```
+
+The upstream experimental `mesh` ensemble is never selected automatically. Use it
+only with an explicit `--model mesh --experimental` opt-in.
+
+MeshLLM remains the local inference runtime. IICP uses its local OpenAI-compatible
+gateway for task execution and does not publish MeshLLM peer or topology details
+through IICP discovery.
 
 The `anthropic` backend speaks the Anthropic Messages API directly (not the OpenAI-compat
 shim): it translates an IICP `llm:chat:v1` task into a Messages request and translates the

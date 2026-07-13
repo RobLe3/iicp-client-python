@@ -126,6 +126,7 @@ class RelayWorkerClient:
         task_handler: TaskHandler,
         models: list[str] | None = None,
         on_bind: Callable[[str, int, str], Awaitable[None]] | None = None,
+        on_disconnect: Callable[[], Awaitable[None]] | None = None,
         bind_ticket: str | None = None,
         directory_url: str | None = None,
         node_token: str | None = None,
@@ -144,6 +145,7 @@ class RelayWorkerClient:
                 (relay_host, relay_http_port, worker_id) — the HTTP port is
                 taken from RELAY_ACK field 4 (fallback 9484). Useful to update
                 the directory registration with the relay endpoint.
+            on_disconnect: Called when a successfully bound relay session ends.
         """
         self._worker_id = worker_id
         self._intent = intent
@@ -152,6 +154,7 @@ class RelayWorkerClient:
         self._handler = task_handler
         self._models = models or []
         self._on_bind = on_bind
+        self._on_disconnect = on_disconnect
         self._bind_ticket = bind_ticket
         self._directory_url = directory_url
         self._node_token = node_token
@@ -196,6 +199,7 @@ class RelayWorkerClient:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        bound = False
         try:
             # Step 1: INIT → ACK
             writer.write(_make_frame(_MT_INIT, _enc({1: _FRAMING_VERSION})))
@@ -245,10 +249,16 @@ class RelayWorkerClient:
                     await self._on_bind(self._relay_host, relay_http_port, self._worker_id)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("on_bind callback failed: %s", exc)
+            bound = True
 
             # Step 3: session loop
             await self._worker_loop(reader, writer)
         finally:
+            if bound and self._on_disconnect:
+                try:
+                    await self._on_disconnect()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("on_disconnect callback failed: %s", exc)
             writer.close()
             try:
                 await writer.wait_closed()

@@ -3,6 +3,7 @@ from iicp_client.recovery import (
     RecoveryAction,
     RecoveryState,
     classify,
+    effective_public_route_available,
     node_registry_prefix,
     route_needs_promotion_from_registry_json,
 )
@@ -83,3 +84,12 @@ def test_route_promotion_reuses_limited_reach_restart_path():
         consecutive_failures=3,
         grace_checks=3,
     ) == (RecoveryState.RESTART_RECOMMENDED, RecoveryAction.RESTART_SELF)
+
+
+def test_live_relay_bind_satisfies_route_promotion_until_directory_converges():
+    assert not effective_public_route_available(
+        runtime_available=True, route_needs_promotion=True, relay_bound=False
+    )
+    assert effective_public_route_available(
+        runtime_available=True, route_needs_promotion=True, relay_bound=True
+    )

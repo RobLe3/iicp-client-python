@@ -244,6 +244,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Backend model name (e.g. qwen2.5:0.5b). env: IICP_BACKEND_MODEL",
     )
     serve.add_argument(
+        "--experimental",
+        action="store_true",
+        default=_env("IICP_EXPERIMENTAL", "").lower() in ("1", "true", "yes"),
+        help="Enable an explicitly selected experimental backend feature. env: IICP_EXPERIMENTAL",
+    )
+    serve.add_argument(
         "--policy-manifest",
         default=_env("IICP_POLICY_MANIFEST_FILE"),
         help="Path to public node-policy JSON; signed locally with the operator key. env: IICP_POLICY_MANIFEST_FILE",
@@ -1658,23 +1664,36 @@ async def _serve(args: argparse.Namespace) -> int:
     # Ollama default never shadows a saved-node backend_url. #414/C1 — an `anthropic`
     # backend defaults to the Anthropic API, not localhost Ollama.
     if not args.backend_url:
-        args.backend_url = (
-            "https://api.anthropic.com"
-            if getattr(args, "backend_type", "") == "anthropic"
-            else "http://localhost:11434"
-        )
+        backend_defaults = {
+            "anthropic": "https://api.anthropic.com",
+            "meshllm": "http://localhost:9337/v1",
+        }
+        args.backend_url = backend_defaults.get(getattr(args, "backend_type", ""), "http://localhost:11434")
     # A bare serve still has the documented public default, but only after the
     # saved-node merge above has had a chance to supply its directory.
     if not args.directory_url:
         args.directory_url = "https://iicp.network/api"
 
-    # Onboarding: if no --model given, auto-select the first model the backend advertises
-    # so a bare `iicp-node serve` just works (parity with Rust/TS).
+    # MeshLLM uses a model-routed distributed API.  Auto-select only when its
+    # inventory is unambiguous; an arbitrary first model would hide operator intent.
     if not args.model and args.backend_url:
         _models = _ollama_models(args.backend_url, getattr(args, "backend_api_key", "") or "")
+        if args.backend_type == "meshllm" and len(_models) > 1:
+            sys.stderr.write(
+                "ERROR: MeshLLM advertises multiple models; select one with --model: "
+                + ", ".join(_models)
+                + "\n"
+            )
+            return 2
         if _models:
             args.model = _models[0]
             sys.stderr.write(f"no --model given — auto-selected '{args.model}' from {args.backend_url}\n")
+
+    if args.backend_type == "meshllm" and args.model == "mesh" and not args.experimental:
+        sys.stderr.write(
+            "ERROR: MeshLLM model 'mesh' is experimental; pass --experimental explicitly to enable it.\n"
+        )
+        return 2
 
     if not args.backend_url or not args.model:
         sys.stderr.write(
@@ -1963,6 +1982,8 @@ async def _serve(args: argparse.Namespace) -> int:
     discovered = _ollama_models(args.backend_url, getattr(args, "backend_api_key", "") or "")
     if discovered:
         extra = [m for m in discovered if m != args.model]
+        if args.backend_type == "meshllm" and not args.experimental:
+            extra = [m for m in extra if m != "mesh"]
         if extra:
             cfg.capabilities = extra
             logger.info("GAP-6: advertising %d additional models: %s", len(extra), extra[:6])
@@ -1970,6 +1991,8 @@ async def _serve(args: argparse.Namespace) -> int:
     # #494 — wire backend_url into NodeConfig so heartbeat can probe live model list.
     cfg.backend_url = args.backend_url or ""
     cfg.backend_api_key = getattr(args, "backend_api_key", "") or ""
+    if args.backend_type == "meshllm" and not args.experimental:
+        cfg.excluded_models = ["mesh"]
 
     # NAT-4 guard: if endpoint is non-routable and no relay configured, skip
     # registration to avoid a confusing 422 from the directory's RoutableEndpoint check.
@@ -2289,7 +2312,7 @@ def _detect_backend_flavor(backend_url: str, api_key: str = "", backend_type: st
     /api/version + /api/tags, so the Express header is the discriminator, not those
     endpoints), uvicorn/vllm → vllm, llama → llamacpp, else probe /api/version →
     ollama, else custom (generic OpenAI-compatible)."""
-    if backend_type in ("anthropic", "vllm", "llamacpp"):
+    if backend_type in ("anthropic", "vllm", "llamacpp", "meshllm"):
         return backend_type
     base = backend_url.rstrip("/")
     root = base[:-3] if base.endswith("/v1") else base

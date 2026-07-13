@@ -247,6 +247,9 @@ class NodeConfig:
     # Empty = no probing (backward compat; health_models field omitted from heartbeat).
     backend_url: str = ""
     backend_api_key: str = ""
+    # Backend-local aliases that must not become public capability or health
+    # evidence (for example MeshLLM's experimental `mesh` ensemble alias).
+    excluded_models: list[str] = field(default_factory=list)
     region: str | None = None
     capabilities: list[str] = field(default_factory=list)
     directory_url: str = "https://iicp.network/api"
@@ -455,6 +458,7 @@ class IicpNode:
         # Runtime public reachability gate. Quick Tunnel recovery sets this false
         # while the local server is alive but the public edge is stale/rebuilding.
         self._runtime_available = True
+        self._runtime_relay_bound = False
         try:
             from iicp_client._confidentiality import load_or_create_node_cx_key
 
@@ -839,7 +843,7 @@ class IicpNode:
             if resp.is_success:
                 data = resp.json()
                 names = sorted({m["name"] for m in data.get("models", []) if m.get("name")})
-                return names
+                return [name for name in names if name not in self._cfg.excluded_models]
         except Exception:  # noqa: BLE001
             pass
         # OpenAI-compat /v1/models → {"data":[{"id":"..."},...]}
@@ -847,7 +851,10 @@ class IicpNode:
             resp = await self._http.get(f"{root}/v1/models", headers=headers, timeout=2.0)
             if resp.is_success:
                 data = resp.json()
-                return [m["id"] for m in data.get("data", []) if m.get("id")]
+                return [
+                    m["id"] for m in data.get("data", [])
+                    if m.get("id") and m["id"] not in self._cfg.excluded_models
+                ]
         except Exception:  # noqa: BLE001
             pass
         return None
@@ -918,6 +925,7 @@ class IicpNode:
             env_check_every_heartbeats,
             env_grace_checks,
             registry_route_status,
+            effective_public_route_available,
             supervised_recovery_enabled,
         )
 
@@ -944,7 +952,12 @@ class IicpNode:
                     presence = route_status.presence
                     public_available = bool(self._runtime_available)
                     route_needs_promotion = route_status.route_needs_promotion
-                    if (not public_available) or route_needs_promotion or presence is DirectoryPresence.ABSENT:
+                    effective_public_route = effective_public_route_available(
+                        runtime_available=public_available,
+                        route_needs_promotion=route_needs_promotion,
+                        relay_bound=bool(self._runtime_relay_bound),
+                    )
+                    if not effective_public_route or presence is DirectoryPresence.ABSENT:
                         recovery_failures += 1
                     elif presence is DirectoryPresence.PRESENT:
                         recovery_failures = 0
@@ -952,7 +965,7 @@ class IicpNode:
                     backend_attention = self._backend_stability_snapshot().is_draining()
                     state, action = classify(
                         local_health_ok=True,
-                        public_available=public_available and not route_needs_promotion,
+                        public_available=effective_public_route,
                         directory_presence=presence,
                         consecutive_failures=recovery_failures,
                         grace_checks=recovery_grace,
@@ -1856,6 +1869,7 @@ class IicpNode:
                 transport_method='turn_relay' and endpoint=<relay_host>:<relay_port>.
                 This makes the node appear ACTIVE in directory + stats (#358).
                 """
+                _node_ref._runtime_relay_bound = True
                 # Path-scoped endpoint (#450): consumers compose "{endpoint}/v1/task",
                 # so the scoped path makes the relay forward to THIS worker's bound
                 # session instead of executing the task on its own backend.
@@ -1887,6 +1901,10 @@ class IicpNode:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Relay worker: re-registration failed: %s", exc)
 
+            async def _on_relay_disconnect() -> None:
+                _node_ref._runtime_relay_bound = False
+                logger.warning("Relay worker session ended — route is no longer bound")
+
             from iicp_client.relay_worker_client import RelayWorkerClient
 
             relay_worker = RelayWorkerClient(
@@ -1897,6 +1915,7 @@ class IicpNode:
                 task_handler=handler,
                 models=[self._cfg.model] if self._cfg.model else [],
                 on_bind=_on_relay_bind,
+                on_disconnect=_on_relay_disconnect,
                 directory_url=self._cfg.directory_url,
                 node_token=_current_token[0],
             )

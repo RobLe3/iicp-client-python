@@ -9,7 +9,7 @@ import json
 import httpx
 import respx
 
-from iicp_client.backends import openai_compat_handler
+from iicp_client.backends import meshllm_handler, openai_compat_handler
 
 # ── Factory configuration ──────────────────────────────────────────────────
 
@@ -18,6 +18,30 @@ class TestFactoryDefaults:
     def test_returns_callable(self):
         h = openai_compat_handler(base_url="http://localhost:11434/v1", model="qwen2.5:0.5b")
         assert callable(h)
+
+    def test_meshllm_default_is_chat_only(self):
+        handler = meshllm_handler(model="model-a")
+        assert callable(handler)
+
+
+@respx.mock
+async def test_meshllm_chat_uses_documented_v1_url():
+    route = respx.post("http://localhost:9337/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    result = await meshllm_handler(model="model-a")(
+        {"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}}
+    )
+    assert route.called
+    assert "error_code" not in result
+
+
+async def test_meshllm_rejects_unverified_non_chat_intents():
+    result = await meshllm_handler(model="model-a")(
+        {"intent": "urn:iicp:intent:llm:embedding:v1", "payload": {"input": "hello"}}
+    )
+    assert result["error_code"] == 400
+    assert "chat" in result["error_message"]
 
 
 # ── Happy path: chat / completions / embeddings ────────────────────────────
@@ -436,8 +460,8 @@ async def test_vllm_error_message_uses_engine_label():
 
 
 class TestSelector:
-    def test_backend_types_lists_all_four(self):
-        assert set(BACKEND_TYPES) == {"openai_compat", "vllm", "llamacpp", "anthropic"}
+    def test_backend_types_lists_all_named_backends(self):
+        assert set(BACKEND_TYPES) == {"openai_compat", "vllm", "llamacpp", "meshllm", "anthropic"}
 
     def test_get_backend_handler_returns_callable(self):
         assert callable(get_backend_handler("vllm", model="m"))

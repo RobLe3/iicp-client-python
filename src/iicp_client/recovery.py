@@ -121,6 +121,13 @@ def classify(
     return RecoveryState.UNKNOWN, RecoveryAction.NONE
 
 
+def effective_public_route_available(
+    *, runtime_available: bool, route_needs_promotion: bool, relay_bound: bool
+) -> bool:
+    """Return true only for a live direct route or an actually bound relay."""
+    return runtime_available and (relay_bound or not route_needs_promotion)
+
+
 async def registry_node_presence(
     http: httpx.AsyncClient,
     directory_url: str,
