@@ -74,6 +74,9 @@ def _isolated_tunnel_state(tmp_path, monkeypatch):
         str(tmp_path / "quick_tunnel_create.lock"),
     )
     monkeypatch.setenv("IICP_TUNNEL_CREATE_MIN_INTERVAL_S", "0")
+    # Unit cases assert the raw cooldown/lease errors; production defaults to
+    # waiting in the tunnel opener so supervised services do not restart-storm.
+    monkeypatch.setenv("IICP_TUNNEL_WAIT_FOR_CAPACITY", "0")
     _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
     yield
     _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
@@ -163,6 +166,23 @@ class TestInitiation:
             lease.close()
         next_lease = _acquire_quick_tunnel_create_lease()
         next_lease.close()
+
+    def test_default_capacity_waits_with_jitter_instead_of_failing(self, tmp_path, monkeypatch):
+        """A supervised wake-up should wait through the shared gate, not exit."""
+        monkeypatch.setenv("IICP_TUNNEL_WAIT_FOR_CAPACITY", "1")
+        monkeypatch.setenv("IICP_TUNNEL_CREATE_MIN_INTERVAL_S", "0.05")
+        monkeypatch.setenv("IICP_TUNNEL_CREATE_JITTER_MAX_S", "0")
+        first = open_quick_tunnel(9484, binary=_fake_bin(tmp_path, FAKE_OK, name="wait-one"))
+        started = time.monotonic()
+        second = open_quick_tunnel(9485, binary=_fake_bin(tmp_path, FAKE_OK, name="wait-two"))
+        try:
+            # The first process already consumed part of the 50ms gate while
+            # its URL was parsed; the second opener must still visibly wait.
+            assert time.monotonic() - started >= 0.01
+            assert second.url.endswith("wait-two.trycloudflare.com")
+        finally:
+            first.close()
+            second.close()
 
 
 class TestTeardown:

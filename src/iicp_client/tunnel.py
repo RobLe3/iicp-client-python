@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -60,6 +61,7 @@ TUNNEL_DOH_TIMEOUT_S = 5.0
 TUNNEL_RATE_LIMIT_COOLDOWN_S = 15 * 60.0
 TUNNEL_CREATE_MIN_INTERVAL_S = 120.0
 TUNNEL_CREATE_LEASE_S = 45.0
+TUNNEL_CREATE_JITTER_MAX_S = 15.0
 TUNNEL_DEAD_RETRY_INITIAL_S = 30.0
 TUNNEL_DEAD_RETRY_MAX_S = 300.0
 
@@ -129,6 +131,31 @@ def _tunnel_create_lease_s() -> float:
         return value if value > 0 else TUNNEL_CREATE_LEASE_S
     except ValueError:
         return TUNNEL_CREATE_LEASE_S
+
+
+def _tunnel_create_jitter_max_s() -> float:
+    """Bound the random suffix after a shared tunnel deadline.
+
+    The deadline itself is never shortened.  The suffix keeps processes that
+    woke together from retrying at the exact same instant once it expires.
+    """
+    try:
+        value = float(os.environ.get("IICP_TUNNEL_CREATE_JITTER_MAX_S", ""))
+        return max(0.0, value)
+    except ValueError:
+        return TUNNEL_CREATE_JITTER_MAX_S
+
+
+def _quick_tunnel_wait_with_jitter_s(remaining_s: float) -> float:
+    return max(0.0, remaining_s) + random.uniform(0.0, _tunnel_create_jitter_max_s())
+
+
+def _quick_tunnel_wait_for_capacity() -> bool:
+    return os.environ.get("IICP_TUNNEL_WAIT_FOR_CAPACITY", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
 
 
 def _read_json_field_float(path: Path, field: str) -> float:
@@ -658,25 +685,58 @@ def open_quick_tunnel(
     Raises FileNotFoundError when cloudflared is absent (caller prints
     INSTALL_HINT once) and RuntimeError when no URL appears within ``timeout``.
     """
-    remaining = _quick_tunnel_rate_limit_remaining_s()
-    if remaining > 0:
-        raise RuntimeError(
-            f"accountless Quick Tunnel creation paused for {remaining:.0f}s after "
-            "Cloudflare rate limiting; retry later or configure a named tunnel / "
-            "IICP_PUBLIC_ENDPOINT"
-        )
-    create_remaining = _quick_tunnel_create_gate_remaining_s()
-    if create_remaining > 0:
-        raise RuntimeError(
-            f"accountless Quick Tunnel creation paced for {create_remaining:.0f}s to avoid "
-            "Cloudflare rate limits; falling back to the previous reachability method "
-            "while the tunnel budget recovers"
-        )
-
     resolved = binary or cloudflared_path()
     if not resolved:
         raise FileNotFoundError(INSTALL_HINT)
-    create_lease = _acquire_quick_tunnel_create_lease()
+
+    # Coordinate at the single tunnel-open boundary so startup and watchdog
+    # recovery share one host-wide budget.  Waiting here keeps supervised
+    # services alive instead of synchronizing launchd/systemd restart storms.
+    while True:
+        remaining = _quick_tunnel_rate_limit_remaining_s()
+        reason = "Cloudflare rate-limit cooldown"
+        if remaining <= 0:
+            remaining = _quick_tunnel_create_gate_remaining_s()
+            reason = "shared Quick Tunnel pacing"
+        if remaining > 0:
+            if not _quick_tunnel_wait_for_capacity():
+                if reason == "Cloudflare rate-limit cooldown":
+                    raise RuntimeError(
+                        f"accountless Quick Tunnel creation paused for {remaining:.0f}s after "
+                        "Cloudflare rate limiting; retry later or configure a named tunnel / "
+                        "IICP_PUBLIC_ENDPOINT"
+                    )
+                raise RuntimeError(
+                    f"accountless Quick Tunnel creation paced for {remaining:.0f}s to avoid "
+                    "Cloudflare rate limits; falling back to the previous reachability method "
+                    "while the tunnel budget recovers"
+                )
+            wait_s = _quick_tunnel_wait_with_jitter_s(remaining)
+            logger.info(
+                "Quick Tunnel waiting %.1fs for %s; shared jitter avoids synchronized retries.",
+                wait_s,
+                reason,
+            )
+            time.sleep(wait_s)
+            continue
+        try:
+            create_lease = _acquire_quick_tunnel_create_lease()
+            break
+        except RuntimeError as exc:
+            if not _quick_tunnel_wait_for_capacity():
+                raise
+            # A competing local process owns the short lease.  It is safe to
+            # retry after the advertised deadline plus a randomized suffix.
+            match = re.search(r"for ([0-9.]+)s", str(exc))
+            lease_wait_s = float(match.group(1)) if match else _tunnel_create_lease_s()
+            wait_s = _quick_tunnel_wait_with_jitter_s(lease_wait_s)
+            logger.info(
+                "Quick Tunnel waiting %.1fs for another local node's create lease; "
+                "shared jitter avoids synchronized retries.",
+                wait_s,
+            )
+            time.sleep(wait_s)
+
     _mark_quick_tunnel_create_attempt()
     try:
         proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
