@@ -1,0 +1,63 @@
+name: Publish release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release version without the v prefix
+        required: true
+        type: string
+
+concurrency:
+  group: python-release-${{ github.event.release.tag_name || inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version && format('v{0}', inputs.version) || github.event.release.tag_name }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Resolve and verify version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ inputs.version || github.event.release.tag_name }}"
+          expected="${expected#v}"
+          actual=$(python - <<'PY'
+          import tomllib
+          print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])
+          PY
+          )
+          test "$actual" = "$expected"
+          echo "version=$actual" >> "$GITHUB_OUTPUT"
+      - name: Test and build
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build ruff twine pytest pytest-asyncio
+          python -m pip install -e ".[dev]" || python -m pip install -e .
+          ruff check src tests
+          pytest -q
+          python -m build
+          twine check dist/*
+      - name: Clean-install smoke
+        run: |
+          python -m venv /tmp/iicp-release-smoke
+          /tmp/iicp-release-smoke/bin/pip install dist/*.whl
+          /tmp/iicp-release-smoke/bin/python -c 'import iicp_client; print(iicp_client.__version__)'
+      - name: Publish to PyPI with OIDC
+        uses: pypa/gh-action-pypi-publish@release/v1
