@@ -6,7 +6,6 @@ from pathlib import Path
 
 from iicp_client.iicp_tcp import FRAME_HEADER_LEN, IicpFrame, MsgType
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "native-framing-v1.json"
 
 
