@@ -186,7 +186,7 @@ class Node:
     exposure_mode: str | None = None
     # IICP-CX S.16 §3.1 — X25519 public key for E2E payload confidentiality.
     # Present only when the node registered with cx_public_key (v1.10.7+).
-    cx_public_key: dict[str, str] | None = None
+    cx_public_key: dict[str, Any] | None = None
     # #397 — transport protocols the node speaks (e.g. ["https", "iicp-native"]).
     transport: list[str] | None = None
     # Additive routing-signal split from directory v1.10.50+.

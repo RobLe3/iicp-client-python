@@ -463,6 +463,7 @@ class IicpNode:
             from iicp_client._confidentiality import load_or_create_node_cx_key
 
             self._cx_public_key, self._cx_private_key = load_or_create_node_cx_key(config.node_id, config.endpoint)
+            self._cx_public_key["features"] = ["response_encryption_v1"]
         except Exception as exc:
             logger.warning("IICP-CX provider key unavailable; node will not advertise CX: %s", exc)
             self._cx_public_key = None
@@ -1243,6 +1244,19 @@ class IicpNode:
                     ).encode()
                     self._json_response(409, err, cors=True)
                     return
+                source = str(self.client_address[0]) if self.client_address else "unknown"
+                if not node._relay_sessions.allow_bind(source, rebind=existing is not None):
+                    err = json.dumps(
+                        {
+                            "error": {
+                                "code": "IICP-E039",
+                                "reason": "relay_bind_rate_limited",
+                                "message": "relay bind rate limit exceeded",
+                            }
+                        }
+                    ).encode()
+                    self._json_response(429, err, cors=True)
+                    return
                 # Red-team F5: reject new binds past the session cap (bind-flood
                 # DoS). A rebind of an existing worker_id is exempt.
                 if node._relay_sessions.at_capacity(worker_id):
@@ -1618,6 +1632,7 @@ class IicpNode:
                         self.wfile.write(err)
                         return
 
+                    cx_shared_secret: bytes | None = None
                     if isinstance(body.get("iicp_conf"), dict) and "payload" not in body:
                         if not node._cx_private_key:
                             err = json.dumps(
@@ -1625,10 +1640,13 @@ class IicpNode:
                             ).encode()
                             self._json_response(400, err)
                             return
-                        try:
-                            from iicp_client._confidentiality import decrypt_payload
 
-                            body["payload"] = decrypt_payload(body["iicp_conf"], node._cx_private_key)
+                        try:
+                            from iicp_client._confidentiality import decrypt_payload_with_context
+
+                            body["payload"], cx_shared_secret = decrypt_payload_with_context(
+                                body["iicp_conf"], node._cx_private_key
+                            )
                             body["_cx_encrypted"] = True
                         except Exception as exc:
                             err = json.dumps(
@@ -1636,6 +1654,18 @@ class IicpNode:
                             ).encode()
                             self._json_response(400, err)
                             return
+
+                    if body.get("cx_response_encryption") == "required" and cx_shared_secret is None:
+                        err = json.dumps(
+                            {
+                                "error": {
+                                    "code": "IICP-CX-03",
+                                    "message": "encrypted response requested without an encrypted request",
+                                }
+                            }
+                        ).encode()
+                        self._json_response(400, err)
+                        return
 
                     # W3C traceparent propagation
                     traceparent = self.headers.get("traceparent")
@@ -1666,14 +1696,21 @@ class IicpNode:
                             node._tasks_success += 1
                             if latency_ms > 0:
                                 node._tasks_latency_total_ms += latency_ms
-                        resp_body = json.dumps(
-                            {
+                        response = {
+                            "task_id": task_id,
+                            "status": "completed",
+                            "generated_by_ai": True,
+                            **result,
+                        }
+                        if body.get("cx_response_encryption") == "required" and cx_shared_secret is not None:
+                            from iicp_client._confidentiality import encrypt_response
+
+                            response = {
                                 "task_id": task_id,
-                                "status": "completed",
-                                "generated_by_ai": True,
-                                **result,
+                                "status": "encrypted",
+                                "iicp_conf_resp": encrypt_response(response, cx_shared_secret, task_id),
                             }
-                        ).encode()
+                        resp_body = json.dumps(response).encode()
                         self._json_response(200, resp_body)
                         # TC-9c: fire best-effort CIPWorkerReceipt to the directory.
                         # Server-side award path: provider reports completion so the
@@ -1895,12 +1932,63 @@ class IicpNode:
 
             from iicp_client.relay_worker_client import RelayWorkerClient
 
+            async def _relay_task_handler(task: dict[str, Any]) -> dict[str, Any]:
+                """Apply the same CX boundary used by the HTTP task endpoint.
+
+                Relay transport changes reachability only; it must not silently
+                downgrade negotiated response confidentiality.
+                """
+                cx_shared_secret: bytes | None = None
+                if isinstance(task.get("iicp_conf"), dict) and "payload" not in task:
+                    if not self._cx_private_key:
+                        return {"error": {"code": "IICP-CX-01", "message": "node has no CX private key"}}
+                    try:
+                        from iicp_client._confidentiality import (
+                            decrypt_payload_with_context,
+                            encrypt_response,
+                        )
+
+                        task["payload"], cx_shared_secret = decrypt_payload_with_context(
+                            task["iicp_conf"], self._cx_private_key
+                        )
+                        task["_cx_encrypted"] = True
+                    except Exception as exc:  # noqa: BLE001
+                        return {
+                            "error": {
+                                "code": "IICP-CX-02",
+                                "message": f"iicp_conf decrypt failed: {exc}",
+                            }
+                        }
+
+                result = await handler(task)
+                if task.get("cx_response_encryption") == "required":
+                    if cx_shared_secret is None:
+                        return {
+                            "error": {
+                                "code": "IICP-CX-03",
+                                "message": "encrypted response requested without an encrypted request",
+                            }
+                        }
+                    task_id = str(task.get("task_id", ""))
+                    plain_response = {
+                        "task_id": task_id,
+                        "status": "completed",
+                        "generated_by_ai": True,
+                        **result,
+                    }
+                    return {
+                        "task_id": task_id,
+                        "status": "encrypted",
+                        "iicp_conf_resp": encrypt_response(plain_response, cx_shared_secret, task_id),
+                    }
+                return result
+
             relay_worker = RelayWorkerClient(
                 worker_id=self._cfg.node_id,
                 intent=self._cfg.intent,
                 relay_host=_relay_host,
                 relay_port=_relay_port_n,
-                task_handler=handler,
+                task_handler=_relay_task_handler,
                 models=[self._cfg.model] if self._cfg.model else [],
                 on_bind=_on_relay_bind,
                 on_disconnect=_on_relay_disconnect,
