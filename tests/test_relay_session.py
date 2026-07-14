@@ -28,6 +28,26 @@ from iicp_client.relay_session import (
     RelayWorkerSession,
 )
 
+
+def test_relay_bind_rate_limit_is_per_source_and_recovers(monkeypatch):
+    monkeypatch.setenv("IICP_RELAY_BIND_RATE_LIMIT", "2")
+    registry = RelaySessionRegistry()
+    assert registry.allow_bind("source-a", now=10.0)
+    assert registry.allow_bind("source-a", now=10.0)
+    assert not registry.allow_bind("source-a", now=10.0)
+    assert registry.allow_bind("source-b", now=10.0)
+    assert registry.allow_bind("source-a", now=71.0)
+
+
+def test_relay_bind_rate_limit_exempts_recovery_and_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("IICP_RELAY_BIND_RATE_LIMIT", "1")
+    registry = RelaySessionRegistry()
+    assert registry.allow_bind("source-a", now=10.0)
+    assert registry.allow_bind("source-a", rebind=True, now=10.0)
+    monkeypatch.setenv("IICP_RELAY_BIND_RATE_LIMIT", "0")
+    disabled = RelaySessionRegistry()
+    assert all(disabled.allow_bind("source-a", now=10.0) for _ in range(100))
+
 # ── encode/decode helpers ──────────────────────────────────────────────────────
 
 

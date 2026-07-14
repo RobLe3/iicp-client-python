@@ -107,3 +107,22 @@ def test_response_roundtrip():
     env = encrypt_response(resp, shared, "task-resp-1")
     assert set(env) == {"version", "nonce", "encrypted_body"}
     assert decrypt_response(env, shared, "task-resp-1") == resp
+
+
+def test_request_context_drives_authenticated_response_roundtrip():
+    from iicp_client._confidentiality import (
+        decrypt_payload_with_context,
+        decrypt_response,
+        encrypt_payload_with_context,
+        encrypt_response,
+    )
+
+    public_key, private_key = _generate_test_keypair()
+    request, consumer_secret = encrypt_payload_with_context(
+        {"secret": "request"}, public_key, "task-context", "urn:iicp:intent:llm:chat:v1"
+    )
+    payload, provider_secret = decrypt_payload_with_context(request, private_key)
+    assert payload == {"secret": "request"}
+    assert provider_secret == consumer_secret
+    response = encrypt_response({"secret": "response"}, provider_secret, "task-context")
+    assert decrypt_response(response, consumer_secret, "task-context") == {"secret": "response"}

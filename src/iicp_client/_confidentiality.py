@@ -119,6 +119,17 @@ def encrypt_payload(
     Returns:
         dict matching the iicp_conf wire format (§4.1)
     """
+    envelope, _shared_secret = encrypt_payload_with_context(payload, cx_public_key, task_id, intent)
+    return envelope
+
+
+def encrypt_payload_with_context(
+    payload: dict[str, Any],
+    cx_public_key: dict[str, Any],
+    task_id: str,
+    intent: str,
+) -> tuple[dict[str, Any], bytes]:
+    """Encrypt a request and retain the session secret for response decryption."""
     _require_cryptography()
     from cryptography.hazmat.primitives.asymmetric.x25519 import (
         X25519PrivateKey,
@@ -155,7 +166,7 @@ def encrypt_payload(
         "nonce": _b64url_encode(nonce),
         "aad": _b64url_encode(aad),
         "plaintext_size": len(payload_json),
-    }
+    }, shared_secret
 
 
 def decrypt_payload(iicp_conf: dict[str, Any], private_key_bytes: bytes) -> dict[str, Any]:
@@ -168,6 +179,14 @@ def decrypt_payload(iicp_conf: dict[str, Any], private_key_bytes: bytes) -> dict
     Returns:
         decrypted payload dict
     """
+    payload, _shared_secret = decrypt_payload_with_context(iicp_conf, private_key_bytes)
+    return payload
+
+
+def decrypt_payload_with_context(
+    iicp_conf: dict[str, Any], private_key_bytes: bytes
+) -> tuple[dict[str, Any], bytes]:
+    """Decrypt a request and retain the session secret for response encryption."""
     _require_cryptography()
     from cryptography.hazmat.primitives.asymmetric.x25519 import (
         X25519PrivateKey,
@@ -190,7 +209,7 @@ def decrypt_payload(iicp_conf: dict[str, Any], private_key_bytes: bytes) -> dict
     key = HKDF(algorithm=SHA256(), length=32, salt=nonce, info=info).derive(shared_secret)
 
     plaintext = AESGCM(key).decrypt(nonce, _b64url_decode(iicp_conf["encrypted_body"]), aad_bytes)
-    return json.loads(plaintext)
+    return json.loads(plaintext), shared_secret
 
 
 # ── Tier-2 §5a.3: bidirectional (response) encryption ────────────────────────

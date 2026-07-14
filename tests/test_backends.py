@@ -393,6 +393,30 @@ async def test_upstream_429_rate_limit_is_surfaced():
 
 
 @respx.mock
+async def test_timeout_is_classified_deterministically():
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        side_effect=httpx.TimeoutException("upstream timed out")
+    )
+    result = await openai_compat_handler(model="q")(
+        {"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}}
+    )
+    assert result["error_code"] == 408
+    assert "timed out" in result["error_message"]
+
+
+@respx.mock
+async def test_connection_refused_is_classified_as_transport_error():
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+    result = await openai_compat_handler(model="q")(
+        {"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}}
+    )
+    assert result["error_code"] == 502
+    assert "transport" in result["error_message"].lower()
+
+
+@respx.mock
 async def test_api_key_sets_authorization_header():
     route = respx.post("http://localhost:11434/v1/chat/completions").mock(return_value=httpx.Response(200, json={}))
     handler = openai_compat_handler(model="q", api_key="sk-test-1234")

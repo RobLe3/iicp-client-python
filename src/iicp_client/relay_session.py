@@ -205,6 +205,8 @@ RelaySession = RelayWorkerSession | HttpPollWorkerSession
 # can't exhaust relay memory / starve legitimate workers. Re-binding an
 # existing worker_id never counts against the cap (it replaces, not adds).
 MAX_RELAY_SESSIONS = 256
+DEFAULT_RELAY_BIND_RATE_LIMIT = 30
+RELAY_BIND_RATE_WINDOW_S = 60.0
 
 
 class RelaySessionRegistry:
@@ -214,6 +216,34 @@ class RelaySessionRegistry:
         self._sessions: dict[str, RelaySession] = {}
         self._lock = threading.Lock()
         self._max = max_sessions
+        try:
+            self._bind_rate_limit = max(0, int(os.getenv("IICP_RELAY_BIND_RATE_LIMIT", str(DEFAULT_RELAY_BIND_RATE_LIMIT))))
+        except ValueError:
+            self._bind_rate_limit = DEFAULT_RELAY_BIND_RATE_LIMIT
+        self._bind_rate_buckets: dict[str, tuple[float, int]] = {}
+
+    def allow_bind(self, source: str, *, rebind: bool = False, now: float | None = None) -> bool:
+        """Bound relay-bind attempts per transport source.
+
+        Dead-session reconnects are exempt so recovery is not delayed.  The
+        source is used only as an in-memory key and is never written to logs.
+        """
+        if rebind or self._bind_rate_limit == 0:
+            return True
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            start, count = self._bind_rate_buckets.get(source, (current, 0))
+            if current - start >= RELAY_BIND_RATE_WINDOW_S:
+                start, count = current, 0
+            count += 1
+            self._bind_rate_buckets[source] = (start, count)
+            if len(self._bind_rate_buckets) > 4096:
+                self._bind_rate_buckets = {
+                    key: bucket
+                    for key, bucket in self._bind_rate_buckets.items()
+                    if current - bucket[0] < RELAY_BIND_RATE_WINDOW_S
+                }
+            return count <= self._bind_rate_limit
 
     def at_capacity(self, worker_id: str) -> bool:
         """True if a NEW worker_id can't be admitted (cap reached). A rebind
@@ -406,12 +436,9 @@ class RelayAcceptServer:
         # hijack). Rebind after socket death (legitimate reconnect) still works.
         existing = self.registry.get(worker_id)
         if existing is not None and existing.is_alive():
-            peer = writer.get_extra_info("peername")
             logger.warning(
-                "Relay accept: rejected RELAY_BIND for worker=%s from %s: "
-                "worker_id already bound to an alive session (#510)",
+                "Relay accept: rejected RELAY_BIND for worker=%s: worker_id already bound to an alive session (#510)",
                 worker_id,
-                peer,
             )
             writer.write(
                 _make_frame(
@@ -425,6 +452,14 @@ class RelayAcceptServer:
                     ),
                 )
             )
+            await writer.drain()
+            return
+
+        peer = writer.get_extra_info("peername")
+        source = str(peer[0]) if isinstance(peer, tuple) and peer else "unknown"
+        if not self.registry.allow_bind(source, rebind=existing is not None):
+            nack = _enc({1: "error", 2: worker_id, 3: "relay_bind_rate_limited"})
+            writer.write(_make_frame(_MT_RELAY_ACK, nack))
             await writer.drain()
             return
 

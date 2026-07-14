@@ -482,6 +482,8 @@ class IicpClient:
         last_exc: IicpError | None = None
 
         for node in candidates:
+            cx_shared_secret: bytes | None = None
+            require_encrypted_response = False
             body: dict[str, Any] = {
                 "task_id": task_id,
                 "intent": request.intent,
@@ -500,9 +502,15 @@ class IicpClient:
             # the node advertises a cx_public_key. Plaintext fallback is refused unless
             # the caller explicitly sets IICP_CX_ALLOW_PLAINTEXT=1 for transitional debugging.
             if node.cx_public_key:
-                from iicp_client._confidentiality import encrypt_payload
+                from iicp_client._confidentiality import encrypt_payload_with_context
 
-                body["iicp_conf"] = encrypt_payload(request.payload, node.cx_public_key, task_id, request.intent)
+                body["iicp_conf"], cx_shared_secret = encrypt_payload_with_context(
+                    request.payload, node.cx_public_key, task_id, request.intent
+                )
+                features = node.cx_public_key.get("features", [])
+                require_encrypted_response = isinstance(features, list) and "response_encryption_v1" in features
+                if require_encrypted_response:
+                    body["cx_response_encryption"] = "required"
             else:
                 logging.getLogger(__name__).warning(
                     "IICP-CX: node %s advertises no encryption key — sending UNENCRYPTED "
@@ -529,6 +537,26 @@ class IicpClient:
                         traceparent=tp,
                         extra_headers=node_headers or None,
                     )
+                    if require_encrypted_response:
+                        envelope = raw.get("iicp_conf_resp")
+                        if not isinstance(envelope, dict) or cx_shared_secret is None:
+                            raise IicpError(
+                                code="IICP-CX-RESP-REQUIRED",
+                                message="node advertised response encryption but returned plaintext",
+                                component="sdk",
+                                retryable=False,
+                            )
+                        from iicp_client._confidentiality import decrypt_response
+
+                        decrypted = decrypt_response(envelope, cx_shared_secret, task_id)
+                        if not isinstance(decrypted, dict):
+                            raise IicpError(
+                                code="IICP-CX-RESP-INVALID",
+                                message="encrypted response did not contain an object",
+                                component="sdk",
+                                retryable=False,
+                            )
+                        raw = decrypted
                     return TaskResponse(
                         task_id=raw.get("task_id", task_id),
                         status=raw.get("status", "success"),

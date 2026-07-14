@@ -16,7 +16,7 @@ from http.client import HTTPConnection
 from typing import Any
 
 from iicp_client import IicpNode, NodeConfig
-from iicp_client._confidentiality import encrypt_payload
+from iicp_client._confidentiality import decrypt_response, encrypt_payload_with_context
 from iicp_client.iicp_tcp import IicpTcpClient
 from iicp_client.node import derive_native_endpoint
 
@@ -128,15 +128,52 @@ async def test_http_task_decrypts_iicp_conf(monkeypatch, tmp_path) -> None:
     try:
         await _wait_port(port)
         payload = {"messages": [{"role": "user", "content": "secret"}]}
-        env = encrypt_payload(payload, node._cx_public_key, "cx-task-1", CHAT)
+        env, shared_secret = encrypt_payload_with_context(payload, node._cx_public_key, "cx-task-1", CHAT)
         status, body = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: _http_task(port, {"task_id": "cx-task-1", "intent": CHAT, "iicp_conf": env}),
+            lambda: _http_task(
+                port,
+                {
+                    "task_id": "cx-task-1",
+                    "intent": CHAT,
+                    "iicp_conf": env,
+                    "cx_response_encryption": "required",
+                },
+            ),
         )
         assert status == 200
-        assert body["status"] == "completed"
+        assert body["status"] == "encrypted"
+        opened = decrypt_response(body["iicp_conf_resp"], shared_secret, "cx-task-1")
+        assert opened["status"] == "completed"
+        assert opened["result"]["ok"] is True
         assert captured["payload"] == payload
         assert captured["_cx_encrypted"] is True
+    finally:
+        serve_task.cancel()
+        try:
+            await serve_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def test_http_rejects_required_encrypted_response_without_encrypted_request(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("IICP_CX_KEY_DIR", str(tmp_path / "cx"))
+    node = IicpNode(NodeConfig(node_id="cx-downgrade", endpoint="http://cx.local", intent=CHAT))
+    port = _free_port()
+    serve_task = asyncio.create_task(node.serve(_echo, host="127.0.0.1", port=port, node_token=None))
+    try:
+        await _wait_port(port)
+        status, body = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: _http_task(port, {
+                "task_id": "cx-plain-required",
+                "intent": CHAT,
+                "payload": {"secret": True},
+                "cx_response_encryption": "required",
+            }),
+        )
+        assert status == 400
+        assert body["error"]["code"] == "IICP-CX-03"
     finally:
         serve_task.cancel()
         try:
