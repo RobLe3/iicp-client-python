@@ -44,3 +44,20 @@ def test_shared_fixture_matches_python_policy() -> None:
         assert actual is vector["allowed"], vector["id"]
     for vector in fixture["hostname_vectors"]:
         assert hostname_allowed(vector["host"]) is vector["allowed"], vector["id"]
+    for vector in fixture["resolution_attempt_vectors"]:
+        actual = [
+            "allow" if all(address_allowed(address, allow_private=vector["allow_private"]) for address in attempt) else "refuse"
+            for attempt in vector["attempts"]
+        ]
+        assert actual == vector["expected"], vector["id"]
+    for vector in fixture["redirect_vectors"]:
+        safe_target = all(
+            address_allowed(address, allow_private=vector["allow_private"])
+            for address in vector["target_addresses"]
+        )
+        actual = (
+            "follow_after_revalidation"
+            if vector["status"] in {307, 308} and vector["same_origin"] and safe_target
+            else "refuse"
+        )
+        assert actual == vector["expected"], vector["id"]
