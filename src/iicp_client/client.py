@@ -20,6 +20,7 @@ from iicp_client._http import _traceparent, get_json, post_json
 from iicp_client.dispatch_ticket import verify_dispatch_route_ticket
 from iicp_client.errors import IicpError
 from iicp_client.policy import ensure_intent_allowed
+from iicp_client.request_projection import project_execution_constraints, project_route_options
 from iicp_client.routing_policy import (
     ROUTING_POLICY_REFUSAL_CODE,
     filter_nodes_for_routing_policy,
@@ -38,6 +39,7 @@ from iicp_client.types import (
     Node,
     NodeList,
     ProfileNegotiation,
+    RouteConstraints,
     TaskAuth,
     TaskConstraints,
     TaskMetrics,
@@ -109,6 +111,8 @@ class IicpClient:
             raise ValueError(f"timeout_ms must be ≤ {_MAX_TIMEOUT_MS}; got {self._cfg.timeout_ms}")
         if self._cfg.route_discovery_mode not in {"auto", "ticketed", "legacy"}:
             raise ValueError("route_discovery_mode must be auto, ticketed, or legacy")
+        if self._cfg.consumer_auth_mode not in {"optional", "required", "disabled"}:
+            raise ValueError("consumer_auth_mode must be optional, required, or disabled")
         env_route_mode = os.getenv("IICP_ROUTE_DISCOVERY_MODE")
         if self._cfg.route_discovery_mode == "auto" and env_route_mode in {"auto", "ticketed", "legacy"}:
             self._cfg.route_discovery_mode = env_route_mode
@@ -151,7 +155,7 @@ class IicpClient:
             tok, exp = cached
             if time.time() + 30 < exp:
                 return tok
-        base = self._cfg.directory_url.rstrip("/api").rstrip("/")
+        base = self._cfg.directory_url.rstrip("/").removesuffix("/api")
         url = f"{base}/api/v1/consumer-token"
         try:
             async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -410,10 +414,7 @@ class IicpClient:
         """
         self._validate_intent(request.intent)
         tp = _traceparent()  # SDK-06: one trace per operation, shared across calls
-        discover_options = DiscoverOptions(
-            region=request.constraints.region or self._cfg.region,
-            profile_request=self._cfg.profile_request,
-        )
+        discover_options = project_route_options(request, self._cfg)
         if self._cfg.route_discovery_mode == "legacy" or self._cfg.profile_request is not None:
             node_list = await self.discover_async(request.intent, discover_options, traceparent=tp)
         else:
@@ -487,10 +488,7 @@ class IicpClient:
             body: dict[str, Any] = {
                 "task_id": task_id,
                 "intent": request.intent,
-                "constraints": {
-                    "timeout_ms": request.constraints.timeout_ms,
-                    "qos": request.constraints.qos,
-                },
+                "constraints": project_execution_constraints(request),
             }
             if request.auth.node_token:
                 body["auth"] = {"node_token": request.auth.node_token}
@@ -521,7 +519,16 @@ class IicpClient:
 
             # Phase 2 (#496): acquire consumer token if configured
             node_headers: dict[str, str] = {}
-            ct = await self._acquire_consumer_token(node.node_id, request.intent)
+            ct = None
+            if self._cfg.consumer_auth_mode != "disabled":
+                ct = await self._acquire_consumer_token(node.node_id, request.intent)
+            if self._cfg.consumer_auth_mode == "required" and not ct:
+                raise IicpError(
+                    code="IICP-CONSUMER-AUTH-REQUIRED",
+                    message="Consumer authentication is required but no directory-issued token is available",
+                    component="directory",
+                    retryable=True,
+                )
             if ct:
                 node_headers["X-IICP-Consumer-Token"] = ct
 
@@ -628,6 +635,15 @@ class IicpClient:
                 constraints=TaskConstraints(
                     timeout_ms=opts.timeout_ms or self._cfg.timeout_ms,
                     qos=opts.qos,
+                    model=opts.model,
+                ),
+                route_constraints=RouteConstraints(
+                    region=opts.region,
+                    qos=opts.qos,
+                    model=opts.model,
+                    min_reputation=opts.min_reputation,
+                    browser_usable_only=opts.browser_usable_only,
+                    profile_request=opts.profile_request,
                 ),
                 auth=TaskAuth(node_token=opts.node_token),
                 routing_policy=opts.routing_policy,

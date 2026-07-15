@@ -36,7 +36,7 @@ What good looks like:
 ```bash
 iicp-node --help       # shows query, serve, proxy, mcp-gateway, credits, ...
 which iicp-node        # points to your Python environment
-iicp-node --version    # prints iicp-node 0.7.89 or newer
+iicp-node --version    # prints iicp-node 0.7.90 or newer
 ```
 
 The query command contacts the public directory, discovers a matching live node,
@@ -116,6 +116,18 @@ reply = await IicpClient().chat_async(
 )
 ```
 
+### Route constraints and consumer authentication
+
+`ChatOptions(model=...)` now constrains both provider discovery and provider
+execution. Region, QoS, reputation, browser access, and profile requirements
+are projected through the same route-constraint path for ticketed discovery,
+legacy discovery, and fallback. Route-only fields are not sent to the provider
+inside the task envelope.
+
+Set `ClientConfig(consumer_auth_mode="required")` when a workload must not
+silently fall back to anonymous dispatch if consumer-token acquisition fails.
+The default remains `"optional"`; `"disabled"` skips token acquisition.
+
 ## Migrate from existing AI tools
 
 Direct call:
@@ -141,7 +153,7 @@ base URL. Full guide: <https://iicp.network/docs/proxy>
 
 ## Keep provider nodes current
 
-The current public release line is **0.7.89**. Upgrade through your package
+The current public release line is **0.7.90**. Upgrade through your package
 manager before troubleshooting an older installation. Routing profiles can
 refuse remote dispatch before a prompt leaves the client; use `sensitive` for
 local-only work, `eu-restricted` for EU/EEA routing, or `strict-policy` when a

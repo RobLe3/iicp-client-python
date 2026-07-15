@@ -249,6 +249,64 @@ def test_submit_prefers_ticketed_routes_and_records_redacted_ticket_prefix():
 
 @respx.mock
 @pytest.mark.ticketed_dispatch
+def test_chat_projects_model_and_qos_into_ticket_and_execution():
+    fixture = json.loads((__import__("pathlib").Path(__file__).parents[1] / "parity/dispatch-route-ticket-v1.json").read_text())
+    directory = fixture["valid"]["claims"]["iss"]
+    route = {**GOOD_NODES["nodes"][0], "node_id": fixture["valid"]["claims"]["node_id"]}
+    respx.get(f"{directory}/v1/directory-key").mock(return_value=httpx.Response(200, json={"public_key": fixture["public_key_hex"]}))
+    ticket = respx.post(f"{directory}/v1/dispatch/ticket").mock(return_value=httpx.Response(201, json={
+        "ticket": fixture["valid"]["token"], "node_id": route["node_id"], "route": route,
+    }))
+    task = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json={
+        "task_id": "route-projection", "status": "success", "result": {"choices": [], "model": "model-a"},
+    }))
+
+    IicpClient(ClientConfig(directory_url=directory, max_retries=1)).chat(
+        [ChatMessage(role="user", content="hello")],
+        ChatOptions(model="model-a", qos="realtime", region="eu-central", min_reputation=0.8),
+    )
+
+    ticket_body = json.loads(ticket.calls[0].request.content)
+    assert ticket_body["model"] == "model-a"
+    assert ticket_body["qos"] == "realtime"
+    assert ticket_body["region"] == "eu-central"
+    assert ticket_body["min_reputation"] == 0.8
+    task_body = json.loads(task.calls[0].request.content)
+    assert task_body["constraints"] == {"timeout_ms": 30_000, "qos": "realtime", "model": "model-a"}
+    assert "region" not in task_body["constraints"]
+    assert "min_reputation" not in task_body["constraints"]
+
+
+@respx.mock
+def test_required_consumer_auth_refuses_silent_downgrade():
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=GOOD_NODES))
+    respx.post(f"{DIRECTORY}/api/v1/consumer-token").mock(return_value=httpx.Response(503))
+    task = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json={}))
+    client = IicpClient(ClientConfig(
+        directory_url=DIRECTORY,
+        node_token="node-token",
+        consumer_auth_mode="required",
+        route_discovery_mode="legacy",
+    ))
+    with pytest.raises(IicpError) as exc_info:
+        client.submit(TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={}))
+    assert exc_info.value.code == "IICP-CONSUMER-AUTH-REQUIRED"
+    assert not task.called
+
+
+@respx.mock
+def test_consumer_token_directory_suffix_removal_is_exact():
+    directory = "https://directory.example.api/api"
+    token = respx.post("https://directory.example.api/api/v1/consumer-token").mock(
+        return_value=httpx.Response(201, json={"token": "ct", "expires_at": 4_000_000_000})
+    )
+    client = IicpClient(ClientConfig(directory_url=directory, node_token="node-token"))
+    assert asyncio.run(client._acquire_consumer_token("node", "urn:iicp:intent:llm:chat:v1")) == "ct"
+    assert token.called
+
+
+@respx.mock
+@pytest.mark.ticketed_dispatch
 def test_ticket_policy_refusal_does_not_downgrade_to_legacy_discovery():
     respx.post(f"{DIRECTORY}/v1/dispatch/ticket").mock(
         return_value=httpx.Response(422, json={"error": {"code": "validation_error"}})
