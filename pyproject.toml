@@ -25,6 +25,8 @@ classifiers = [
 ]
 dependencies = [
     "httpx>=0.27",
+    # Direct dependency: endpoint pinning uses httpcore's network-backend API.
+    "httpcore>=1,<2",
     # identity.py imports Ed25519PrivateKey unconditionally on the operator
     # identity path that `iicp-node init` always exercises — core, not optional.
     "cryptography>=42",

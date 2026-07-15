@@ -6,9 +6,11 @@ import secrets
 import ssl
 import time
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 
+from iicp_client.endpoint_security import PinnedAsyncHTTPTransport, resolve_endpoint
 from iicp_client.errors import IicpError, from_http
 
 
@@ -75,6 +77,7 @@ async def post_json(
     tls_verify: bool = True,
     traceparent: str | None = None,
     extra_headers: dict[str, str] | None = None,
+    pin_provider_endpoint: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Returns (response_body, elapsed_ms)."""
     timeout = (timeout_ms / 1000.0) + 2.0
@@ -83,8 +86,52 @@ async def post_json(
         headers.update(extra_headers)
     t0 = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=timeout, verify=_tls_context(tls_verify)) as client:
-            resp = await client.post(url, json=body, headers=headers)
+        if pin_provider_endpoint:
+            current = url
+            resp: httpx.Response | None = None
+            for redirect_count in range(4):
+                endpoint = await resolve_endpoint(current)
+                transport = PinnedAsyncHTTPTransport(endpoint, verify=_tls_context(tls_verify))
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    transport=transport,
+                    follow_redirects=False,
+                ) as client:
+                    resp = await client.post(current, json=body, headers=headers)
+                if resp.status_code in {307, 308}:
+                    location = resp.headers.get("location")
+                    if redirect_count == 3 or not location:
+                        raise IicpError(
+                            code="IICP-ENDPOINT-REFUSED",
+                            message="provider redirect limit exceeded or omitted Location",
+                            component=component,
+                            retryable=False,
+                        )
+                    next_url = urljoin(str(resp.url), location)
+                    current_origin = (resp.url.scheme, resp.url.host, resp.url.port)
+                    parsed_next = httpx.URL(next_url)
+                    next_origin = (parsed_next.scheme, parsed_next.host, parsed_next.port)
+                    if next_origin != current_origin:
+                        raise IicpError(
+                            code="IICP-ENDPOINT-REFUSED",
+                            message="cross-origin provider redirect is not allowed",
+                            component=component,
+                            retryable=False,
+                        )
+                    current = next_url
+                    continue
+                if 300 <= resp.status_code < 400:
+                    raise IicpError(
+                        code="IICP-ENDPOINT-REFUSED",
+                        message="provider redirect method is not allowed",
+                        component=component,
+                        retryable=False,
+                    )
+                break
+            assert resp is not None
+        else:
+            async with httpx.AsyncClient(timeout=timeout, verify=_tls_context(tls_verify)) as client:
+                resp = await client.post(url, json=body, headers=headers)
     except httpx.TimeoutException:
         raise IicpError(
             code="IICP-E003",

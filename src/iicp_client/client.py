@@ -543,6 +543,7 @@ class IicpClient:
                         tls_verify=self._cfg.tls_verify,
                         traceparent=tp,
                         extra_headers=node_headers or None,
+                        pin_provider_endpoint=True,
                     )
                     if require_encrypted_response:
                         envelope = raw.get("iicp_conf_resp")
