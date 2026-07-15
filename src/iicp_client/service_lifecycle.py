@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -65,9 +66,13 @@ class LifecycleRecord:
 class LifecycleStore:
     """Bounded in-memory reference store for the opt-in draft profile."""
 
-    def __init__(self, *, max_events: int = 256, terminal_status_ttl_s: float = 3600) -> None:
+    def __init__(self, *, max_events: int = 256, terminal_status_ttl_s: float = 3600,
+                 clock: Callable[[], float] = time.time,
+                 cancel_hook: Callable[[str], None] | None = None) -> None:
         self.max_events = max(2, max_events)
         self.terminal_status_ttl_s = terminal_status_ttl_s
+        self._clock = clock
+        self._cancel_hook = cancel_hook
         self._records: dict[str, LifecycleRecord] = {}
         self._lock = threading.RLock()
 
@@ -80,7 +85,7 @@ class LifecycleStore:
                 return existing, False
             if any(record.idempotency_key == idempotency_key for record in self._records.values()):
                 raise LifecycleConflict("idempotency identifier reused with a different task identifier")
-            now = time.time()
+            now = self._clock()
             event = LifecycleEvent(task_id, 0, "accepted", False, now)
             record = LifecycleRecord(task_id, idempotency_key, request_digest, "accepted", [event], now)
             self._records[task_id] = record
@@ -100,7 +105,7 @@ class LifecycleStore:
             state = "expired" if state == "timed_out" else state
             if state not in TRANSITIONS.get(record.state, set()):
                 raise LifecycleConflict(f"illegal transition {record.state} -> {state}")
-            now = time.time()
+            now = self._clock()
             event = LifecycleEvent(
                 task_id, record.latest_sequence + 1, state, state in TERMINAL_STATES, now, detail or {}
             )
@@ -114,19 +119,41 @@ class LifecycleStore:
         with self._lock:
             record = self.status(task_id)
             if record.state not in TERMINAL_STATES:
+                if self._cancel_hook is not None:
+                    self._cancel_hook(task_id)
                 self.transition(task_id, "cancelled", {"outcome": "cancelled"})
             return record
 
-    def events_after(self, task_id: str, after_sequence: int) -> list[LifecycleEvent]:
+    def events_after(self, task_id: str, after_sequence: int, *, limit: int | None = None) -> list[LifecycleEvent]:
         with self._lock:
             record = self.status(task_id)
             first = record.events[0].sequence
             if after_sequence + 1 < first:
                 raise ResumeUnavailable(record)
-            return [event for event in record.events if event.sequence > after_sequence]
+            events = [event for event in record.events if event.sequence > after_sequence]
+            return events[: max(1, limit)] if limit is not None else events
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a content-free persistence snapshot for operator storage."""
+        with self._lock:
+            return {"profile": PROFILE, "records": [asdict(record) for record in self._records.values()]}
+
+    def restore(self, snapshot: dict[str, Any]) -> None:
+        """Restore records after a process restart; reject malformed sequences."""
+        if snapshot.get("profile") != PROFILE:
+            raise LifecycleConflict("unsupported lifecycle snapshot profile")
+        restored: dict[str, LifecycleRecord] = {}
+        for raw in snapshot.get("records", []):
+            events = [LifecycleEvent(**event) for event in raw["events"]]
+            if not events or any(event.sequence != events[0].sequence + index for index, event in enumerate(events)):
+                raise LifecycleConflict("invalid lifecycle snapshot sequence")
+            record = LifecycleRecord(raw["task_id"], raw["idempotency_key"], raw["request_digest"], raw["state"], events, raw["updated_at"])
+            restored[record.task_id] = record
+        with self._lock:
+            self._records = restored
 
     def _expired(self, record: LifecycleRecord) -> bool:
-        return record.state in TERMINAL_STATES and time.time() - record.updated_at > self.terminal_status_ttl_s
+        return record.state in TERMINAL_STATES and self._clock() - record.updated_at > self.terminal_status_ttl_s
 
 
 def record_payload(record: LifecycleRecord) -> dict[str, Any]:
