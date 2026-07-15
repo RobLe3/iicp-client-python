@@ -11,6 +11,7 @@ from iicp_client.service_lifecycle import (
     LifecycleConflict,
     LifecycleStore,
     ResumeUnavailable,
+    UnknownTask,
     build_lifecycle_router,
 )
 
@@ -65,3 +66,24 @@ def test_replay_window_reports_resume_unavailable_without_reexecution() -> None:
     store.transition("task-window", "completed")
     with pytest.raises(ResumeUnavailable):
         store.events_after("task-window", 0)
+
+
+def test_restart_snapshot_backpressure_and_backend_cancel_hook() -> None:
+    now = [1000.0]
+    cancelled: list[str] = []
+    store = LifecycleStore(max_events=3, terminal_status_ttl_s=10, clock=lambda: now[0], cancel_hook=cancelled.append)
+    store.submit("restart", "idem-restart", "digest")
+    store.transition("restart", "running")
+    for chunk in range(1, 4):
+        store.transition("restart", "streaming", {"chunk": chunk})
+    restored = LifecycleStore(max_events=3, terminal_status_ttl_s=10, clock=lambda: now[0], cancel_hook=cancelled.append)
+    restored.restore(store.snapshot())
+    with pytest.raises(ResumeUnavailable):
+        restored.events_after("restart", 0)
+    assert len(restored.events_after("restart", 1, limit=1)) == 1
+    assert restored.cancel("restart").state == "cancelled"
+    assert restored.cancel("restart").state == "cancelled"
+    assert cancelled == ["restart"]
+    now[0] += 11
+    with pytest.raises(UnknownTask):
+        restored.status("restart")
