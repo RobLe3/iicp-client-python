@@ -45,6 +45,8 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         if self.path == "/redirect":
             self.send_response(307)
             self.send_header("Location", "/task")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
             self.end_headers()
             return
         length = int(self.headers.get("Content-Length", "0"))
