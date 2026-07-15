@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,8 +13,11 @@ from fastapi.testclient import TestClient
 
 from iicp_client.service_lifecycle import (
     LifecycleConflict,
+    LifecyclePersistence,
+    LifecycleStorageError,
     LifecycleStore,
     ResumeUnavailable,
+    SqliteLifecyclePersistence,
     UnknownTask,
     build_lifecycle_router,
 )
@@ -87,3 +94,85 @@ def test_restart_snapshot_backpressure_and_backend_cancel_hook() -> None:
     now[0] += 11
     with pytest.raises(UnknownTask):
         restored.status("restart")
+
+
+def test_sqlite_persistence_is_opt_in_content_free_and_restart_safe(tmp_path: Path) -> None:
+    fixture = json.loads((Path(__file__).parents[1] / "parity" / "service-lifecycle-persistence-v1.json").read_text())
+    assert fixture["fixture_version"] == "0.1.0-draft"
+    assert {vector["id"] for vector in fixture["vectors"]} == {
+        f"LIFECYCLE-PERSIST-{number:02d}" for number in range(1, 11)
+    }
+    path = tmp_path / "lifecycle.sqlite3"
+    store = SqliteLifecyclePersistence(path, max_events=3)
+    assert isinstance(store, LifecyclePersistence)
+    record, created = store.submit("durable", "idem-durable", "sha256:request")
+    assert created and record.state == "accepted"
+    assert store.submit("durable", "idem-durable", "sha256:request")[1] is False
+    store.transition("durable", "running")
+    store.transition("durable", "streaming", {
+        "event_id": "event-2",
+        "progress": {"completed_units": 1, "total_units": 2, "unit": "chunks"},
+    })
+    restarted = SqliteLifecyclePersistence(path, max_events=3)
+    assert restarted.status("durable").state == "streaming"
+    assert [event.sequence for event in restarted.events_after("durable", 0)] == [1, 2]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    with pytest.raises(LifecycleConflict):
+        restarted.transition("durable", "completed", {"response": "must-not-persist"})
+    database = path.read_bytes().lower()
+    for forbidden in (b"prompt", b"response", b"credential", b"endpoint", b"peer_topology"):
+        assert forbidden not in database
+
+
+def test_sqlite_terminal_ttl_and_bounded_replay(tmp_path: Path) -> None:
+    now = [100.0]
+    store = SqliteLifecyclePersistence(
+        tmp_path / "ttl.sqlite3", max_events=2, terminal_status_ttl_s=10, clock=lambda: now[0]
+    )
+    store.submit("ttl", "idem-ttl", "digest")
+    store.transition("ttl", "running")
+    store.transition("ttl", "streaming")
+    store.transition("ttl", "completed", {"receipt_digest": "sha256:" + "a" * 64})
+    with pytest.raises(ResumeUnavailable):
+        store.events_after("ttl", 0)
+    now[0] += 11
+    with pytest.raises(UnknownTask):
+        store.status("ttl")
+
+
+def test_sqlite_two_process_crash_recovery_and_single_terminal_winner(tmp_path: Path) -> None:
+    path = tmp_path / "shared.sqlite3"
+    store = SqliteLifecyclePersistence(path, max_events=3)
+    store.submit("shared-task", "shared-idem", "sha256:shared")
+    store.transition("shared-task", "running")
+    helper = Path(__file__).with_name("lifecycle_process_helper.py")
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
+
+    crashed = subprocess.run(
+        [sys.executable, str(helper), "crash-mid-transition", str(path)], env=env, check=False
+    )
+    assert crashed.returncode == 77
+    recovered = SqliteLifecyclePersistence(path, max_events=3)
+    assert recovered.status("shared-task").state == "running"
+    assert recovered.status("shared-task").latest_sequence == 1
+
+    first = subprocess.Popen([sys.executable, str(helper), "complete", str(path)], env=env)
+    second = subprocess.Popen([sys.executable, str(helper), "fail", str(path)], env=env)
+    outcomes = sorted((first.wait(), second.wait()))
+    assert outcomes == [0, 2]
+    terminal = SqliteLifecyclePersistence(path, max_events=3).status("shared-task")
+    assert terminal.state in {"completed", "failed"}
+    assert terminal.latest_sequence == 2
+    assert [event.sequence for event in terminal.events] == [0, 1, 2]
+
+
+def test_sqlite_rejects_corrupt_schema_and_unusable_path(tmp_path: Path) -> None:
+    corrupt = tmp_path / "corrupt.sqlite3"
+    corrupt.write_bytes(b"not a sqlite database")
+    with pytest.raises(LifecycleStorageError):
+        SqliteLifecyclePersistence(corrupt)
+
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("blocked")
+    with pytest.raises(LifecycleStorageError):
+        SqliteLifecyclePersistence(blocker / "lifecycle.sqlite3")

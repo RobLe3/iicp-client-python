@@ -595,9 +595,12 @@ Conformance tier: `iicp:sdk:v1` (spec S.14) · [Request a badge](https://iicp.ne
 
 `iicp_client.dispatch_ticket_trust` verifies pre-normative v2 tickets against a
 caller-supplied trust bundle. `iicp_client.service_lifecycle` provides a bounded
-reference lifecycle store and an explicitly mounted FastAPI router. Neither API
-is used by normal discovery, submission or node serving. They are unstable
-research surfaces and must not be treated as deployed protocol guarantees.
+reference lifecycle store, a `LifecyclePersistence` storage port, an opt-in
+single-host SQLite adapter, and an explicitly mounted FastAPI router. The
+durable adapter retains content-free lifecycle metadata only; it is not a
+distributed store. None of these APIs is used by normal discovery, submission
+or node serving. They are unstable research surfaces and must not be treated as
+deployed protocol guarantees.
 
 ---
 
