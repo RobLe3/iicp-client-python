@@ -46,6 +46,10 @@ class ClientConfig:
     routing_softmax_tau: float = 0.04
     # Phase 2 (#496): caller's JWT from directory registration; used to acquire consumer tokens.
     node_token: str | None = None
+    # Controls directory-issued consumer identity. ``optional`` preserves the
+    # open-mesh compatibility behaviour; ``required`` refuses silent auth
+    # downgrade and ``disabled`` never requests a token.
+    consumer_auth_mode: str = "optional"
     # Phase 6 (#585): default client-side policy applied before remote dispatch.
     routing_policy: RoutingPolicy = field(default_factory=RoutingPolicy)
     # auto prefers short-lived ticketed routes and falls back only when an older
@@ -59,6 +63,21 @@ class TaskConstraints:
     timeout_ms: int = 30_000
     qos: str = "interactive"
     region: str | None = None
+    model: str | None = None
+    min_reputation: float | None = None
+
+
+@dataclass
+class RouteConstraints:
+    """Prompt-free criteria used only for provider discovery and selection."""
+
+    region: str | None = None
+    qos: str | None = None
+    model: str | None = None
+    min_reputation: float | None = None
+    browser_usable_only: bool = False
+    profile_request: ProfileRequest | None = None
+    limit: int = 10
 
 
 @dataclass
@@ -71,6 +90,7 @@ class TaskRequest:
     intent: str
     payload: dict[str, Any]
     constraints: TaskConstraints = field(default_factory=TaskConstraints)
+    route_constraints: RouteConstraints | None = None
     auth: TaskAuth = field(default_factory=TaskAuth)
     # #488 — requester node identity for self-query neutrality at the directory.
     source_node_id: str | None = None
@@ -110,6 +130,10 @@ class ChatOptions:
     temperature: float | None = None
     timeout_ms: int | None = None
     qos: str = "interactive"
+    region: str | None = None
+    min_reputation: float | None = None
+    browser_usable_only: bool = False
+    profile_request: ProfileRequest | None = None
     node_token: str | None = None
     routing_policy: RoutingPolicy | None = None
 
