@@ -12,13 +12,14 @@ def weighted_v1_order(
     max_retries: int,
     random_value: float,
     *,
+    top_k: int = 3,
     score=lambda n: n.score,
     load=lambda n: getattr(n, "load", 0.0),
     node_id=lambda n: n.node_id,
 ) -> list[T]:
     if len(nodes) <= 1:
         return nodes[:max_retries]
-    pool = nodes[: max(1, min(len(nodes), 3))]
+    pool = nodes[: max(1, min(len(nodes), top_k))]
     weights = [max(float(score(node)), 0.01) / (1.0 + max(0.0, min(float(load(node)), 1.0))) for node in pool]
     remaining = max(0.0, min(float(random_value), 0.999999999)) * sum(weights)
     chosen = pool[-1]

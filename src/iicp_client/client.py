@@ -180,7 +180,12 @@ class IicpClient:
         if strategy == "deterministic" or len(all_nodes) <= 1:
             return all_nodes[:top_n]
         if strategy == "weighted_v1":
-            return weighted_v1_order(all_nodes, top_n, random.random())
+            return weighted_v1_order(
+                all_nodes,
+                top_n,
+                random.random(),
+                top_k=self._cfg.routing_top_k,
+            )
         if strategy == "softmax_top_k":
             pool = all_nodes[: max(1, min(len(all_nodes), self._cfg.routing_top_k))]
             tau = max(0.001, self._cfg.routing_softmax_tau)
