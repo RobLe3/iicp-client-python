@@ -61,13 +61,15 @@ def _evaluate(case):
         passed = abs(actual - expected) <= max(Decimal(case.get("absolute_tolerance", "0")), abs(expected) * Decimal(case.get("relative_tolerance", "0")))
         return {"passed": passed, "score": float(passed)}
     if kind == "json_schema_subset":
-        passed = _schema(candidate, case["schema"]); return {"passed": passed, "score": float(passed)}
+        passed = _schema(candidate, case["schema"])
+        return {"passed": passed, "score": float(passed)}
     if kind == "constraints":
         checks = []
         for c in case["constraints"]:
             actual = candidate.get(c["path"])
             checks.append(actual == c["value"] if c["op"] == "equals" else actual in c["value"] if c["op"] == "in" else len(actual) >= c["value"] if c["op"] == "min_items" else len(actual) <= c["value"])
-        passed = bool(checks) and all(checks); return {"passed": passed, "score": float(passed)}
+        passed = bool(checks) and all(checks)
+        return {"passed": passed, "score": float(passed)}
     if kind == "unit_test_summary":
         total = candidate["passed"] + candidate["failed"]
         return {"passed": total > 0 and candidate["failed"] == 0 and bool(candidate["suite_digest"]), "score": round(candidate["passed"] / total if total else 0, 6)}

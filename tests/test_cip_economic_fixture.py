@@ -23,8 +23,10 @@ def attribution(v):
 
 
 def receipt_time(v):
+    def parse(value):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
     try:
-        parse = lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))
         completed, observed, expires = parse(v["completed_at"]), parse(v["observed_at"]), parse(v["expires_at"])
     except (KeyError, TypeError, ValueError):
         return {"action": "reject", "error": "IICP-E027"}
@@ -36,7 +38,9 @@ def test_cip_economic_fixture():
     for case in data["attribution_cases"]:
         assert attribution(case["input"]) == case["expected"], case["name"]
     for case in data["heartbeat_cases"]:
-        v = case["input"]; counted = min(max(0, int(v["tasks_success"])), 300); failed = max(0, int(v["tasks_failed"]))
+        v = case["input"]
+        counted = min(max(0, int(v["tasks_success"])), 300)
+        failed = max(0, int(v["tasks_failed"]))
         assert {"counted_success": counted, "completed_increment": counted, "lifetime_jobs_increment": counted + failed} == case["expected"], case["name"]
     for case in data["receipt_time_cases"]:
         assert receipt_time(case["input"]) == case["expected"], case["name"]
