@@ -13,6 +13,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -45,6 +46,89 @@ class ResumeUnavailable(RuntimeError):
 
 class LifecycleStorageError(RuntimeError):
     pass
+
+
+class ObserverLagged(RuntimeError):
+    def __init__(self, earliest_available: int, latest_sequence: int) -> None:
+        self.earliest_available = earliest_available
+        self.latest_sequence = latest_sequence
+
+
+class BackendCancellationRegistry:
+    """Opt-in bridge from lifecycle cancellation to active backend handles."""
+
+    def __init__(self) -> None:
+        self._handlers: dict[str, Callable[[], bool | None]] = {}
+        self._signalled: set[str] = set()
+        self._lock = threading.RLock()
+
+    def register(self, task_id: str, handler: Callable[[], bool | None]) -> None:
+        with self._lock:
+            self._handlers[task_id] = handler
+            self._signalled.discard(task_id)
+
+    def complete(self, task_id: str) -> None:
+        with self._lock:
+            self._handlers.pop(task_id, None)
+            self._signalled.discard(task_id)
+
+    def request(self, task_id: str, state: str) -> str:
+        with self._lock:
+            if state in TERMINAL_STATES:
+                self.complete(task_id)
+                return "already_terminal"
+            handler = self._handlers.get(task_id)
+            if handler is None:
+                return "cancel_unsupported"
+            if task_id in self._signalled:
+                return "cancel_signalled"
+            if handler() is False:
+                return "cancel_unsupported"
+            self._signalled.add(task_id)
+            return "cancel_signalled"
+
+
+class BoundedObserverBuffer:
+    """Content-free ordered event buffer with explicit slow-consumer failure."""
+
+    def __init__(self, capacity: int, *, max_observers: int = 32) -> None:
+        self.capacity = max(1, capacity)
+        self.max_observers = max(1, max_observers)
+        self._events: deque[LifecycleEvent] = deque(maxlen=self.capacity)
+        self._observers: set[str] = set()
+        self._closed = False
+        self._lock = threading.RLock()
+
+    def subscribe(self, observer_id: str) -> None:
+        with self._lock:
+            if observer_id not in self._observers and len(self._observers) >= self.max_observers:
+                raise LifecycleConflict("observer capacity exhausted")
+            self._observers.add(observer_id)
+
+    def disconnect(self, observer_id: str) -> None:
+        with self._lock:
+            self._observers.discard(observer_id)
+
+    def publish(self, event: LifecycleEvent) -> None:
+        with self._lock:
+            if self._events and event.sequence <= self._events[-1].sequence:
+                raise LifecycleConflict("observer sequence must increase")
+            self._events.append(event)
+            self._closed = event.is_final
+
+    def poll(self, after_sequence: int) -> list[LifecycleEvent]:
+        with self._lock:
+            if self._events and after_sequence + 1 < self._events[0].sequence:
+                raise ObserverLagged(self._events[0].sequence, self._events[-1].sequence)
+            return [event for event in self._events if event.sequence > after_sequence]
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def observer_count(self) -> int:
+        return len(self._observers)
 
 
 @dataclass(frozen=True)
@@ -90,9 +174,14 @@ class LifecyclePersistence(Protocol):
 class LifecycleStore:
     """Bounded in-memory reference store for the opt-in draft profile."""
 
-    def __init__(self, *, max_events: int = 256, terminal_status_ttl_s: float = 3600,
-                 clock: Callable[[], float] = time.time,
-                 cancel_hook: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_events: int = 256,
+        terminal_status_ttl_s: float = 3600,
+        clock: Callable[[], float] = time.time,
+        cancel_hook: Callable[[str], None] | None = None,
+    ) -> None:
         self.max_events = max(2, max_events)
         self.terminal_status_ttl_s = terminal_status_ttl_s
         self._clock = clock
@@ -171,7 +260,9 @@ class LifecycleStore:
             events = [LifecycleEvent(**event) for event in raw["events"]]
             if not events or any(event.sequence != events[0].sequence + index for index, event in enumerate(events)):
                 raise LifecycleConflict("invalid lifecycle snapshot sequence")
-            record = LifecycleRecord(raw["task_id"], raw["idempotency_key"], raw["request_digest"], raw["state"], events, raw["updated_at"])
+            record = LifecycleRecord(
+                raw["task_id"], raw["idempotency_key"], raw["request_digest"], raw["state"], events, raw["updated_at"]
+            )
             restored[record.task_id] = record
         with self._lock:
             self._records = restored
@@ -182,7 +273,9 @@ class LifecycleStore:
 
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _DIGEST = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
-_ALLOWED_DETAIL_FIELDS = frozenset({"event_id", "progress", "reason_code", "outcome", "receipt_digest", "checkpoint_digest"})
+_ALLOWED_DETAIL_FIELDS = frozenset(
+    {"event_id", "progress", "reason_code", "outcome", "receipt_digest", "checkpoint_digest"}
+)
 
 
 def _content_free_detail(detail: dict[str, Any] | None) -> dict[str, Any]:
@@ -225,9 +318,15 @@ class SqliteLifecyclePersistence:
 
     SCHEMA_VERSION = 1
 
-    def __init__(self, path: str | Path, *, max_events: int = 256, terminal_status_ttl_s: float = 3600,
-                 clock: Callable[[], float] = time.time,
-                 cancel_hook: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_events: int = 256,
+        terminal_status_ttl_s: float = 3600,
+        clock: Callable[[], float] = time.time,
+        cancel_hook: Callable[[str], None] | None = None,
+    ) -> None:
         self.path = Path(path)
         self.max_events = max(2, max_events)
         self.terminal_status_ttl_s = terminal_status_ttl_s
@@ -288,15 +387,23 @@ class SqliteLifecyclePersistence:
     def _record(db: sqlite3.Connection, row: sqlite3.Row) -> LifecycleRecord:
         events = [
             LifecycleEvent(
-                event["task_id"], int(event["sequence"]), event["state"], bool(event["is_final"]),
-                float(event["observed_at"]), json.loads(bytes(event["detail_json"])),
+                event["task_id"],
+                int(event["sequence"]),
+                event["state"],
+                bool(event["is_final"]),
+                float(event["observed_at"]),
+                json.loads(bytes(event["detail_json"])),
             )
             for event in db.execute(
                 "SELECT * FROM lifecycle_events WHERE task_id=? ORDER BY sequence", (row["task_id"],)
             )
         ]
         return LifecycleRecord(
-            row["task_id"], row["idempotency_key"], row["request_digest"], row["state"], events,
+            row["task_id"],
+            row["idempotency_key"],
+            row["request_digest"],
+            row["state"],
+            events,
             float(row["updated_at"]),
         )
 
@@ -309,19 +416,37 @@ class SqliteLifecyclePersistence:
             ).fetchone()
             if existing is not None:
                 if (existing["task_id"], existing["idempotency_key"], existing["request_digest"]) != (
-                    task_id, idempotency_key, request_digest
+                    task_id,
+                    idempotency_key,
+                    request_digest,
                 ):
                     raise LifecycleConflict("task or idempotency identifier reused for different content")
                 record = self._record(db, existing)
                 db.commit()
                 return record, False
             now = self._clock()
-            db.execute("INSERT INTO lifecycle_tasks VALUES(?,?,?,?,?,?)", (
-                task_id, idempotency_key, request_digest, "accepted", 0, now,
-            ))
-            db.execute("INSERT INTO lifecycle_events VALUES(?,?,?,?,?,?)", (
-                task_id, 0, "accepted", 0, now, b"{}",
-            ))
+            db.execute(
+                "INSERT INTO lifecycle_tasks VALUES(?,?,?,?,?,?)",
+                (
+                    task_id,
+                    idempotency_key,
+                    request_digest,
+                    "accepted",
+                    0,
+                    now,
+                ),
+            )
+            db.execute(
+                "INSERT INTO lifecycle_events VALUES(?,?,?,?,?,?)",
+                (
+                    task_id,
+                    0,
+                    "accepted",
+                    0,
+                    now,
+                    b"{}",
+                ),
+            )
             row = db.execute("SELECT * FROM lifecycle_tasks WHERE task_id=?", (task_id,)).fetchone()
             record = self._record(db, row)
             db.commit()
@@ -341,7 +466,10 @@ class SqliteLifecyclePersistence:
             row = db.execute("SELECT * FROM lifecycle_tasks WHERE task_id=?", (task_id,)).fetchone()
             if row is None:
                 raise UnknownTask(task_id)
-            if row["state"] in TERMINAL_STATES and self._clock() - float(row["updated_at"]) > self.terminal_status_ttl_s:
+            if (
+                row["state"] in TERMINAL_STATES
+                and self._clock() - float(row["updated_at"]) > self.terminal_status_ttl_s
+            ):
                 db.execute("DELETE FROM lifecycle_tasks WHERE task_id=?", (task_id,))
                 db.commit()
                 raise UnknownTask(task_id)
@@ -375,10 +503,17 @@ class SqliteLifecyclePersistence:
                 (state, sequence, now, task_id),
             )
             event = LifecycleEvent(task_id, sequence, state, state in TERMINAL_STATES, now, safe_detail)
-            db.execute("INSERT INTO lifecycle_events VALUES(?,?,?,?,?,?)", (
-                task_id, sequence, state, int(event.is_final), now,
-                json.dumps(safe_detail, sort_keys=True, separators=(",", ":")).encode(),
-            ))
+            db.execute(
+                "INSERT INTO lifecycle_events VALUES(?,?,?,?,?,?)",
+                (
+                    task_id,
+                    sequence,
+                    state,
+                    int(event.is_final),
+                    now,
+                    json.dumps(safe_detail, sort_keys=True, separators=(",", ":")).encode(),
+                ),
+            )
             cutoff = sequence - self.max_events + 1
             db.execute("DELETE FROM lifecycle_events WHERE task_id=? AND sequence<?", (task_id, cutoff))
             db.commit()
@@ -442,6 +577,7 @@ def build_lifecycle_router(store: LifecyclePersistence, *, bearer_token: str):
     Production integrations should use ``build_lifecycle_router_with_authorizer``
     and bind verified principals to task identifiers outside the lifecycle store.
     """
+
     def shared_token_authorizer(request: LifecycleAuthorizationRequest) -> LifecycleAuthorizationDecision:
         valid = request.credential == f"Bearer {bearer_token}"
         return LifecycleAuthorizationDecision(authenticated=valid, allowed=valid)
