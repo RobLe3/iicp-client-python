@@ -49,6 +49,7 @@ from iicp_client.policy import (
     intent_risk_reason,
     prohibited_intent_reason,
 )
+from iicp_client.policy_data_handling import PolicyDataDecision, evaluate_policy_data_handling
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
 from iicp_client.profile_compatibility import ProfileCompatibilityDecision, evaluate_pre_normative_profile
 from iicp_client.qualify import (
@@ -133,6 +134,8 @@ __all__ = [
     "prohibited_intent_reason",
     "resolved_policy",
     "ProfileCompatibilityDecision",
+    "PolicyDataDecision",
+    "evaluate_policy_data_handling",
     "evaluate_pre_normative_profile",
     "weighted_v1_order",
     "ClientConfig",
