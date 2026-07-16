@@ -29,6 +29,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from iicp_client import IicpNode, NodeConfig
+from iicp_client._confidentiality import (
+    decrypt_payload_with_context,
+    decrypt_response,
+    encrypt_payload_with_context,
+    encrypt_response,
+    load_or_create_node_cx_key,
+)
 from iicp_client.relay_session import (
     HttpPollWorkerSession,
     RelaySessionRegistry,
@@ -313,6 +320,77 @@ class TestRelayHttpPollEndpoints:
         assert resp["result"]["text"] == "MESH OK from browser"
         assert worker_seen["task"]["task_id"] == "t-1"
         assert headers.get("Access-Control-Allow-Origin") == "*"
+
+    def test_strict_bind_encrypted_request_and_response_are_opaque_to_relay(
+        self, relay, monkeypatch, tmp_path
+    ):
+        """A strict-bound worker receives only CX ciphertext and returns an
+        encrypted response which the consumer can open end to end."""
+        worker_id = "w-cx-roundtrip"
+        task_id = "t-cx-relay-1"
+        secret_text = "relay must never observe this plaintext"
+        good_ticket, pub_hex = _signed_ticket(worker_id, "relay-node")
+        monkeypatch.setenv("IICP_RELAY_BIND_TICKET_PUBLIC_KEY", pub_hex)
+        monkeypatch.setenv("IICP_RELAY_REQUIRE_BIND_TICKET", "1")
+        monkeypatch.setenv("IICP_CX_KEY_DIR", str(tmp_path / "cx"))
+
+        cx_public, cx_private = load_or_create_node_cx_key(worker_id, "relay://test")
+        cx_public["features"] = ["response_encryption_v1"]
+        request_envelope, consumer_secret = encrypt_payload_with_context(
+            {"secret": secret_text}, cx_public, task_id, "urn:iicp:intent:llm:chat:v1"
+        )
+        status, body, _ = self._bind(
+            relay, worker_id=worker_id, extra={"bind_ticket": good_ticket}
+        )
+        assert status == 200
+        token = body["session_token"]
+
+        worker_done = threading.Event()
+        relay_visible: dict[str, Any] = {}
+
+        def worker_loop() -> None:
+            pull_status, call, _ = relay.request(
+                "GET", "/v1/relay/pull", headers={"Authorization": f"Bearer {token}"}, timeout=35
+            )
+            assert pull_status == 200
+            relay_visible.update(call)
+            task = call["task"]
+            assert "payload" not in task
+            opened, worker_secret = decrypt_payload_with_context(task["iicp_conf"], cx_private)
+            assert opened == {"secret": secret_text}
+            plain_response = {
+                "task_id": task_id,
+                "status": "success",
+                "result": {"text": "encrypted relay response"},
+            }
+            response_envelope = encrypt_response(plain_response, worker_secret, task_id)
+            relay.request(
+                "POST",
+                "/v1/relay/result",
+                {"call_id": call["call_id"], "result": {"iicp_conf_resp": response_envelope}},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            worker_done.set()
+
+        threading.Thread(target=worker_loop, daemon=True).start()
+        status, response, _ = relay.request(
+            "POST",
+            f"/v1/relay-for/{worker_id}/v1/task",
+            {
+                "task_id": task_id,
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "iicp_conf": request_envelope,
+                "cx_response_encryption": "required",
+            },
+            timeout=40,
+        )
+        assert worker_done.wait(timeout=10)
+        assert status == 200
+        assert "result" not in response
+        opened_response = decrypt_response(response["iicp_conf_resp"], consumer_secret, task_id)
+        assert opened_response["result"]["text"] == "encrypted relay response"
+        assert secret_text not in json.dumps(relay_visible, sort_keys=True)
+        assert "encrypted relay response" not in json.dumps(response, sort_keys=True)
 
     def test_relay_for_unknown_worker_404(self, relay):
         status, body, _ = relay.request(
