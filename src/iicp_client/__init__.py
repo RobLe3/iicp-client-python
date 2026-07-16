@@ -66,6 +66,10 @@ from iicp_client.routing_policy import (
 )
 from iicp_client.scheduler import is_queue_eligible, qos_priority
 from iicp_client.selection import weighted_v1_order
+from iicp_client.service_lifecycle_accounting import (
+    LifecycleAccountingDecision,
+    decide_lifecycle_accounting,
+)
 from iicp_client.token_validator import TokenValidator
 from iicp_client.trust_auditor import AuditReport, models_diverge, run_audit_pass
 from iicp_client.types import (
@@ -139,6 +143,8 @@ __all__ = [
     "evaluate_policy_data_handling",
     "evaluate_policy_operational_evidence",
     "PolicyEvidenceDecision",
+    "LifecycleAccountingDecision",
+    "decide_lifecycle_accounting",
     "evaluate_pre_normative_profile",
     "weighted_v1_order",
     "ClientConfig",
