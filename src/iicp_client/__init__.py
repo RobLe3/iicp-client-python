@@ -50,6 +50,11 @@ from iicp_client.policy import (
     prohibited_intent_reason,
 )
 from iicp_client.policy_data_handling import PolicyDataDecision, evaluate_policy_data_handling
+from iicp_client.policy_detail_disclosure import (
+    PolicyDetailDisclosureDecision,
+    evaluate_policy_detail_disclosure,
+    verify_policy_detail_consumer_token,
+)
 from iicp_client.policy_operational_evidence import PolicyEvidenceDecision, evaluate_policy_operational_evidence
 from iicp_client.pricing import PricingConfig, build_pricing_block, sign_body, verify_signature
 from iicp_client.profile_compatibility import ProfileCompatibilityDecision, evaluate_pre_normative_profile
@@ -142,6 +147,9 @@ __all__ = [
     "PolicyDataDecision",
     "evaluate_policy_data_handling",
     "evaluate_policy_operational_evidence",
+    "PolicyDetailDisclosureDecision",
+    "evaluate_policy_detail_disclosure",
+    "verify_policy_detail_consumer_token",
     "PolicyEvidenceDecision",
     "LifecycleAccountingDecision",
     "decide_lifecycle_accounting",
