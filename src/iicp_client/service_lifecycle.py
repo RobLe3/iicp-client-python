@@ -419,20 +419,56 @@ def record_payload(record: LifecycleRecord) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class LifecycleAuthorizationRequest:
+    credential: str | None
+    operation: str
+    task_id: str
+
+
+@dataclass(frozen=True)
+class LifecycleAuthorizationDecision:
+    authenticated: bool
+    allowed: bool
+    conceal_task: bool = False
+
+
+LifecycleAuthorizer = Callable[[LifecycleAuthorizationRequest], LifecycleAuthorizationDecision]
+
+
 def build_lifecycle_router(store: LifecyclePersistence, *, bearer_token: str):
-    """Build the explicitly mounted FastAPI router for the draft HTTP binding."""
+    """Compatibility/test router using one shared bearer token.
+
+    Production integrations should use ``build_lifecycle_router_with_authorizer``
+    and bind verified principals to task identifiers outside the lifecycle store.
+    """
+    def shared_token_authorizer(request: LifecycleAuthorizationRequest) -> LifecycleAuthorizationDecision:
+        valid = request.credential == f"Bearer {bearer_token}"
+        return LifecycleAuthorizationDecision(authenticated=valid, allowed=valid)
+
+    return build_lifecycle_router_with_authorizer(store, authorizer=shared_token_authorizer)
+
+
+def build_lifecycle_router_with_authorizer(store: LifecyclePersistence, *, authorizer: LifecycleAuthorizer):
+    """Build the explicitly mounted draft router with operation-level authorization."""
     from fastapi import APIRouter, Header, HTTPException
     from fastapi.responses import JSONResponse, StreamingResponse
 
     router = APIRouter()
 
-    def authorize(authorization: str | None) -> None:
-        if authorization != f"Bearer {bearer_token}":
+    def authorize(authorization: str | None, operation: str, task_id: str) -> None:
+        decision = authorizer(LifecycleAuthorizationRequest(authorization, operation, task_id))
+        if decision.allowed and decision.authenticated:
+            return
+        if not decision.authenticated:
             raise HTTPException(401, "lifecycle authorization required")
+        if decision.conceal_task:
+            raise HTTPException(404, "unknown_task")
+        raise HTTPException(403, "lifecycle operation forbidden")
 
     @router.post("/v1/tasks")
     def submit(body: dict[str, Any], authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "submit", str(body.get("task_id", "")))
         try:
             record, created = store.submit(body["task_id"], body["idempotency_key"], body["request_digest"])
         except (KeyError, LifecycleConflict) as exc:
@@ -441,7 +477,7 @@ def build_lifecycle_router(store: LifecyclePersistence, *, bearer_token: str):
 
     @router.get("/v1/tasks/{task_id}")
     def status(task_id: str, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "status", task_id)
         try:
             return record_payload(store.status(task_id))
         except UnknownTask as exc:
@@ -449,7 +485,7 @@ def build_lifecycle_router(store: LifecyclePersistence, *, bearer_token: str):
 
     @router.get("/v1/tasks/{task_id}/events")
     def observe(task_id: str, after_sequence: int = -1, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "observe", task_id)
         try:
             events = store.events_after(task_id, after_sequence)
         except ResumeUnavailable as exc:
@@ -461,7 +497,7 @@ def build_lifecycle_router(store: LifecyclePersistence, *, bearer_token: str):
 
     @router.post("/v1/tasks/{task_id}/cancel")
     def cancel(task_id: str, authorization: str | None = Header(default=None)):
-        authorize(authorization)
+        authorize(authorization, "cancel", task_id)
         try:
             return record_payload(store.cancel(task_id))
         except UnknownTask as exc:
