@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from iicp_client.service_lifecycle import (
+    LifecycleAuthorizationDecision,
     LifecycleConflict,
     LifecyclePersistence,
     LifecycleStorageError,
@@ -20,6 +21,7 @@ from iicp_client.service_lifecycle import (
     SqliteLifecyclePersistence,
     UnknownTask,
     build_lifecycle_router,
+    build_lifecycle_router_with_authorizer,
 )
 
 
@@ -64,6 +66,54 @@ def test_opt_in_http_adapter_resume_idempotency_cancel_and_authorization() -> No
     assert [json.loads(line)["state"] for line in resumed.text.splitlines()] == ["completed"]
     assert client.post("/v1/tasks/task-1/cancel", headers=auth).json()["state"] == "completed"
 
+
+
+def test_task_scoped_authorizer_conceals_cross_principal_access() -> None:
+    fixture = json.loads((Path(__file__).parents[1] / "parity/service-lifecycle-authorization-v1.json").read_text())
+    assert len(fixture["cases"]) == 10
+    owners: dict[str, str] = {}
+
+    def authorizer(request):
+        token = request.credential
+        if token in {None, "Bearer invalid", "Bearer expired"}:
+            return LifecycleAuthorizationDecision(False, False)
+        principal = {"Bearer owner": "owner", "Bearer other": "other", "Bearer read-only": "reader", "Bearer operator": "operator"}.get(token)
+        if principal is None:
+            return LifecycleAuthorizationDecision(False, False)
+        if principal == "reader" and request.operation == "submit":
+            return LifecycleAuthorizationDecision(True, False)
+        if principal == "operator":
+            return LifecycleAuthorizationDecision(True, True)
+        if request.operation == "submit":
+            if principal == "owner":
+                owners.setdefault(request.task_id, principal)
+                return LifecycleAuthorizationDecision(True, True)
+            return LifecycleAuthorizationDecision(True, False)
+        allowed = owners.get(request.task_id) == principal
+        return LifecycleAuthorizationDecision(True, allowed, conceal_task=not allowed)
+
+    store = LifecycleStore()
+    app = FastAPI()
+    app.include_router(build_lifecycle_router_with_authorizer(store, authorizer=authorizer))
+    client = TestClient(app)
+    body = {"task_id": "task-a", "idempotency_key": "key-a", "request_digest": "sha256:a"}
+    expected_status = fixture["decision_contract"]
+    for case in fixture["cases"]:
+        headers = {"Authorization": case["credential"]} if case["credential"] else {}
+        if case["operation"] == "submit":
+            response = client.post("/v1/tasks", json=body if case["task_id"] == "task-a" else {**body, "task_id": case["task_id"], "idempotency_key": "key-b"}, headers=headers)
+        elif case["operation"] == "status":
+            response = client.get(f"/v1/tasks/{case['task_id']}", headers=headers)
+        elif case["operation"] == "observe":
+            response = client.get(f"/v1/tasks/{case['task_id']}/events", headers=headers)
+        else:
+            response = client.post(f"/v1/tasks/{case['task_id']}/cancel", headers=headers)
+        expected = expected_status[case["expected"]]
+        if case["id"] == "LIFECYCLE-AUTH-03":
+            expected = 202
+        assert response.status_code == expected, case["id"]
+        assert "principal_id" not in response.text
+        assert case["credential"] not in response.text if case["credential"] else True
 
 def test_replay_window_reports_resume_unavailable_without_reexecution() -> None:
     store = LifecycleStore(max_events=2)
