@@ -12,17 +12,74 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from iicp_client.service_lifecycle import (
+    BackendCancellationRegistry,
+    BoundedObserverBuffer,
     LifecycleAuthorizationDecision,
     LifecycleConflict,
+    LifecycleEvent,
     LifecyclePersistence,
     LifecycleStorageError,
     LifecycleStore,
+    ObserverLagged,
     ResumeUnavailable,
     SqliteLifecyclePersistence,
     UnknownTask,
     build_lifecycle_router,
     build_lifecycle_router_with_authorizer,
 )
+
+
+def _runtime_control_fixture() -> dict:
+    return json.loads((Path(__file__).parents[1] / "parity/service-lifecycle-runtime-control-v1.json").read_text())
+
+
+def test_runtime_control_fixture_cancellation_and_bounded_observation() -> None:
+    fixture = _runtime_control_fixture()
+    for vector in fixture["cancellation"]:
+        registry = BackendCancellationRegistry()
+        calls: list[str] = []
+        if vector["handler"] == "registered":
+            registry.register("task", lambda calls=calls: calls.append("cancel") or True)
+        assert registry.request("task", vector["state"]) == vector["expected"]
+        assert len(calls) <= 1
+
+    observation = fixture["observation"]
+    buffer = BoundedObserverBuffer(observation["capacity"], max_observers=1)
+    buffer.subscribe("observer")
+    for sequence in observation["published_sequences"]:
+        buffer.publish(LifecycleEvent("task", sequence, "streaming", False, 1.0))
+    for vector in observation["vectors"]:
+        if "expected_error" in vector:
+            with pytest.raises(ObserverLagged) as caught:
+                buffer.poll(vector["after_sequence"])
+            assert caught.value.earliest_available == vector["earliest_available"]
+            assert caught.value.latest_sequence == vector["latest_sequence"]
+        else:
+            assert [event.sequence for event in buffer.poll(vector["after_sequence"])] == vector["expected_sequences"]
+    buffer.disconnect("observer")
+    assert buffer.observer_count == 0
+    buffer.publish(LifecycleEvent("task", 4, "completed", True, 2.0))
+    assert buffer.closed
+
+
+@pytest.mark.asyncio
+async def test_cancellation_registry_aborts_active_http_request() -> None:
+    import asyncio
+
+    import httpx
+
+    async def slow_response(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(60)
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(slow_response)) as client:
+        request_task = asyncio.create_task(client.get("https://backend.invalid/slow"))
+        await asyncio.sleep(0)
+        registry = BackendCancellationRegistry()
+        registry.register("active", lambda: request_task.cancel() or True)
+        assert registry.request("active", "running") == "cancel_signalled"
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
 
 
 def test_lifecycle_fixture_transitions_and_alias() -> None:
@@ -67,7 +124,6 @@ def test_opt_in_http_adapter_resume_idempotency_cancel_and_authorization() -> No
     assert client.post("/v1/tasks/task-1/cancel", headers=auth).json()["state"] == "completed"
 
 
-
 def test_task_scoped_authorizer_conceals_cross_principal_access() -> None:
     fixture = json.loads((Path(__file__).parents[1] / "parity/service-lifecycle-authorization-v1.json").read_text())
     assert len(fixture["cases"]) == 10
@@ -77,7 +133,12 @@ def test_task_scoped_authorizer_conceals_cross_principal_access() -> None:
         token = request.credential
         if token in {None, "Bearer invalid", "Bearer expired"}:
             return LifecycleAuthorizationDecision(False, False)
-        principal = {"Bearer owner": "owner", "Bearer other": "other", "Bearer read-only": "reader", "Bearer operator": "operator"}.get(token)
+        principal = {
+            "Bearer owner": "owner",
+            "Bearer other": "other",
+            "Bearer read-only": "reader",
+            "Bearer operator": "operator",
+        }.get(token)
         if principal is None:
             return LifecycleAuthorizationDecision(False, False)
         if principal == "reader" and request.operation == "submit":
@@ -101,7 +162,13 @@ def test_task_scoped_authorizer_conceals_cross_principal_access() -> None:
     for case in fixture["cases"]:
         headers = {"Authorization": case["credential"]} if case["credential"] else {}
         if case["operation"] == "submit":
-            response = client.post("/v1/tasks", json=body if case["task_id"] == "task-a" else {**body, "task_id": case["task_id"], "idempotency_key": "key-b"}, headers=headers)
+            response = client.post(
+                "/v1/tasks",
+                json=body
+                if case["task_id"] == "task-a"
+                else {**body, "task_id": case["task_id"], "idempotency_key": "key-b"},
+                headers=headers,
+            )
         elif case["operation"] == "status":
             response = client.get(f"/v1/tasks/{case['task_id']}", headers=headers)
         elif case["operation"] == "observe":
@@ -114,6 +181,7 @@ def test_task_scoped_authorizer_conceals_cross_principal_access() -> None:
         assert response.status_code == expected, case["id"]
         assert "principal_id" not in response.text
         assert case["credential"] not in response.text if case["credential"] else True
+
 
 def test_replay_window_reports_resume_unavailable_without_reexecution() -> None:
     store = LifecycleStore(max_events=2)
@@ -133,7 +201,9 @@ def test_restart_snapshot_backpressure_and_backend_cancel_hook() -> None:
     store.transition("restart", "running")
     for chunk in range(1, 4):
         store.transition("restart", "streaming", {"chunk": chunk})
-    restored = LifecycleStore(max_events=3, terminal_status_ttl_s=10, clock=lambda: now[0], cancel_hook=cancelled.append)
+    restored = LifecycleStore(
+        max_events=3, terminal_status_ttl_s=10, clock=lambda: now[0], cancel_hook=cancelled.append
+    )
     restored.restore(store.snapshot())
     with pytest.raises(ResumeUnavailable):
         restored.events_after("restart", 0)
@@ -159,10 +229,14 @@ def test_sqlite_persistence_is_opt_in_content_free_and_restart_safe(tmp_path: Pa
     assert created and record.state == "accepted"
     assert store.submit("durable", "idem-durable", "sha256:request")[1] is False
     store.transition("durable", "running")
-    store.transition("durable", "streaming", {
-        "event_id": "event-2",
-        "progress": {"completed_units": 1, "total_units": 2, "unit": "chunks"},
-    })
+    store.transition(
+        "durable",
+        "streaming",
+        {
+            "event_id": "event-2",
+            "progress": {"completed_units": 1, "total_units": 2, "unit": "chunks"},
+        },
+    )
     restarted = SqliteLifecyclePersistence(path, max_events=3)
     assert restarted.status("durable").state == "streaming"
     assert [event.sequence for event in restarted.events_after("durable", 0)] == [1, 2]
@@ -198,9 +272,7 @@ def test_sqlite_two_process_crash_recovery_and_single_terminal_winner(tmp_path: 
     helper = Path(__file__).with_name("lifecycle_process_helper.py")
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
 
-    crashed = subprocess.run(
-        [sys.executable, str(helper), "crash-mid-transition", str(path)], env=env, check=False
-    )
+    crashed = subprocess.run([sys.executable, str(helper), "crash-mid-transition", str(path)], env=env, check=False)
     assert crashed.returncode == 77
     recovered = SqliteLifecyclePersistence(path, max_events=3)
     assert recovered.status("shared-task").state == "running"
