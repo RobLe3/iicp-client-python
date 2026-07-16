@@ -75,6 +75,7 @@ from iicp_client.service_lifecycle_accounting import (
     LifecycleAccountingDecision,
     decide_lifecycle_accounting,
 )
+from iicp_client.service_lifecycle_distributed import evaluate_distributed_lifecycle
 from iicp_client.token_validator import TokenValidator
 from iicp_client.trust_auditor import AuditReport, models_diverge, run_audit_pass
 from iicp_client.types import (
@@ -153,6 +154,7 @@ __all__ = [
     "PolicyEvidenceDecision",
     "LifecycleAccountingDecision",
     "decide_lifecycle_accounting",
+    "evaluate_distributed_lifecycle",
     "evaluate_pre_normative_profile",
     "weighted_v1_order",
     "ClientConfig",
