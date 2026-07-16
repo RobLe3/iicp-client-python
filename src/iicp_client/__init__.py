@@ -20,6 +20,15 @@ from iicp_client.cip_policy import (
 from iicp_client.client import IicpClient
 from iicp_client.concurrency import CapacityExceededError, ConcurrencyGate
 from iicp_client.conformance import ConformanceReport, ProbeResult, run_conformance_checks
+from iicp_client.dispatch_ticket_trust import (
+    AdminRecoveryAuthorization,
+    FileTrustBundleStore,
+    StoredTrustBundle,
+    TrustBundleInstallResult,
+    TrustBundleStoreCorrupt,
+    TrustBundleStoreError,
+    TrustBundleStoreLocked,
+)
 from iicp_client.errors import IicpError
 from iicp_client.idempotency import IdempotencyGuard
 from iicp_client.iicp_tcp import IicpTcpClient, IicpTcpClientError, IicpTcpServer, MsgType
@@ -78,6 +87,13 @@ __version__ = "0.7.92"
 __all__ = [
     "IicpClient",
     "IicpError",
+    "AdminRecoveryAuthorization",
+    "FileTrustBundleStore",
+    "StoredTrustBundle",
+    "TrustBundleInstallResult",
+    "TrustBundleStoreCorrupt",
+    "TrustBundleStoreError",
+    "TrustBundleStoreLocked",
     "IicpNode",
     "IicpTcpClient",
     "IicpTcpClientError",
