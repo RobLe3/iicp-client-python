@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from iicp_client.service_lifecycle import (
+    BackendCancellationEvidence,
     BackendCancellationRegistry,
     BoundedObserverBuffer,
     LifecycleAuthorizationDecision,
@@ -61,6 +62,16 @@ def test_runtime_control_fixture_cancellation_and_bounded_observation() -> None:
     buffer.publish(LifecycleEvent("task", 4, "completed", True, 2.0))
     assert buffer.closed
 
+    for vector in fixture["cancellation_evidence"]["vectors"]:
+        registry = BackendCancellationRegistry()
+        registry.register(vector["id"], lambda: True)
+        assert registry.request(vector["id"], "running") == "cancel_signalled"
+        registry.report(vector["id"], vector["reported"])
+        evidence = registry.complete(vector["id"])
+        assert evidence == BackendCancellationEvidence(
+            vector["id"], vector["expected"], vector["cleanup_complete"]
+        )
+
 
 @pytest.mark.asyncio
 async def test_cancellation_registry_aborts_active_http_request() -> None:
@@ -80,6 +91,9 @@ async def test_cancellation_registry_aborts_active_http_request() -> None:
         assert registry.request("active", "running") == "cancel_signalled"
         with pytest.raises(asyncio.CancelledError):
             await request_task
+        evidence = registry.complete("active", "transport_aborted")
+        assert evidence.outcome == "transport_aborted"
+        assert evidence.cleanup_complete
 
 
 def test_lifecycle_fixture_transitions_and_alias() -> None:

@@ -54,12 +54,23 @@ class ObserverLagged(RuntimeError):
         self.latest_sequence = latest_sequence
 
 
+@dataclass(frozen=True)
+class BackendCancellationEvidence:
+    """Content-free evidence about what a cancellation actually achieved."""
+
+    task_id: str
+    outcome: str
+    cleanup_complete: bool = False
+
+
 class BackendCancellationRegistry:
     """Opt-in bridge from lifecycle cancellation to active backend handles."""
 
     def __init__(self) -> None:
         self._handlers: dict[str, Callable[[], bool | None]] = {}
         self._signalled: set[str] = set()
+        self._evidence: dict[str, BackendCancellationEvidence] = {}
+        self._evidence_order: deque[str] = deque(maxlen=256)
         self._lock = threading.RLock()
 
     def register(self, task_id: str, handler: Callable[[], bool | None]) -> None:
@@ -67,24 +78,69 @@ class BackendCancellationRegistry:
             self._handlers[task_id] = handler
             self._signalled.discard(task_id)
 
-    def complete(self, task_id: str) -> None:
+    def report(self, task_id: str, outcome: str) -> BackendCancellationEvidence:
+        if outcome not in {
+            "cancel_requested",
+            "transport_aborted",
+            "backend_acknowledged",
+            "execution_stopped",
+            "cancel_unsupported",
+            "already_terminal",
+        }:
+            raise ValueError(f"unsupported cancellation evidence: {outcome}")
+        with self._lock:
+            current = self._evidence.get(task_id)
+            if current is None and outcome is None:
+                return BackendCancellationEvidence(task_id, "cancel_unsupported", True)
+            evidence = BackendCancellationEvidence(
+                task_id,
+                outcome,
+                current.cleanup_complete if current else False,
+            )
+            self._remember(evidence)
+            return evidence
+
+    def complete(self, task_id: str, outcome: str | None = None) -> BackendCancellationEvidence:
         with self._lock:
             self._handlers.pop(task_id, None)
             self._signalled.discard(task_id)
+            current = self._evidence.get(task_id)
+            evidence = BackendCancellationEvidence(
+                task_id,
+                outcome or (current.outcome if current else "cancel_unsupported"),
+                True,
+            )
+            self._remember(evidence)
+            return evidence
+
+    def evidence(self, task_id: str) -> BackendCancellationEvidence | None:
+        with self._lock:
+            return self._evidence.get(task_id)
+
+    def _remember(self, evidence: BackendCancellationEvidence) -> None:
+        if evidence.task_id not in self._evidence:
+            if len(self._evidence_order) == self._evidence_order.maxlen:
+                oldest = self._evidence_order.popleft()
+                self._evidence.pop(oldest, None)
+            self._evidence_order.append(evidence.task_id)
+        self._evidence[evidence.task_id] = evidence
 
     def request(self, task_id: str, state: str) -> str:
         with self._lock:
             if state in TERMINAL_STATES:
-                self.complete(task_id)
+                self.complete(task_id, "already_terminal")
                 return "already_terminal"
             handler = self._handlers.get(task_id)
             if handler is None:
+                self.complete(task_id, "cancel_unsupported")
                 return "cancel_unsupported"
             if task_id in self._signalled:
                 return "cancel_signalled"
             if handler() is False:
+                self.complete(task_id, "cancel_unsupported")
                 return "cancel_unsupported"
             self._signalled.add(task_id)
+            self.report(task_id, "cancel_requested")
             return "cancel_signalled"
 
 

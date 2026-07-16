@@ -3,13 +3,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 
 import httpx
+import pytest
 import respx
 
-from iicp_client.backends import meshllm_handler, openai_compat_handler
+from iicp_client.backends import (
+    BACKEND_TYPES,
+    get_backend_handler,
+    llamacpp_handler,
+    meshllm_handler,
+    openai_compat_handler,
+    vllm_handler,
+    with_backend_cancellation,
+)
+from iicp_client.service_lifecycle import BackendCancellationRegistry
 
 # ── Factory configuration ──────────────────────────────────────────────────
 
@@ -22,6 +33,47 @@ class TestFactoryDefaults:
     def test_meshllm_default_is_chat_only(self):
         handler = meshllm_handler(model="model-a")
         assert callable(handler)
+
+
+@pytest.mark.parametrize(
+    ("name", "url", "factory"),
+    [
+        ("ollama", "http://localhost:11434/v1/chat/completions", lambda: openai_compat_handler(model="m")),
+        (
+            "lmstudio",
+            "http://localhost:1234/v1/chat/completions",
+            lambda: openai_compat_handler(base_url="http://localhost:1234/v1", model="m"),
+        ),
+        ("vllm", "http://localhost:8000/v1/chat/completions", lambda: vllm_handler(model="m")),
+        ("meshllm", "http://localhost:9337/v1/chat/completions", lambda: meshllm_handler(model="m")),
+    ],
+)
+@respx.mock
+async def test_backend_cancellation_records_transport_abort_and_cleanup(name, url, factory):
+    async def slow_response(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(60)
+        return httpx.Response(200, json={"choices": []})
+
+    respx.post(url).mock(side_effect=slow_response)
+    registry = BackendCancellationRegistry()
+    handler = with_backend_cancellation(factory(), registry)
+    pending = asyncio.create_task(
+        handler(
+            {
+                "task_id": f"cancel-{name}",
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "payload": {"messages": []},
+            }
+        )
+    )
+    await asyncio.sleep(0)
+    assert registry.request(f"cancel-{name}", "running") == "cancel_signalled"
+    result = await pending
+    assert result["error_code"] == 499
+    evidence = registry.evidence(f"cancel-{name}")
+    assert evidence is not None
+    assert evidence.outcome == "transport_aborted"
+    assert evidence.cleanup_complete
 
 
 @respx.mock
@@ -444,14 +496,6 @@ async def test_base_url_trailing_slash_normalized():
 
 
 # ── Dedicated backends (vLLM / llama.cpp) + selector — parity Block B ───────
-
-
-from iicp_client.backends import (  # noqa: E402
-    BACKEND_TYPES,
-    get_backend_handler,
-    llamacpp_handler,
-    vllm_handler,
-)
 
 
 @respx.mock

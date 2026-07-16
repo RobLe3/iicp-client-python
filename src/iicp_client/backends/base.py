@@ -13,6 +13,7 @@ handler-factory style (tracker iicp.network#340; parity Block B).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
@@ -24,6 +25,28 @@ import httpx
 logger = logging.getLogger(__name__)
 
 TaskHandler = Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]]
+
+
+def with_backend_cancellation(handler: TaskHandler, registry: Any) -> TaskHandler:
+    """Bind an invocation to lifecycle cancellation without changing its wire payload."""
+
+    async def wrapped(task: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(task.get("task_id") or "")
+        if not task_id:
+            return await handler(task)
+        active = asyncio.current_task()
+        if active is None:
+            return await handler(task)
+        registry.register(task_id, lambda: active.cancel() or True)
+        try:
+            return await handler(task)
+        except asyncio.CancelledError:
+            registry.report(task_id, "transport_aborted")
+            return {"error_code": 499, "error_message": "backend request cancelled"}
+        finally:
+            registry.complete(task_id)
+
+    return wrapped
 
 # #414 — speech-to-text. Multipart file upload, not a JSON body, so it takes a
 # distinct code path below.
