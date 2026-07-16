@@ -26,6 +26,7 @@ class DispatchRouteTicketClaims:
     intent: str
     iat: int
     exp: int
+    policy_manifest_sha256: str | None = None
 
 
 def _b64pad(value: str) -> bytes:
@@ -60,4 +61,24 @@ def verify_dispatch_route_ticket(
     jti = payload.get("jti")
     if not isinstance(jti, str) or len(jti) != 24 or any(c not in "0123456789abcdef" for c in jti):
         return None
-    return DispatchRouteTicketClaims(**{k: payload[k] for k in DispatchRouteTicketClaims.__annotations__})
+    policy_digest = payload.get("policy_manifest_sha256")
+    if policy_digest is not None and (
+        not isinstance(policy_digest, str)
+        or len(policy_digest) != 64
+        or any(c not in "0123456789abcdef" for c in policy_digest)
+    ):
+        return None
+    fields = {key: payload.get(key) for key in DispatchRouteTicketClaims.__annotations__}
+    return DispatchRouteTicketClaims(**fields)
+
+
+def policy_manifest_binding_matches(claims: DispatchRouteTicketClaims, route: object) -> bool:
+    """Require the route's public manifest digest when a ticket binds one."""
+    if claims.policy_manifest_sha256 is None:
+        return True
+    if not isinstance(route, dict):
+        return False
+    manifest = route.get("node_policy_manifest")
+    verification = manifest.get("verification") if isinstance(manifest, dict) else None
+    route_digest = verification.get("canonical_sha256") if isinstance(verification, dict) else None
+    return route_digest == claims.policy_manifest_sha256

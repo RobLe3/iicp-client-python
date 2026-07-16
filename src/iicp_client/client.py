@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import httpx
 
 from iicp_client._http import _traceparent, get_json, post_json
-from iicp_client.dispatch_ticket import verify_dispatch_route_ticket
+from iicp_client.dispatch_ticket import policy_manifest_binding_matches, verify_dispatch_route_ticket
 from iicp_client.errors import IicpError
 from iicp_client.policy import ensure_intent_allowed
 from iicp_client.request_projection import project_execution_constraints, project_route_options
@@ -287,12 +287,12 @@ class IicpClient:
                             if isinstance(key, str):
                                 self._dispatch_ticket_key = key
                     issuer = self._cfg.directory_url.rstrip("/").removesuffix("/api")
-                    if not (
-                        isinstance(ticket, str)
-                        and isinstance(node_id, str)
-                        and self._dispatch_ticket_key
-                        and verify_dispatch_route_ticket(ticket, self._dispatch_ticket_key, issuer, node_id, intent)
-                    ):
+                    claims = (
+                        verify_dispatch_route_ticket(ticket, self._dispatch_ticket_key, issuer, node_id, intent)
+                        if isinstance(ticket, str) and isinstance(node_id, str) and self._dispatch_ticket_key
+                        else None
+                    )
+                    if claims is None:
                         raise IicpError(
                             code="IICP-DISPATCH-TICKET-UNVERIFIED",
                             message="Directory returned an unverifiable dispatch ticket",
@@ -300,6 +300,13 @@ class IicpClient:
                             retryable=False,
                         )
                     route = data.get("route", {})
+                    if not policy_manifest_binding_matches(claims, route):
+                        raise IicpError(
+                            code="IICP-POLICY-MANIFEST-BINDING-MISMATCH",
+                            message="Directory ticket does not match the route policy manifest",
+                            component="directory",
+                            retryable=False,
+                        )
                     if isinstance(route, dict):
                         route = {**route, "node_id": data.get("node_id", route.get("node_id"))}
                         node = self._node_from_route(route, ticket_id_prefix=data.get("ticket_id_prefix"))
