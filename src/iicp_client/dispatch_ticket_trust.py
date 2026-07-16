@@ -7,9 +7,15 @@ Applications opt in by supplying an independently obtained trust bundle.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import os
+import stat
 import threading
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -74,6 +80,230 @@ class TrustBundle:
             valid_from=data.get("valid_from"),
             valid_until=data.get("valid_until"),
         )
+
+
+def canonical_trust_bundle(bundle: TrustBundle) -> bytes:
+    data: dict[str, Any] = {
+        "bundle_version": bundle.bundle_version,
+        "keys": [
+            {
+                "key_id": key.key_id,
+                "public_key_b64url": key.public_key_b64url,
+                "state": key.state,
+                "valid_from": key.valid_from,
+                "valid_until": key.valid_until,
+                "allowed_profiles": sorted(key.allowed_profiles),
+                "issuers": sorted(key.issuers),
+                "audiences": sorted(key.audiences),
+            }
+            for key in sorted(bundle.keys.values(), key=lambda item: item.key_id)
+        ],
+    }
+    if bundle.issuer is not None:
+        data["issuer"] = bundle.issuer
+    if bundle.valid_from is not None:
+        data["valid_from"] = bundle.valid_from
+    if bundle.valid_until is not None:
+        data["valid_until"] = bundle.valid_until
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+class TrustBundleStoreError(RuntimeError):
+    """Base error for the opt-in local trust store."""
+
+
+class TrustBundleStoreCorrupt(TrustBundleStoreError):
+    pass
+
+
+class TrustBundleStoreLocked(TrustBundleStoreError):
+    pass
+
+
+@dataclass(frozen=True)
+class StoredTrustBundle:
+    bundle: TrustBundle
+    canonical_bytes: bytes
+    digest: str
+    high_water: int
+
+
+@dataclass(frozen=True)
+class TrustBundleInstallResult:
+    status: str
+    state: StoredTrustBundle | None
+
+
+@dataclass(frozen=True)
+class AdminRecoveryAuthorization:
+    reason: str
+    minimum_high_water: int = 0
+
+
+class FileTrustBundleStore:
+    """Owner-local atomic trust bundle store; never enabled by default dispatch."""
+
+    def __init__(self, path: str | Path, *, lock_timeout_s: float = 2.0) -> None:
+        self.path = Path(path).expanduser()
+        self.lock_path = self.path.with_name(self.path.name + ".lock")
+        self.lock_timeout_s = max(0.0, lock_timeout_s)
+
+    def _prepare_directory(self) -> None:
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        mode = stat.S_IMODE(self.path.parent.stat().st_mode)
+        if mode & 0o077:
+            raise TrustBundleStoreError("trust store directory must be owner-only")
+
+    def _acquire_lock(self) -> int:
+        self._prepare_directory()
+        deadline = time.monotonic() + self.lock_timeout_s
+        while True:
+            try:
+                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(fd, f"{os.getpid()}\n".encode())
+                os.fsync(fd)
+                return fd
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise TrustBundleStoreLocked("trust store lock is held") from None
+                time.sleep(0.01)
+
+    def _release_lock(self, fd: int) -> None:
+        os.close(fd)
+        try:
+            self.lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def load(self) -> StoredTrustBundle | None:
+        if not self.path.exists():
+            return None
+        metadata = self.path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise TrustBundleStoreCorrupt("trust store must be a regular file, not a link")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise TrustBundleStoreCorrupt("trust store file must be owner-only")
+        try:
+            raw = self.path.read_bytes()
+            if len(raw) > 4 * 1024 * 1024:
+                raise ValueError("state exceeds size limit")
+            state = json.loads(raw)
+            canonical_bytes = base64.b64decode(state["bundle_b64"], validate=True)
+            digest = "sha256:" + hashlib.sha256(canonical_bytes).hexdigest()
+            if digest != state["bundle_digest"]:
+                raise ValueError("bundle digest mismatch")
+            bundle = TrustBundle.from_dict(json.loads(canonical_bytes))
+            high_water = state["high_water"]
+            stored_version = state["bundle_version"]
+            if (
+                not isinstance(high_water, int)
+                or isinstance(high_water, bool)
+                or not isinstance(stored_version, int)
+                or isinstance(stored_version, bool)
+                or high_water < 0
+                or bundle.bundle_version < 0
+                or stored_version != bundle.bundle_version
+                or high_water < bundle.bundle_version
+            ):
+                raise ValueError("bundle version/high-water mismatch")
+            if canonical_trust_bundle(bundle) != canonical_bytes:
+                raise ValueError("bundle is not canonical")
+            return StoredTrustBundle(bundle, canonical_bytes, digest, high_water)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise TrustBundleStoreCorrupt(f"invalid trust store: {exc}") from exc
+
+    def _commit(self, bundle: TrustBundle, high_water: int) -> StoredTrustBundle:
+        if (
+            not isinstance(bundle.bundle_version, int)
+            or isinstance(bundle.bundle_version, bool)
+            or bundle.bundle_version < 0
+            or not isinstance(high_water, int)
+            or isinstance(high_water, bool)
+            or high_water < bundle.bundle_version
+        ):
+            raise TrustBundleStoreError("bundle version and high-water mark must be non-negative integers")
+        canonical_bytes = canonical_trust_bundle(bundle)
+        digest = "sha256:" + hashlib.sha256(canonical_bytes).hexdigest()
+        state = {
+            "bundle_b64": base64.b64encode(canonical_bytes).decode("ascii"),
+            "bundle_digest": digest,
+            "bundle_version": bundle.bundle_version,
+            "high_water": high_water,
+        }
+        payload = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+        with NamedTemporaryFile(dir=self.path.parent, prefix=self.path.name + ".tmp-", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            os.fchmod(tmp.fileno(), 0o600)
+            tmp.write(payload)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        try:
+            os.replace(tmp_path, self.path)
+            dir_fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+        return StoredTrustBundle(bundle, canonical_bytes, digest, high_water)
+
+    def install(
+        self, bundle: TrustBundle, *, expected_current_version: int | None = None
+    ) -> TrustBundleInstallResult:
+        if (
+            not isinstance(bundle.bundle_version, int)
+            or isinstance(bundle.bundle_version, bool)
+            or bundle.bundle_version < 0
+        ):
+            raise TrustBundleStoreError("bundle version must be a non-negative integer")
+        fd = self._acquire_lock()
+        try:
+            current = self.load()
+            current_version = current.bundle.bundle_version if current else None
+            if expected_current_version != current_version and expected_current_version is not None:
+                return TrustBundleInstallResult("conflict", current)
+            candidate_bytes = canonical_trust_bundle(bundle)
+            candidate_digest = "sha256:" + hashlib.sha256(candidate_bytes).hexdigest()
+            high_water = current.high_water if current else 0
+            if bundle.bundle_version < high_water:
+                return TrustBundleInstallResult("stale", current)
+            if current and bundle.bundle_version == current_version:
+                status = "unchanged" if candidate_digest == current.digest else "conflict"
+                return TrustBundleInstallResult(status, current)
+            installed = self._commit(bundle, max(high_water, bundle.bundle_version))
+            return TrustBundleInstallResult("installed", installed)
+        finally:
+            self._release_lock(fd)
+
+    def recover(
+        self, bundle: TrustBundle, authorization: AdminRecoveryAuthorization | None
+    ) -> TrustBundleInstallResult:
+        if (
+            not isinstance(bundle.bundle_version, int)
+            or isinstance(bundle.bundle_version, bool)
+            or bundle.bundle_version < 0
+        ):
+            raise TrustBundleStoreError("bundle version must be a non-negative integer")
+        if authorization is None or not authorization.reason.strip():
+            return TrustBundleInstallResult("recovery_required", None)
+        fd = self._acquire_lock()
+        try:
+            try:
+                current = self.load()
+            except TrustBundleStoreCorrupt:
+                current = None
+            high_water = max(
+                bundle.bundle_version,
+                authorization.minimum_high_water,
+                current.high_water if current else 0,
+            )
+            return TrustBundleInstallResult("recovered", self._commit(bundle, high_water))
+        finally:
+            self._release_lock(fd)
 
 
 @dataclass(frozen=True)
