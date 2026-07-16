@@ -20,7 +20,7 @@ then register it in `_FACTORIES` below.
 from __future__ import annotations
 
 from iicp_client.backends.anthropic import anthropic_handler
-from iicp_client.backends.base import TaskHandler
+from iicp_client.backends.base import TaskHandler, with_backend_cancellation
 from iicp_client.backends.llamacpp import llamacpp_handler
 from iicp_client.backends.meshllm import meshllm_handler
 from iicp_client.backends.openai_compat import openai_compat_handler
@@ -34,6 +34,7 @@ __all__ = [
     "anthropic_handler",
     "get_backend_handler",
     "BACKEND_TYPES",
+    "with_backend_cancellation",
 ]
 
 _FACTORIES = {
