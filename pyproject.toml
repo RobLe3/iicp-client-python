@@ -30,6 +30,7 @@ dependencies = [
     # identity.py imports Ed25519PrivateKey unconditionally on the operator
     # identity path that `iicp-node init` always exercises — core, not optional.
     "cryptography>=42",
+    "rfc8785==0.1.4",
 ]
 
 [project.scripts]

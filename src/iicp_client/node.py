@@ -250,6 +250,9 @@ class NodeConfig:
     # Backend-local aliases that must not become public capability or health
     # evidence (for example MeshLLM's experimental `mesh` ensemble alias).
     excluded_models: list[str] = field(default_factory=list)
+    # Pre-normative receipt profiles this provider can verify/produce. Unknown
+    # values are never advertised. Empty keeps the capability dormant.
+    supported_receipt_profiles: list[str] = field(default_factory=list)
     region: str | None = None
     capabilities: list[str] = field(default_factory=list)
     directory_url: str = "https://iicp.network/api"
@@ -673,6 +676,13 @@ class IicpNode:
                 payload["operator_integrity_hash"] = self._cfg.operator_integrity_hash
         if self._cfg.policy_manifest:
             payload["policy_manifest"] = self._cfg.policy_manifest
+        receipt_profiles = [
+            profile
+            for profile in self._cfg.supported_receipt_profiles
+            if profile == "consumer_cosignature_v1"
+        ]
+        if receipt_profiles:
+            payload["supported_receipt_profiles"] = list(dict.fromkeys(receipt_profiles))
 
         # SDK self-identification — directory surfaces these on /v1/discover
         # so dashboards can render a language badge. Free-form so future SDKs

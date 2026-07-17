@@ -49,3 +49,18 @@ async def test_reregister_sends_current_node_token():
 
     payload = json.loads(route.calls[0].request.content)
     assert payload["current_node_token"] == "tok-prior"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_register_advertises_only_enabled_consumer_cosignature_profile():
+    route = respx.post("https://iicp.test/api/v1/register").mock(
+        return_value=httpx.Response(201, json={"node_token": "tok-new", "node_id": "n-reg"})
+    )
+    cfg = _cfg()
+    cfg.supported_receipt_profiles = ["unknown_v1", "consumer_cosignature_v1", "consumer_cosignature_v1"]
+    await IicpNode(cfg).register()
+    import json
+
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["supported_receipt_profiles"] == ["consumer_cosignature_v1"]
