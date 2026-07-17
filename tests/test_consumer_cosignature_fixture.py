@@ -4,26 +4,13 @@ import base64
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from iicp_client.jcs import canonicalize_jcs
+
 FIXTURE = Path(__file__).parents[1] / "parity/cip-consumer-cosignature-v1.json"
 DOMAIN = b"IICP-CIP-CONSUMER-COSIGNATURE-V1\x00"
-
-
-def normalise(value: Any) -> Any:
-    if isinstance(value, float) and value == 0:
-        return 0
-    if isinstance(value, list):
-        return [normalise(item) for item in value]
-    if isinstance(value, dict):
-        return {key: normalise(item) for key, item in value.items()}
-    return value
-
-
-def canonical(value: Any) -> bytes:
-    return json.dumps(normalise(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
 
 
 def decode(value: str) -> bytes:
@@ -63,7 +50,7 @@ def evaluate(value: dict[str, str]) -> dict[str, str]:
 def test_consumer_cosignature_fixture() -> None:
     fixture = json.loads(FIXTURE.read_text())
     vector = fixture["canonical_vector"]
-    encoded = canonical(vector["receipt"])
+    encoded = canonicalize_jcs(vector["receipt"])
     assert encoded.decode() == vector["canonical_json_utf8"]
     assert hashlib.sha256(encoded).hexdigest() == vector["canonical_json_sha256"]
     digest = hashlib.sha256(DOMAIN + encoded).digest()
@@ -87,3 +74,17 @@ def test_consumer_cosignature_fixture() -> None:
     receipt_fields = set(vector["receipt"])
     assert receipt_fields.isdisjoint(fixture["privacy_contract"]["forbidden_fields"])
     assert fixture["privacy_contract"]["self_reported_metrics_have_authority"] is False
+
+
+def test_full_jcs_vectors_and_invalid_number_domain() -> None:
+    fixture = json.loads(FIXTURE.read_text())
+    for vector in fixture["jcs_vectors"]:
+        assert canonicalize_jcs(vector["input"]).decode() == vector["canonical_json_utf8"], vector["name"]
+
+    for invalid in (float("nan"), float("inf"), 9_007_199_254_740_992):
+        try:
+            canonicalize_jcs({"invalid": invalid})
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError(f"invalid JCS number accepted: {invalid!r}")

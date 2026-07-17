@@ -32,6 +32,7 @@ from iicp_client.dispatch_ticket_trust import (
 from iicp_client.errors import IicpError
 from iicp_client.idempotency import IdempotencyGuard
 from iicp_client.iicp_tcp import IicpTcpClient, IicpTcpClientError, IicpTcpServer, MsgType
+from iicp_client.jcs import canonicalize_jcs
 from iicp_client.nat_detection import (
     NatProfile,
     delete_ipv6_pinhole,
@@ -131,6 +132,7 @@ __all__ = [
     "AvailabilityEvaluator",
     "Window",
     "IdempotencyGuard",
+    "canonicalize_jcs",
     "TokenValidator",
     "AuditReport",
     "models_diverge",
