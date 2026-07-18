@@ -60,6 +60,25 @@ def _env(name: str, default: str | None = None) -> str | None:
     return os.environ.get(name, default)
 
 
+def _resolve_receipt_profiles(
+    cli_values: list[str] | None,
+    env_value: str | None,
+    saved_values: list[str] | None,
+) -> list[str]:
+    """Resolve explicit receipt-profile opt-in: CLI > env > saved > empty."""
+    raw = cli_values if cli_values is not None else (
+        env_value.split(",") if env_value is not None else (saved_values or [])
+    )
+    profiles = list(dict.fromkeys(value.strip() for value in raw if value.strip()))
+    unsupported = [value for value in profiles if value != "consumer_cosignature_v1"]
+    if unsupported:
+        raise ValueError(
+            "unsupported receipt profile(s): " + ", ".join(unsupported) +
+            ". Supported: consumer_cosignature_v1."
+        )
+    return profiles
+
+
 TUNNEL_DEAD_EXIT_CODE = 75
 
 
@@ -256,6 +275,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--policy-manifest",
         default=_env("IICP_POLICY_MANIFEST_FILE"),
         help="Path to public node-policy JSON; signed locally with the operator key. env: IICP_POLICY_MANIFEST_FILE",
+    )
+    serve.add_argument(
+        "--receipt-profile",
+        action="append",
+        default=None,
+        metavar="PROFILE",
+        help="Enable a pre-normative receipt profile; repeatable. "
+        "Supported: consumer_cosignature_v1. env: IICP_SUPPORTED_RECEIPT_PROFILES (comma-separated)",
     )
     serve.add_argument(
         "--public-endpoint",
@@ -1643,6 +1670,18 @@ async def _serve(args: argparse.Namespace) -> int:
         if not args.external_ip_probe_url and saved.external_ip_probe_url:
             args.external_ip_probe_url = saved.external_ip_probe_url
 
+    try:
+        receipt_profiles = _resolve_receipt_profiles(
+            args.receipt_profile,
+            os.environ.get("IICP_SUPPORTED_RECEIPT_PROFILES"),
+            saved.supported_receipt_profiles if saved is not None else None,
+        )
+    except ValueError as exc:
+        sys.stderr.write(
+            f"ERROR: {exc}\n"
+        )
+        return 2
+
     # Apply env / built-in defaults for any sentinel still unset (no saved config,
     # or saved config did not provide the value). flag > env > built-in.
     if args.max_concurrent is None:
@@ -1775,6 +1814,7 @@ async def _serve(args: argparse.Namespace) -> int:
         operator_created_at=_op_created_at,
         operator_integrity_hash=_op_integrity_hash,
         policy_manifest=_policy_manifest,
+        supported_receipt_profiles=receipt_profiles,
         # TC-9c — pre-load saved HMAC key so receipts work immediately on restart.
         node_hmac_key=saved.node_hmac_key or "" if saved else "",
     )
