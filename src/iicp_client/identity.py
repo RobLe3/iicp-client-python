@@ -231,6 +231,9 @@ class NodeIdentity:
     public_endpoint: str = ""
     auto_detect_nat: bool = False
     external_ip_probe_url: str = ""
+    # Pre-normative receipt profiles explicitly enabled by the operator.
+    # Empty by default; older saved-node files load without migration.
+    supported_receipt_profiles: list[str] = field(default_factory=list)
     # #456 — node_token cached after register so `iicp-node credits` can authenticate
     # without re-registering. Bearer credential (not a key); stored in the chmod-600
     # config. None until the node first registers via `serve`.
