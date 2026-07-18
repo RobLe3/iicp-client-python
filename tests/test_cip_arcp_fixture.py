@@ -76,6 +76,31 @@ def _evaluate(case):
     raise AssertionError(kind)
 
 
+def _coordinator_transcript(case):
+    dispatched, results = set(), set()
+    terminal, settlement, duplicates = "running", "release_unspent", 0
+    for event in case["events"]:
+        kind, worker = event["type"], event.get("worker")
+        if kind == "dispatch" and terminal == "running":
+            dispatched.add(worker)
+        elif kind == "duplicate_result":
+            duplicates += 1
+        elif kind == "result" and terminal == "running" and worker in dispatched and worker not in results:
+            if event.get("attribution") == "same_operator":
+                settlement = "exclude_self_dealing"
+                continue
+            results.add(worker)
+            if len(results) >= case["quorum"]:
+                terminal, settlement = "completed", "settle_contributors"
+        elif kind == "cancel" and terminal == "running":
+            terminal = "cancelled"
+        elif kind == "timeout" and terminal == "running":
+            terminal = "local_fallback" if case["strict_replicas"] else "failed"
+        elif kind == "coordinator_failure" and terminal == "running":
+            terminal = "failed"
+    return {"terminal": terminal, "counted_results": len(results), "duplicates_ignored": duplicates, "settlement": settlement}
+
+
 def test_cip_conformance_fixture():
     fixture = json.loads((ROOT / "parity/cip-conformance-v0.json").read_text())
     assert all(_cip(case["input"]) == case["expected"] for case in fixture["cases"])
@@ -88,3 +113,10 @@ def test_arcp_evaluator_fixture():
     fixture = json.loads((ROOT / "parity/arcp-evaluator-v0.json").read_text())
     for case in fixture["cases"]:
         assert _evaluate(case) == case["expected"], case["name"]
+
+
+def test_arcp_coordinator_transcript_fixture():
+    fixture = json.loads((ROOT / "parity/arcp-coordinator-transcript-v0.json").read_text())
+    assert fixture["status"] == "pre-normative"
+    for case in fixture["cases"]:
+        assert _coordinator_transcript(case) == case["expected"], case["name"]
