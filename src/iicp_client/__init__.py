@@ -20,6 +20,15 @@ from iicp_client.cip_policy import (
 from iicp_client.client import IicpClient
 from iicp_client.concurrency import CapacityExceededError, ConcurrencyGate
 from iicp_client.conformance import ConformanceReport, ProbeResult, run_conformance_checks
+from iicp_client.dispatch_admission import (
+    DispatchAdmissionClaim,
+    DispatchAdmissionDecision,
+    DispatchAdmissionRecord,
+    DispatchAdmissionStorageError,
+    DispatchAdmissionStore,
+    SqliteDispatchAdmissionStore,
+    evaluate_dispatch_admission,
+)
 from iicp_client.dispatch_ticket_trust import (
     AdminRecoveryAuthorization,
     FileTrustBundleStore,
@@ -108,6 +117,13 @@ __all__ = [
     "TrustBundleStoreCorrupt",
     "TrustBundleStoreError",
     "TrustBundleStoreLocked",
+    "DispatchAdmissionClaim",
+    "DispatchAdmissionDecision",
+    "DispatchAdmissionRecord",
+    "DispatchAdmissionStorageError",
+    "DispatchAdmissionStore",
+    "SqliteDispatchAdmissionStore",
+    "evaluate_dispatch_admission",
     "IicpNode",
     "IicpTcpClient",
     "IicpTcpClientError",
