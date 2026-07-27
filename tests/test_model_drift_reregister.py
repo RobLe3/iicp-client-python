@@ -54,6 +54,7 @@ async def test_reregister_when_model_list_drifts():
     node._cfg.model = "phi3:mini"
     node._cfg.capabilities = ["llama3.2:1b"]
     node._registered_models = frozenset(["phi3:mini", "llama3.2:1b"])
+    node._node_token = "tok-current-py"
 
     await node._maybe_reregister_on_model_drift()
 
@@ -61,6 +62,7 @@ async def test_reregister_when_model_list_drifts():
     assert len(register_calls) == 1, "re-register must fire when models drift"
     import json
     body = json.loads(register_calls[0].content)
+    assert body["current_node_token"] == "tok-current-py"
     caps = body.get("capabilities", [])
     registered_models = {m for c in caps for m in c.get("models", [])}
     assert registered_models == {"phi3:mini"}, (
