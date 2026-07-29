@@ -137,6 +137,27 @@ async def test_no_reregister_when_model_list_unchanged():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_failed_reregister_preserves_health_model_projection():
+    """A rejected drift update must leave the config used by /iicp/health unchanged."""
+    respx.post("http://mock-dir/v1/register").mock(
+        return_value=Response(503, json={"error": "temporarily unavailable"})
+    )
+    respx.get("http://mock-backend/api/tags").mock(
+        return_value=Response(200, json={"models": [{"name": "new-model"}]})
+    )
+
+    node = IicpNode(_cfg())
+    node._registered_models = frozenset(["phi3:mini", "llama3.2:1b"])
+
+    await node._maybe_reregister_on_model_drift()
+
+    assert node._cfg.model == "phi3:mini"
+    assert node._cfg.capabilities == ["llama3.2:1b"]
+    assert node._registered_models == frozenset(["phi3:mini", "llama3.2:1b"])
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_no_reregister_when_backend_returns_empty():
     """Behavior: when the backend health probe returns an empty list (backend offline),
     register() must NOT fire — prevents spurious re-registration during downtime.

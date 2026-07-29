@@ -610,6 +610,9 @@ class IicpNode:
     # ── Directory operations ──────────────────────────────────────────────
 
     async def register(self) -> str:
+        return await self._register_with_models(None)
+
+    async def _register_with_models(self, model_override: list[str] | None) -> str:
         """Register this node with the directory and return the node_token.
 
         Payload conforms to spec/iicp-dir.md §3.1 REGISTER (Phase 1+) plus
@@ -620,12 +623,15 @@ class IicpNode:
         # Build the spec-compliant capabilities array. Models defaults to
         # [config.model] when model is set, otherwise empty (directory will
         # reject; that's a configuration error the operator should fix).
-        models = [self._cfg.model] if self._cfg.model else []
-        for cap in self._cfg.capabilities:
-            # Legacy flat capabilities list — additional model names (GAP-6
-            # backend model probe). Preserve order (configured model leads).
-            if cap not in models:
-                models.append(cap)
+        if model_override is not None:
+            models = list(dict.fromkeys(model_override))
+        else:
+            models = [self._cfg.model] if self._cfg.model else []
+            for cap in self._cfg.capabilities:
+                # Legacy flat capabilities list — additional model names (GAP-6
+                # backend model probe). Preserve order (configured model leads).
+                if cap not in models:
+                    models.append(cap)
 
         payload: dict[str, Any] = {
             "endpoint": self._cfg.endpoint,
@@ -749,12 +755,13 @@ class IicpNode:
                 self._node_hmac_key = str(hk)
         self._persist_saved_credentials(str(token))
         logger.info("Registered node %s, token acquired", self._cfg.node_id)
-        # #494 — track the model set registered so heartbeat can detect drift.
-        _reg = [self._cfg.model] if self._cfg.model else []
-        for _cap in self._cfg.capabilities:
-            if _cap not in _reg:
-                _reg.append(_cap)
-        self._registered_models = frozenset(_reg)
+        # Commit model drift only after the directory accepts the projection.
+        # `/iicp/health` derives from this configuration, so a failed
+        # re-registration cannot publish an unregistered model list.
+        if model_override is not None:
+            self._cfg.model = models[0] if models else ""
+            self._cfg.capabilities = models[1:]
+        self._registered_models = frozenset(models)
         return str(token)
 
     @property
@@ -914,10 +921,8 @@ class IicpNode:
             sorted(live_set),
         )
         live_sorted = sorted(live_set)
-        self._cfg.model = live_sorted[0]
-        self._cfg.capabilities = live_sorted[1:]
         try:
-            await self.register()
+            await self._register_with_models(live_sorted)
             logger.info("Re-registered %s with updated models: %s", self._cfg.node_id, live_sorted)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Model-drift re-registration failed: %s", exc)
