@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/RobLe3/iicp-client-python/actions/workflows/ci.yml/badge.svg)](https://github.com/RobLe3/iicp-client-python/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Protocol](https://img.shields.io/badge/IICP-v1.7-indigo.svg)](https://iicp.network/spec)
+[![Protocol](https://img.shields.io/badge/IICP-v1.9-indigo.svg)](https://github.com/RobLe3/IICP)
 [![PyPI](https://img.shields.io/badge/PyPI-iicp--client-blue?logo=pypi&logoColor=white)](https://pypi.org/project/iicp-client/)
 
 Use the open AI mesh from your Python app. Install the client, send an intent,
@@ -197,7 +197,9 @@ This SDK covers **both** sides of the IICP protocol:
 
 Consumer and provider can run in the same process. A node that serves requests can also route tasks it can't handle to other mesh nodes (`IicpClient` inside the task handler).
 
-For production provider nodes backed by Ollama/vLLM, the `iicp-node` binary (Rust) and the Python adapter (`pip install iicp-adapter`) provide additional resilience and monitoring. See [iicp.network/docs/node-setup](https://iicp.network/docs/node-setup).
+For production provider nodes backed by Ollama/vLLM, use the maintained
+`iicp-node` runtime and follow
+[the node setup guide](https://iicp.network/docs/node-setup).
 
 ---
 
@@ -630,7 +632,9 @@ ruff check src tests       # lint
 
 ## Links
 
-- [Protocol spec](https://iicp.network/spec) — full IICP specification
+- [Protocol specification](https://github.com/RobLe3/IICP) — normative IICP documents
+- [Agent bootstrap guide](https://github.com/RobLe3/IICP/blob/main/docs/agent-bootstrap.md) — connect a consumer or provider agent
+- [Implementation registry](https://github.com/RobLe3/IICP/blob/main/IMPLEMENTATIONS.md) — supported and preview components
 - [Node setup guide](https://iicp.network/docs/node-setup) — run your own node
 - [Error reference](https://iicp.network/docs/error-reference) — all error codes
 - [iicp-client-typescript](https://github.com/RobLe3/iicp-client-typescript) — TypeScript SDK
