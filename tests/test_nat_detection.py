@@ -222,11 +222,14 @@ class TestDetectNatTier1Mocked:
         async def fake_try(_ports, *, lease_seconds):
             return fake
 
-        with patch("iicp_client.nat_detection._try_upnp_mapping", fake_try):
-            with patch("iicp_client.nat_detection._detect_cgnat", return_value=None):
-                # detect_v6=False isolates the UPnP/v4 path — on a host with a real
-                # IPv6 GUA the #416 tier-0 v6 election would otherwise pre-empt UPnP.
-                profile = await detect_nat("0.0.0.0", 8080, detect_v6=False)
+        with (
+            patch("iicp_client.nat_detection._try_upnp_mapping", fake_try),
+            patch("iicp_client.nat_detection._detect_cgnat", return_value=None),
+            patch("iicp_client.nat_detection._is_container_bridge_network", return_value=False),
+        ):
+            # detect_v6=False isolates the UPnP/v4 path — on a host with a real
+            # IPv6 GUA the #416 tier-0 v6 election would otherwise pre-empt UPnP.
+            profile = await detect_nat("0.0.0.0", 8080, detect_v6=False)
         assert profile.tier == 1
         assert profile.transport_method == "upnp_mapped"
         assert profile.public_endpoint == "http://8.8.8.5:8080"
@@ -245,9 +248,12 @@ class TestDetectNatTier1Mocked:
         async def fake_try(_ports, *, lease_seconds):
             return fake
 
-        with patch("iicp_client.nat_detection._try_upnp_mapping", fake_try):
-            with patch("iicp_client.nat_detection._detect_cgnat", return_value=None):
-                profile = await detect_nat("0.0.0.0", 8080, transport_port=9484, detect_v6=False)
+        with (
+            patch("iicp_client.nat_detection._try_upnp_mapping", fake_try),
+            patch("iicp_client.nat_detection._detect_cgnat", return_value=None),
+            patch("iicp_client.nat_detection._is_container_bridge_network", return_value=False),
+        ):
+            profile = await detect_nat("0.0.0.0", 8080, transport_port=9484, detect_v6=False)
         assert profile.public_endpoint == "http://8.8.8.5:8080"
         assert profile.transport_endpoint == "iicp://8.8.8.5:9484"
 
@@ -270,6 +276,9 @@ class TestDetectNatTier1Mocked:
             with patch(
                 "iicp_client.nat_detection._detect_cgnat",
                 return_value="reverse-DNS suggests CGNAT",
+            ), patch(
+                "iicp_client.nat_detection._is_container_bridge_network",
+                return_value=False,
             ):
                 # detect_v6=False — exercise the v4-only CGNAT path. With
                 # IPv6 enabled, ADR-043 §10 fallback would upgrade to tier-1

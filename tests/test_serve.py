@@ -482,10 +482,13 @@ def test_heartbeat_reregisters_on_404(monkeypatch):
     n = IicpNode(cfg)
     monkeypatch.setattr(node_mod, "_HEARTBEAT_INTERVAL", 0.01)
     calls = {"hb": 0, "reg": 0, "last_token": None}
+    fresh_heartbeat = asyncio.Event()
 
     async def fake_hb(tok):
         calls["hb"] += 1
         calls["last_token"] = tok
+        if tok == "fresh-token":
+            fresh_heartbeat.set()
         if calls["hb"] == 1:
             req = httpx.Request("POST", "http://t.local/v1/heartbeat")
             raise httpx.HTTPStatusError(
@@ -501,7 +504,7 @@ def test_heartbeat_reregisters_on_404(monkeypatch):
 
     async def _run():
         task = asyncio.create_task(n._heartbeat_loop("orig-token"))
-        await asyncio.sleep(0.06)
+        await asyncio.wait_for(fresh_heartbeat.wait(), timeout=1.0)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
