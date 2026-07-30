@@ -166,7 +166,21 @@ When PyPI publishes a newer stable release, `serve` runs
 and cached node tokens are preserved.
 
 If an older supervised node does not update itself, perform one manual upgrade
-and restart through its normal supervisor. For Docker, use a Compose
+with the same interpreter and restart it through its normal supervisor:
+
+```bash
+python -m pip install --upgrade 'iicp-client==0.7.98'
+python -c 'import iicp_client; print(iicp_client.__version__)'
+```
+
+Do not delete the node identity, cached node token or CX key directory during
+this recovery. After the supervised restart, verify that `/iicp/health` reports
+the installed version, automatic updates enabled and a CX public key before
+treating the node as recovered. Do not enable
+`IICP_CX_ALLOW_PLAINTEXT` to work around an old installation.
+
+For Docker, update the pinned package or image, recreate the container with the
+same persistent identity/CX volumes, and use a Compose
 `restart: unless-stopped` policy (or `docker run --restart unless-stopped`) so
 verified recovery can restart cleanly.
 
