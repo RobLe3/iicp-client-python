@@ -9,6 +9,12 @@ in the main repo).
 
 ## [Unreleased]
 
+## [0.7.99] — 2026-07-31
+
+### Changed — release verification
+- Network-recovery tests now isolate host networking and use bounded synchronization, removing environment-dependent release failures.
+- Runtime behavior and the IICP wire contract are unchanged.
+
 ## [0.7.98] — 2026-07-29
 
 ### Fixed — transactional model-health recovery
