@@ -109,6 +109,7 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
     issued_token = "gw-token-123"
 
     register_calls: list[dict] = []
+    mcp_calls: list[dict] = []
 
     def handle_register(req):
         register_calls.append(json.loads(req.content))
@@ -116,11 +117,16 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
 
     respx.post(f"{mock_dir}/register").mock(side_effect=handle_register)
     respx.post(f"{mock_dir}/heartbeat").mock(return_value=Response(200, json={}))
-    respx.post(f"{mock_mcp}/mcp").mock(return_value=Response(200, json={
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": {"content": [{"type": "text", "text": "hello.txt"}]},
-    }))
+    def handle_mcp(req):
+        mcp_calls.append({"headers": dict(req.headers), "body": json.loads(req.content)})
+        return Response(200, json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "_meta": {"protocolVersion": "2026-07-28", "server": {"name": "mock-tools"}},
+            "result": {"content": [{"type": "text", "text": "hello.txt"}]},
+        })
+
+    respx.post(f"{mock_mcp}/mcp").mock(side_effect=handle_mcp)
 
     port = _free_port()
     bind_host = "127.0.0.1"
@@ -135,6 +141,9 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
         "region": "test",
         "port": port,
         "host": bind_host,
+        "mcp_revision": "2026-07-28",
+        "mcp_server_name": "mock-tools",
+        "mcp_extensions": "tasks",
     })()
 
     # Patch ThreadingHTTPServer to use 127.0.0.1 for test isolation
@@ -180,6 +189,9 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
     assert result["status"] == "completed"
     assert result["task_id"] == "task-abc"
     assert result["policy_receipt"]["argument_content"] == "excluded"
+    assert mcp_calls[0]["headers"]["mcp-protocol-version"] == "2026-07-28"
+    assert mcp_calls[0]["headers"]["mcp-method"] == "tools/call"
+    assert mcp_calls[0]["body"]["params"]["_meta"]["extensions"] == ["tasks"]
 
     # Verify registration used correct intents
     assert len(register_calls) == 1

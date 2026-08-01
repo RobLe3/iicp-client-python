@@ -641,6 +641,22 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_env_bool("IICP_MCP_AUDIT_REDACTION"),
         help="Assert that gateway audit events exclude prompts, secrets and tool arguments.",
     )
+    gw.add_argument(
+        "--mcp-revision",
+        choices=("2025-11-25", "2026-07-28"),
+        default=_env("IICP_MCP_REVISION", "2025-11-25") or "2025-11-25",
+        help="MCP protocol revision (env IICP_MCP_REVISION; modern stateless behavior is opt-in).",
+    )
+    gw.add_argument(
+        "--mcp-server-name",
+        default=_env("IICP_MCP_SERVER_NAME", "") or "",
+        help="Expected MCP server identity; required for the modern stateless revision.",
+    )
+    gw.add_argument(
+        "--mcp-extensions",
+        default=_env("IICP_MCP_EXTENSIONS", "") or "",
+        help="Explicit comma-separated modern extensions: tasks, skills, apps.",
+    )
 
     return p
 
@@ -2683,6 +2699,14 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
 
     import httpx
 
+    from iicp_client.mcp_negotiation import (
+        LEGACY_MCP_REVISION,
+        MODERN_MCP_REVISION,
+        SUPPORTED_MCP_REVISIONS,
+        McpNegotiationError,
+        build_modern_mcp_request,
+        validate_modern_mcp_response,
+    )
     from iicp_client.mcp_policy import McpToolPolicy, tool_risk_label
 
     def _tool_to_intent(name: str) -> str:
@@ -2715,6 +2739,19 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
     node_id = args.node_id or f"gateway-mcp-{uuid.uuid4().hex[:8]}"
     directory_url = (args.directory_url or "https://iicp.network/api/v1").rstrip("/")
     mcp_url = (args.mcp_url or "http://localhost:8001").rstrip("/")
+    mcp_revision = str(getattr(args, "mcp_revision", LEGACY_MCP_REVISION) or LEGACY_MCP_REVISION)
+    mcp_server_name = str(getattr(args, "mcp_server_name", "") or "").strip()
+    mcp_extensions = tuple(
+        extension.strip().lower()
+        for extension in str(getattr(args, "mcp_extensions", "") or "").split(",")
+        if extension.strip()
+    )
+    if mcp_revision not in SUPPORTED_MCP_REVISIONS:
+        sys.stderr.write(f"ERROR: unsupported MCP revision {mcp_revision}.\n")
+        return 2
+    if mcp_revision == MODERN_MCP_REVISION and not mcp_server_name:
+        sys.stderr.write("ERROR: --mcp-server-name is required with MCP 2026-07-28.\n")
+        return 2
     region = args.region or "local"
     port = args.port or 9484
     host = args.host or "::"
@@ -2761,15 +2798,30 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
 
     def _call_mcp(tool_name: str, arguments: dict) -> object:
         _live["mcp_rpc_id"] += 1
-        rpc = {
-            "jsonrpc": "2.0",
-            "id": _live["mcp_rpc_id"],
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-        }
-        r = httpx.post(f"{mcp_url}/mcp", json=rpc, timeout=30.0)
+        params = {"name": tool_name, "arguments": arguments}
+        headers: dict[str, str] = {}
+        if mcp_revision == MODERN_MCP_REVISION:
+            request = build_modern_mcp_request(
+                request_id=_live["mcp_rpc_id"],
+                method="tools/call",
+                name=tool_name,
+                params=params,
+                extensions=mcp_extensions,
+            )
+            rpc = request.body
+            headers = request.headers
+        else:
+            rpc = {
+                "jsonrpc": "2.0",
+                "id": _live["mcp_rpc_id"],
+                "method": "tools/call",
+                "params": params,
+            }
+        r = httpx.post(f"{mcp_url}/mcp", json=rpc, headers=headers, timeout=30.0)
         r.raise_for_status()
         data = r.json()
+        if mcp_revision == MODERN_MCP_REVISION:
+            validate_modern_mcp_response(data, mcp_server_name)
         if "error" in data:
             raise ValueError("MCP tool returned an error")
         return data.get("result")
@@ -2846,7 +2898,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             except httpx.HTTPError:
                 self._send_json(502, {"error": "MCP server unreachable"})
                 return
-            except ValueError as exc:
+            except (ValueError, McpNegotiationError) as exc:
                 self._send_json(422, {"error": str(exc)})
                 return
             self._send_json(
