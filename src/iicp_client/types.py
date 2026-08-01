@@ -218,6 +218,12 @@ class Node:
     route_evidence: str | None = None
     routing_hint: str | None = None
     browser_usable: bool | None = None
+    # Additive directory evidence. These objects are versioned by the directory
+    # and remain optional so older deployments continue to parse.
+    latency_evidence: dict[str, Any] | None = None
+    health_reasons: list[dict[str, Any]] | None = None
+    trust_progress: dict[str, Any] | None = None
+    sdk_release: dict[str, Any] | None = None
     # Phase-1 compliance: public, self-attested node policy manifest.
     node_policy_manifest: dict[str, Any] | None = None
     dispatch_ticket_id_prefix: str | None = None
@@ -228,3 +234,4 @@ class NodeList:
     nodes: list[Node]
     query_ms: int
     profile_negotiation: ProfileNegotiation | None = None
+    diversity_evidence: dict[str, Any] | None = None

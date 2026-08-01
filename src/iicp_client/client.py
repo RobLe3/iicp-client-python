@@ -232,6 +232,10 @@ class IicpClient:
             route_evidence=raw.get("route_evidence") if isinstance(raw.get("route_evidence"), str) else None,
             routing_hint=raw.get("routing_hint") if isinstance(raw.get("routing_hint"), str) else None,
             browser_usable=browser_usable if isinstance(browser_usable, bool) else None,
+            latency_evidence=raw.get("latency_evidence") if isinstance(raw.get("latency_evidence"), dict) else None,
+            health_reasons=raw.get("health_reasons") if isinstance(raw.get("health_reasons"), list) else None,
+            trust_progress=raw.get("trust_progress") if isinstance(raw.get("trust_progress"), dict) else None,
+            sdk_release=raw.get("sdk_release") if isinstance(raw.get("sdk_release"), dict) else None,
             node_policy_manifest=(
                 raw.get("node_policy_manifest") if isinstance(raw.get("node_policy_manifest"), dict) else None
             ),
@@ -415,7 +419,13 @@ class IicpClient:
             ):
                 continue
             nodes.append(node)
-        return NodeList(nodes=nodes, query_ms=elapsed, profile_negotiation=negotiation)
+        diversity = data.get("diversity_evidence")
+        return NodeList(
+            nodes=nodes,
+            query_ms=elapsed,
+            profile_negotiation=negotiation,
+            diversity_evidence=diversity if isinstance(diversity, dict) else None,
+        )
 
     async def submit_async(self, request: TaskRequest) -> TaskResponse:
         """Discover → select best node → submit task.
