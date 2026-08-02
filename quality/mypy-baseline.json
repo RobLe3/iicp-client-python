@@ -1,0 +1,30 @@
+{
+  "schema": "iicp.python-mypy-baseline.v1",
+  "error_count": 74,
+  "errors": {
+    "src/iicp_client/backend_stability.py|arg-type": 2,
+    "src/iicp_client/backends/anthropic.py|arg-type": 1,
+    "src/iicp_client/cli.py|arg-type": 7,
+    "src/iicp_client/cli.py|assignment": 1,
+    "src/iicp_client/cli.py|attr-defined": 2,
+    "src/iicp_client/cli.py|union-attr": 10,
+    "src/iicp_client/dispatch_ticket.py|arg-type": 2,
+    "src/iicp_client/endpoint_security.py|assignment": 1,
+    "src/iicp_client/node.py|assignment": 3,
+    "src/iicp_client/node.py|union-attr": 1,
+    "src/iicp_client/nat_detection.py|import-not-found": 2,
+    "src/iicp_client/otel_tracer.py|import-not-found": 4,
+    "src/iicp_client/proxy/anthropic_compat/server.py|union-attr": 3,
+    "src/iicp_client/proxy/clients/directory.py|attr-defined": 3,
+    "src/iicp_client/proxy/clients/directory.py|union-attr": 3,
+    "src/iicp_client/proxy/ollama_compat/server.py|union-attr": 3,
+    "src/iicp_client/proxy/openai_compat/server.py|union-attr": 3,
+    "src/iicp_client/proxy/otel_tracer.py|attr-defined": 6,
+    "src/iicp_client/proxy/otel_tracer.py|import-not-found": 4,
+    "src/iicp_client/recovery.py|union-attr": 6,
+    "src/iicp_client/relay_session.py|arg-type": 1,
+    "src/iicp_client/relay_worker_client.py|arg-type": 1,
+    "src/iicp_client/routing_policy.py|attr-defined": 1,
+    "src/iicp_client/routing_policy.py|index": 4
+  }
+}
