@@ -73,7 +73,8 @@ proxy = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
-    "pydantic-settings>=2.6",
+    "pydantic-settings>=2.14.2",
+    "starlette>=1.3.1",
     "prometheus-client>=0.21",
     "cryptography>=42",
 ]
@@ -83,13 +84,18 @@ dev = [
     "pytest-timeout>=2.3",
     "respx>=0.21",
     "ruff>=0.8",
+    "mypy>=1.18",
+    "pytest-cov>=6.0",
+    "pip-audit>=2.9",
+    "build>=1.2",
     "prometheus-client>=0.20",
     "cbor2>=5.4",
     "cryptography>=42",
     # ADR-050 proxy gateway — needed to exercise the moved iicp_client.proxy tests
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "pydantic-settings>=2.6",
+    "pydantic-settings>=2.14.2",
+    "starlette>=1.3.1",
     "httpx>=0.27",
 ]
 
@@ -117,3 +123,9 @@ select = ["E", "F", "I", "UP", "B"]
 # Keep correctness/import/bugbear checks strict without turning those stable
 # protocol literals into a release blocker.
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+show_error_codes = true
+pretty = false

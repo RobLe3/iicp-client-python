@@ -1,6 +1,6 @@
 # iicp-client · Python SDK
 
-[![CI](https://github.com/RobLe3/iicp-client-python/actions/workflows/ci.yml/badge.svg)](https://github.com/RobLe3/iicp-client-python/actions/workflows/ci.yml)
+[![SDK quality](https://github.com/RobLe3/iicp-client-python/actions/workflows/quality.yml/badge.svg)](https://github.com/RobLe3/iicp-client-python/actions/workflows/quality.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Protocol](https://img.shields.io/badge/IICP-v1.9-indigo.svg)](https://github.com/RobLe3/IICP)
 [![PyPI](https://img.shields.io/badge/PyPI-iicp--client-blue?logo=pypi&logoColor=white)](https://pypi.org/project/iicp-client/)
@@ -169,7 +169,7 @@ If an older supervised node does not update itself, perform one manual upgrade
 with the same interpreter and restart it through its normal supervisor:
 
 ```bash
-python -m pip install --upgrade 'iicp-client==0.7.98'
+python -m pip install --upgrade 'iicp-client==0.7.101'
 python -c 'import iicp_client; print(iicp_client.__version__)'
 ```
 
