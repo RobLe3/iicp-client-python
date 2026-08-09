@@ -66,15 +66,16 @@ def _resolve_receipt_profiles(
     saved_values: list[str] | None,
 ) -> list[str]:
     """Resolve explicit receipt-profile opt-in: CLI > env > saved > empty."""
-    raw = cli_values if cli_values is not None else (
-        env_value.split(",") if env_value is not None else (saved_values or [])
+    raw = (
+        cli_values
+        if cli_values is not None
+        else (env_value.split(",") if env_value is not None else (saved_values or []))
     )
     profiles = list(dict.fromkeys(value.strip() for value in raw if value.strip()))
     unsupported = [value for value in profiles if value != "consumer_cosignature_v1"]
     if unsupported:
         raise ValueError(
-            "unsupported receipt profile(s): " + ", ".join(unsupported) +
-            ". Supported: consumer_cosignature_v1."
+            "unsupported receipt profile(s): " + ", ".join(unsupported) + ". Supported: consumer_cosignature_v1."
         )
     return profiles
 
@@ -87,6 +88,30 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes"}
+
+
+def _managed_operator_decision(args, tunnel_preference, operator) -> tuple[bool, str]:
+    """Evaluate the local managed profile before exposure or registration."""
+    from iicp_client.operator_profile import ManagedOperatorInput, evaluate_managed_operator
+    from iicp_client.updater import auto_update_enabled
+
+    mode = os.environ.get("IICP_OPERATOR_PROFILE", "convenience").strip().lower()
+    key_backed = operator is not None and operator.is_key_backed()
+    protected = key_backed and operator.is_encrypted()
+    return evaluate_managed_operator(
+        ManagedOperatorInput(
+            mode=mode,
+            authentication_configured=key_backed,
+            identity_storage_protected=protected,
+            auto_update_requested=auto_update_enabled(),
+            update_authenticated=_env_bool("IICP_MANAGED_UPDATE_AUTHENTICATED"),
+            rollback_verified=_env_bool("IICP_MANAGED_ROLLBACK_VERIFIED"),
+            upnp_requested=bool(args.auto_detect_nat) and not _env_bool("IICP_SKIP_UPNP"),
+            tunnel_requested=tunnel_preference is not False,
+            upnp_approved=_env_bool("IICP_MANAGED_UPNP_APPROVED"),
+            tunnel_approved=_env_bool("IICP_MANAGED_TUNNEL_APPROVED"),
+        )
+    )
 
 
 def _tunnel_dead_policy_from_env() -> str:
@@ -1693,9 +1718,7 @@ async def _serve(args: argparse.Namespace) -> int:
             saved.supported_receipt_profiles if saved is not None else None,
         )
     except ValueError as exc:
-        sys.stderr.write(
-            f"ERROR: {exc}\n"
-        )
+        sys.stderr.write(f"ERROR: {exc}\n")
         return 2
 
     # Apply env / built-in defaults for any sentinel still unset (no saved config,
@@ -1788,6 +1811,10 @@ async def _serve(args: argparse.Namespace) -> int:
     # delegation (operator_pub == operator_id) and records the operator record. Never sends the
     # operator's secret key or contact/email.
     _op = load_operator()
+    _profile_accepted, _profile_reason = _managed_operator_decision(args, _tunnel_pref, _op)
+    if not _profile_accepted:
+        sys.stderr.write(f"ERROR: managed operator startup rejected: {_profile_reason}\n")
+        return 2
     _op_delegation = None
     _op_display_name = None
     _op_created_at = None
@@ -2812,11 +2839,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         """Decode JSON or the final JSON-RPC event from a Streamable HTTP response."""
         content_type = response.headers.get("content-type", "").lower()
         if "text/event-stream" in content_type:
-            events = [
-                line.removeprefix("data: ")
-                for line in response.text.splitlines()
-                if line.startswith("data: ")
-            ]
+            events = [line.removeprefix("data: ") for line in response.text.splitlines() if line.startswith("data: ")]
             if not events:
                 raise ValueError("MCP server returned an empty event stream")
             return json.loads(events[-1])
@@ -2849,9 +2872,7 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             raise ValueError("MCP server did not return a legacy session identifier")
         initialized = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
         notification_headers = {**headers, "Mcp-Session-Id": session_id}
-        notification = httpx.post(
-            f"{mcp_url}/mcp", json=initialized, headers=notification_headers, timeout=30.0
-        )
+        notification = httpx.post(f"{mcp_url}/mcp", json=initialized, headers=notification_headers, timeout=30.0)
         notification.raise_for_status()
         _live["mcp_session_id"] = session_id
 
