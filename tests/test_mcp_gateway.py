@@ -282,3 +282,88 @@ def test_mcp_gateway_legacy_http_initializes_and_retains_session():
         "notifications/initialized",
         "tools/call",
     ]
+
+@respx.mock
+def test_mcp_gateway_legacy_session_expiry_replays_only_explicit_safe_calls():
+    """Expired legacy sessions fail closed and replay at most once when opted in."""
+    import urllib.error
+    import urllib.request
+
+    mock_dir = "http://mock-dir-legacy-expiry"
+    mock_mcp = "http://mock-mcp-legacy-expiry"
+    issued_token = "gw-token-legacy-expiry"
+    state = {"initializations": 0, "tool_calls": 0, "session": ""}
+
+    respx.post(f"{mock_dir}/register").mock(return_value=Response(200, json={"node_token": issued_token}))
+    respx.post(f"{mock_dir}/heartbeat").mock(return_value=Response(200, json={}))
+
+    def handle_mcp(req):
+        body = json.loads(req.content)
+        method = body.get("method")
+        if method == "initialize":
+            state["initializations"] += 1
+            state["session"] = f"private-mcp-session-{state['initializations']}"
+            return Response(
+                200,
+                headers={"Mcp-Session-Id": state["session"]},
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-11-25"}},
+            )
+        assert req.headers["mcp-session-id"] == state["session"]
+        if method == "notifications/initialized":
+            return Response(202)
+        state["tool_calls"] += 1
+        if state["tool_calls"] <= 2:
+            return Response(404, json={"error": "expired"})
+        return Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {"content": []}})
+
+    respx.post(f"{mock_mcp}/mcp").mock(side_effect=handle_mcp)
+    port = _free_port()
+    args_ns = type("Args", (), {
+        "mcp_url": mock_mcp,
+        "tools": "format_json",
+        "node_id": "gw-legacy-expiry-001",
+        "public_endpoint": f"http://localhost:{port}",
+        "directory_url": mock_dir,
+        "region": "test",
+        "port": port,
+        "host": "127.0.0.1",
+        "mcp_revision": "2025-11-25",
+        "mcp_server_name": "",
+        "mcp_extensions": "",
+    })()
+    threading.Thread(target=lambda: cli._cmd_mcp_gateway(args_ns), daemon=True).start()
+    _wait_port(port)
+
+    def task(task_id: str, replay_safe: bool):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/task",
+            data=json.dumps({
+                "task_id": task_id,
+                "intent": "urn:iicp:intent:mcp:format_json:v1",
+                "payload": {
+                    "tool_name": "format_json",
+                    "arguments": {"value": "fixture"},
+                    "mcp_replay_safe": replay_safe,
+                },
+            }).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {issued_token}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    status, refused = task("legacy-expiry-no-replay", False)
+    assert status == 409
+    assert refused == {"error": "mcp_session_expired_retry_required", "retryable": True}
+    assert state["initializations"] == 1
+    assert state["tool_calls"] == 1
+
+    status, completed = task("legacy-expiry-safe", True)
+    assert status == 200
+    assert completed["status"] == "completed"
+    assert "private-mcp-session" not in json.dumps(completed)
+    assert state["initializations"] == 3
+    assert state["tool_calls"] == 3
