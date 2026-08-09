@@ -2763,7 +2763,12 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         {"intent": intent, "models": [f"mcp:{tool}"], "max_tokens": 65536}
         for tool, intent in zip(active_tools, intents, strict=True)
     ]
-    _live: dict = {"token": node_token_env, "mcp_rpc_id": 0}
+    _live: dict = {
+        "token": node_token_env,
+        "mcp_rpc_id": 0,
+        "mcp_session_id": None,
+        "mcp_session_lock": threading.RLock(),
+    }
 
     def _register() -> str:
         payload = {
@@ -2796,13 +2801,103 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         except httpx.HTTPError:
             pass
 
-    def _call_mcp(tool_name: str, arguments: dict) -> object:
+    class _McpSessionExpired(ValueError):
+        """The legacy Streamable HTTP session expired before a call was accepted."""
+
+    def _next_mcp_rpc_id() -> int:
         _live["mcp_rpc_id"] += 1
+        return _live["mcp_rpc_id"]
+
+    def _mcp_response_json(response: httpx.Response) -> object:
+        """Decode JSON or the final JSON-RPC event from a Streamable HTTP response."""
+        content_type = response.headers.get("content-type", "").lower()
+        if "text/event-stream" in content_type:
+            events = [
+                line.removeprefix("data: ")
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            if not events:
+                raise ValueError("MCP server returned an empty event stream")
+            return json.loads(events[-1])
+        return response.json()
+
+    def _legacy_initialize() -> None:
+        """Negotiate and retain one legacy Streamable HTTP session locally."""
+        init_id = _next_mcp_rpc_id()
+        headers = {
+            "MCP-Protocol-Version": LEGACY_MCP_REVISION,
+            "Accept": "application/json, text/event-stream",
+        }
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": init_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": LEGACY_MCP_REVISION,
+                "capabilities": {},
+                "clientInfo": {"name": "iicp-mcp-gateway", "version": "0.7"},
+            },
+        }
+        response = httpx.post(f"{mcp_url}/mcp", json=initialize, headers=headers, timeout=30.0)
+        response.raise_for_status()
+        data = _mcp_response_json(response)
+        if not isinstance(data, dict) or data.get("error"):
+            raise ValueError("MCP server rejected legacy initialization")
+        session_id = response.headers.get("mcp-session-id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("MCP server did not return a legacy session identifier")
+        initialized = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+        notification_headers = {**headers, "Mcp-Session-Id": session_id}
+        notification = httpx.post(
+            f"{mcp_url}/mcp", json=initialized, headers=notification_headers, timeout=30.0
+        )
+        notification.raise_for_status()
+        _live["mcp_session_id"] = session_id
+
+    def _legacy_tool_call(rpc: dict, *, replay_safe: bool) -> object:
+        with _live["mcp_session_lock"]:
+            if not _live["mcp_session_id"]:
+                _legacy_initialize()
+
+            def send_once() -> object:
+                session_id = _live["mcp_session_id"]
+                if not isinstance(session_id, str) or not session_id:
+                    raise ValueError("legacy MCP session identifier is unavailable")
+                response = httpx.post(
+                    f"{mcp_url}/mcp",
+                    json=rpc,
+                    headers={
+                        "MCP-Protocol-Version": LEGACY_MCP_REVISION,
+                        "Mcp-Session-Id": session_id,
+                        "Accept": "application/json, text/event-stream",
+                    },
+                    timeout=30.0,
+                )
+                if response.status_code in {401, 404}:
+                    _live["mcp_session_id"] = None
+                    raise _McpSessionExpired("MCP legacy session expired")
+                response.raise_for_status()
+                return _mcp_response_json(response)
+
+            try:
+                return send_once()
+            except _McpSessionExpired as exc:
+                if not replay_safe:
+                    raise _McpSessionExpired("MCP legacy session expired; caller retry required") from exc
+                _legacy_initialize()
+                try:
+                    return send_once()
+                except _McpSessionExpired as exc:
+                    raise ValueError("MCP legacy session expired after one reinitialization") from exc
+
+    def _call_mcp(tool_name: str, arguments: dict, *, replay_safe: bool = False) -> object:
+        rpc_id = _next_mcp_rpc_id()
         params = {"name": tool_name, "arguments": arguments}
         headers: dict[str, str] = {}
         if mcp_revision == MODERN_MCP_REVISION:
             request = build_modern_mcp_request(
-                request_id=_live["mcp_rpc_id"],
+                request_id=rpc_id,
                 method="tools/call",
                 name=tool_name,
                 params=params,
@@ -2813,13 +2908,16 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
         else:
             rpc = {
                 "jsonrpc": "2.0",
-                "id": _live["mcp_rpc_id"],
+                "id": rpc_id,
                 "method": "tools/call",
                 "params": params,
             }
-        r = httpx.post(f"{mcp_url}/mcp", json=rpc, headers=headers, timeout=30.0)
-        r.raise_for_status()
-        data = r.json()
+        if mcp_revision == LEGACY_MCP_REVISION:
+            data = _legacy_tool_call(rpc, replay_safe=replay_safe)
+        else:
+            r = httpx.post(f"{mcp_url}/mcp", json=rpc, headers=headers, timeout=30.0)
+            r.raise_for_status()
+            data = r.json()
         if mcp_revision == MODERN_MCP_REVISION:
             validate_modern_mcp_response(data, mcp_server_name)
         if "error" in data:
@@ -2893,10 +2991,18 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
                 self._send_json(404, {"error": "Tool not available on this gateway"})
                 return
             task_id = body.get("task_id", str(uuid.uuid4()))
+            replay_safe = payload.get("mcp_replay_safe") is True
             try:
-                result = _call_mcp(tool_name, arguments if isinstance(arguments, dict) else {})
+                result = _call_mcp(
+                    tool_name,
+                    arguments if isinstance(arguments, dict) else {},
+                    replay_safe=replay_safe,
+                )
             except httpx.HTTPError:
                 self._send_json(502, {"error": "MCP server unreachable"})
+                return
+            except _McpSessionExpired:
+                self._send_json(409, {"error": "mcp_session_expired_retry_required", "retryable": True})
                 return
             except (ValueError, McpNegotiationError) as exc:
                 self._send_json(422, {"error": str(exc)})

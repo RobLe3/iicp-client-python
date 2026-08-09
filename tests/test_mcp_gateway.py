@@ -210,3 +210,75 @@ def test_mcp_gateway_registers_serves_and_dispatches(monkeypatch):
         # Find the server thread and interrupt it; daemon thread exits with the test
     except Exception:
         pass
+
+
+@respx.mock
+def test_mcp_gateway_legacy_http_initializes_and_retains_session():
+    """The legacy HTTP gateway must initialize before forwarding tools/call."""
+    mock_dir = "http://mock-dir-legacy"
+    mock_mcp = "http://mock-mcp-legacy"
+    issued_token = "gw-token-legacy"
+    session_id = "legacy-session-123"
+    calls: list[dict] = []
+
+    respx.post(f"{mock_dir}/register").mock(return_value=Response(200, json={"node_token": issued_token}))
+    respx.post(f"{mock_dir}/heartbeat").mock(return_value=Response(200, json={}))
+
+    def handle_mcp(req):
+        body = json.loads(req.content)
+        calls.append({"headers": dict(req.headers), "body": body})
+        method = body.get("method")
+        if method == "initialize":
+            return Response(
+                200,
+                headers={"Mcp-Session-Id": session_id},
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-11-25"}},
+            )
+        if method == "notifications/initialized":
+            assert req.headers["mcp-session-id"] == session_id
+            return Response(202)
+        assert method == "tools/call"
+        assert req.headers["mcp-session-id"] == session_id
+        return Response(
+            200,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": "ok"}]}},
+        )
+
+    respx.post(f"{mock_mcp}/mcp").mock(side_effect=handle_mcp)
+    port = _free_port()
+    args_ns = type("Args", (), {
+        "mcp_url": mock_mcp,
+        "tools": "format_json",
+        "node_id": "gw-legacy-test-001",
+        "public_endpoint": f"http://localhost:{port}",
+        "directory_url": mock_dir,
+        "region": "test",
+        "port": port,
+        "host": "127.0.0.1",
+        "mcp_revision": "2025-11-25",
+        "mcp_server_name": "",
+        "mcp_extensions": "",
+    })()
+    threading.Thread(target=lambda: cli._cmd_mcp_gateway(args_ns), daemon=True).start()
+    _wait_port(port)
+
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/task",
+        data=json.dumps({
+            "task_id": "legacy-task-001",
+            "intent": "urn:iicp:intent:mcp:format_json:v1",
+            "payload": {"tool_name": "format_json", "arguments": {"value": "ok"}},
+        }).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {issued_token}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        result = json.loads(response.read())
+    assert result["status"] == "completed"
+    assert [call["body"]["method"] for call in calls] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/call",
+    ]
