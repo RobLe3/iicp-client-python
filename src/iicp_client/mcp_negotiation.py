@@ -22,6 +22,17 @@ class McpNegotiationError(ValueError):
 
 def evaluate_mcp_era(case: Mapping[str, Any]) -> dict[str, Any]:
     """Evaluate one content-free ``iicp.mcp.era-negotiation.v0`` input."""
+    for field, reason in (
+        ("oauth_issuer_matches", "oauth_issuer_mismatch"),
+        ("oauth_audience_matches", "oauth_audience_mismatch"),
+        ("resource_indicator_present", "missing_resource_indicator"),
+        ("protected_resource_metadata_valid", "invalid_protected_resource_metadata"),
+        ("pkce_valid", "pkce_required"),
+        ("consent_granted", "consent_required"),
+        ("audit_output_redacted", "audit_redaction_required"),
+    ):
+        if case.get(field) is False:
+            return {"accepted": False, "reason": reason}
     if case.get("downstream_credential_source") == "caller":
         return {"accepted": False, "reason": "credential_passthrough_prohibited"}
     if case.get("server_identity_matches_selected_endpoint") is False:
