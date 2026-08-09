@@ -36,9 +36,9 @@ def evaluate(value: dict[str, str]) -> dict[str, str]:
     if value["provider_signature"] != "valid":
         return {"action": "reject", "reason": "provider_signature_invalid", "trust_weight": "0.0"}
     if value["consumer_signature"] != "valid":
-        if value["consumer_signature"] == "missing" and value["mode"] == "optional":
-            return {"action": "accept_legacy", "reason": "consumer_signature_missing_optional", "trust_weight": "0.0"}
-        reason = "consumer_signature_required" if value["consumer_signature"] == "missing" else "consumer_signature_invalid"
+        if value["consumer_signature"] == "missing" and value["mode"] == "legacy":
+            return {"action": "accept_legacy", "reason": "consumer_signature_missing_legacy", "trust_weight": "0.0"}
+        reason = {"missing": "consumer_signature_required", "wrong_signer": "consumer_signer_mismatch"}.get(value["consumer_signature"], "consumer_signature_invalid")
         return {"action": "reject", "reason": reason, "trust_weight": "0.0"}
     if value["relationship"] == "same_node":
         return {"action": "exclude", "reason": "self_node", "trust_weight": "0.0"}
