@@ -4,6 +4,7 @@ The node itself stays a foreground process (`iicp-node serve --node <name>`).
 These helpers generate launchd/systemd units that let the OS own persistence,
 restart-on-failure and logs. No classic detach/fork daemonization is used.
 """
+
 from __future__ import annotations
 
 import os
@@ -27,6 +28,84 @@ class ServiceUnit:
     restart_hint: str
     uninstall_hint: str
     log_hint: str
+
+
+@dataclass(frozen=True)
+class ManagerAction:
+    argv: tuple[str, ...]
+    tolerate_failure: bool = False
+
+
+def manager_actions(unit: ServiceUnit, command: str, *, no_start: bool = False) -> list[ManagerAction]:
+    if unit.platform == "systemd":
+        name = f"{unit.name}.service"
+        show = (
+            "systemctl",
+            "--user",
+            "show",
+            name,
+            "-p",
+            "LoadState",
+            "-p",
+            "ActiveState",
+            "-p",
+            "SubState",
+            "-p",
+            "UnitFileState",
+            "-p",
+            "Restart",
+            "-p",
+            "RestartUSec",
+            "-p",
+            "Type",
+            "-p",
+            "WatchdogUSec",
+            "-p",
+            "NotifyAccess",
+        )
+        if command == "install":
+            actions = [
+                ManagerAction(("systemctl", "--user", "daemon-reload")),
+                ManagerAction(("systemctl", "--user", "enable", name)),
+            ]
+            if not no_start:
+                actions.append(ManagerAction(("systemctl", "--user", "start", name)))
+            actions.append(ManagerAction(show))
+            user = os.environ.get("USER")
+            if user:
+                actions.append(ManagerAction(("loginctl", "show-user", user, "-p", "Linger", "--value"), True))
+            return actions
+        if command == "status":
+            return [ManagerAction(show)]
+        if command == "restart":
+            return [ManagerAction(("systemctl", "--user", "restart", name))]
+        if command == "uninstall":
+            return [ManagerAction(("systemctl", "--user", "disable", "--now", name), True)]
+    else:
+        domain = f"gui/{os.getuid()}" if hasattr(os, "getuid") else "gui/unknown"
+        target = f"{domain}/{unit.name}"
+        if command == "install":
+            actions = [ManagerAction(("launchctl", "enable", target))]
+            if not no_start:
+                actions.extend(
+                    [
+                        ManagerAction(("launchctl", "bootout", target), True),
+                        ManagerAction(("launchctl", "bootstrap", domain, str(unit.path))),
+                        ManagerAction(("launchctl", "kickstart", "-k", target)),
+                        ManagerAction(("launchctl", "print", target)),
+                    ]
+                )
+            return actions
+        if command == "status":
+            return [ManagerAction(("launchctl", "print", target))]
+        if command == "restart":
+            return [ManagerAction(("launchctl", "kickstart", "-k", target))]
+        if command == "uninstall":
+            return [
+                ManagerAction(("launchctl", "bootout", target), True),
+                ManagerAction(("launchctl", "disable", target), True),
+            ]
+    raise ValueError(f"unknown service command: {command}")
 
 
 def sanitize_name(value: str) -> str:
@@ -68,7 +147,7 @@ def render_launchd(node: str, *, name: str | None = None, executable: str = "iic
         "IICP_LOG_DIR": str(log_dir),
     }
     env_xml = "\n".join(f"    <key>{escape(k)}</key><string>{escape(v)}</string>" for k, v in env.items())
-    content = f'''<?xml version="1.0" encoding="UTF-8"?>
+    content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -91,9 +170,12 @@ def render_launchd(node: str, *, name: str | None = None, executable: str = "iic
   <key>StandardErrorPath</key><string>{escape(str(log_dir / (label + ".err.log")))}</string>
 </dict>
 </plist>
-'''
+"""
     return ServiceUnit(
-        "launchd", label, plist, content,
+        "launchd",
+        label,
+        plist,
+        content,
         f"launchctl print gui/$(id -u)/{label}",
         f"launchctl kickstart -k gui/$(id -u)/{label}",
         f"launchctl bootout gui/$(id -u) {shlex.quote(str(plist))}; rm -f {shlex.quote(str(plist))}",
@@ -119,7 +201,7 @@ def render_systemd(node: str, *, name: str | None = None, executable: str = "iic
         "IICP_LOG_DIR": str(log_dir),
     }
     env_lines = "\n".join(f"Environment={k}={shlex.quote(v)}" for k, v in env.items())
-    content = f'''[Unit]
+    content = f"""[Unit]
 Description=IICP node {node}
 After=network-online.target
 Wants=network-online.target
@@ -134,9 +216,12 @@ WorkingDirectory={shlex.quote(str(home))}
 
 [Install]
 WantedBy=default.target
-'''
+"""
     return ServiceUnit(
-        "systemd", label, unit_path, content,
+        "systemd",
+        label,
+        unit_path,
+        content,
         f"systemctl --user status {label}.service",
         f"systemctl --user restart {label}.service",
         (

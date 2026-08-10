@@ -242,18 +242,22 @@ def _build_parser() -> argparse.ArgumentParser:
     svc_install.add_argument("--name", help="Override service label/unit name.")
     svc_install.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
     svc_install.add_argument("--dry-run", action="store_true", help="Print the generated unit and do not write files.")
+    svc_install.add_argument("--no-start", action="store_true", help="Install and enable without starting now.")
     svc_status = svc_sub.add_parser("status", help="Print the OS command to inspect service status.")
     svc_status.add_argument("--node", required=True)
     svc_status.add_argument("--name")
     svc_status.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
+    svc_status.add_argument("--dry-run", action="store_true")
     svc_restart = svc_sub.add_parser("restart", help="Print the OS command to restart the service.")
     svc_restart.add_argument("--node", required=True)
     svc_restart.add_argument("--name")
     svc_restart.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
+    svc_restart.add_argument("--dry-run", action="store_true")
     svc_uninstall = svc_sub.add_parser("uninstall", help="Print the OS command to uninstall the service.")
     svc_uninstall.add_argument("--node", required=True)
     svc_uninstall.add_argument("--name")
     svc_uninstall.add_argument("--platform", choices=["auto", "launchd", "systemd"], default="auto")
+    svc_uninstall.add_argument("--dry-run", action="store_true")
 
     serve = sub.add_parser("serve", help="Register and serve a node.")
     serve.add_argument(
@@ -3182,22 +3186,38 @@ def _cmd_service(args: object) -> int:
     Generated units default managed nodes to hourly updater checks while
     respecting existing IICP_AUTO_UPDATE* environment overrides.
     """
-    from iicp_client.service import render_unit
+    import subprocess
+
+    from iicp_client.service import manager_actions, render_unit
 
     node = args.node
     name = getattr(args, "name", None)
     platform = getattr(args, "platform", "auto")
     unit = render_unit(node, name=name, platform=platform)
     cmd = args.service_cmd
+    dry_run = bool(getattr(args, "dry_run", False))
+    no_start = bool(getattr(args, "no_start", False))
+
+    def run_actions() -> None:
+        for action in manager_actions(unit, cmd, no_start=no_start):
+            sys.stdout.write("manager:  " + " ".join(action.argv) + "\n")
+            if dry_run:
+                continue
+            completed = subprocess.run(action.argv, check=False)
+            if completed.returncode and not action.tolerate_failure:
+                raise RuntimeError(f"service manager action failed ({completed.returncode}): {' '.join(action.argv)}")
 
     if cmd == "install":
-        if getattr(args, "dry_run", False):
+        if dry_run:
             sys.stdout.write(f"# {unit.platform} service: {unit.name}\n# path: {unit.path}\n")
             sys.stdout.write(unit.content)
         else:
             unit.path.parent.mkdir(parents=True, exist_ok=True)
-            unit.path.write_text(unit.content)
+            temp = unit.path.with_suffix(unit.path.suffix + ".tmp")
+            temp.write_text(unit.content)
+            temp.replace(unit.path)
             sys.stdout.write(f"Installed {unit.platform} service unit: {unit.path}\n")
+        run_actions()
         sys.stdout.write(f"status:   {unit.status_hint}\n")
         sys.stdout.write(f"restart:  {unit.restart_hint}\n")
         sys.stdout.write(f"logs:     {unit.log_hint}\n")
@@ -3206,13 +3226,17 @@ def _cmd_service(args: object) -> int:
         )
         return 0
     if cmd == "status":
-        sys.stdout.write(unit.status_hint + "\n")
+        run_actions()
         return 0
     if cmd == "restart":
-        sys.stdout.write(unit.restart_hint + "\n")
+        run_actions()
         return 0
     if cmd == "uninstall":
-        sys.stdout.write(unit.uninstall_hint + "\n")
+        run_actions()
+        if not dry_run:
+            unit.path.unlink(missing_ok=True)
+            if unit.platform == "systemd":
+                subprocess.run(("systemctl", "--user", "daemon-reload"), check=True)
         return 0
     raise ValueError(f"unknown service subcommand: {cmd}")
 
