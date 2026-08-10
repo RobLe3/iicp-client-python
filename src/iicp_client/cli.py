@@ -537,6 +537,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--json", action="store_true", help="Print machine-readable recovery state.")
 
+    healthcheck = sub.add_parser("healthcheck", help="Check local runtime liveness/readiness snapshot.")
+    healthcheck.add_argument("--node", default=_env("IICP_NODE_NAME", None), help="Saved node name.")
+    healthcheck.add_argument("--json", action="store_true", help="Print the versioned local snapshot.")
+    healthcheck.add_argument("--ready", action="store_true", help="Check readiness instead of liveness.")
+
     # #460 — operator-identity management (mutable nickname over the immutable operator_id).
     operator = sub.add_parser("operator", help="Manage your operator identity.")
     op_sub = operator.add_subparsers(dest="op_cmd", required=True)
@@ -917,6 +922,43 @@ async def _fetch_and_display_credits(
         if free_tier > 0.0001:
             print(f"  · {free_tier:.3f} credits are free-tier allocation (directory-granted, not signed task awards)")
     return 0
+
+
+def _cmd_healthcheck(args: argparse.Namespace) -> int:
+    from iicp_client.runtime_health import snapshot_path
+
+    if not args.node:
+        sys.stderr.write("ERROR: healthcheck requires --node NAME\n")
+        return 2
+    try:
+        path = snapshot_path(args.node)
+        snapshot = json.loads(path.read_text())
+    except FileNotFoundError:
+        sys.stderr.write(f"INDETERMINATE: no runtime-health snapshot for node {args.node}\n")
+        return 2
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"INDETERMINATE: invalid runtime-health snapshot: {exc}\n")
+        return 2
+    try:
+        age_ms = int((time.time() - path.stat().st_mtime) * 1000)
+        stale_after = int(snapshot["progress"]["runtime"]["stale_after_ms"])
+    except (KeyError, TypeError, ValueError, OSError):
+        return 2
+    if age_ms < 0:
+        sys.stderr.write("INDETERMINATE: snapshot clock moved backwards\n")
+        return 2
+    if args.json:
+        print(json.dumps(snapshot, indent=2))
+    else:
+        print(f"IICP node health — {args.node}")
+        print(f"  liveness   {snapshot.get('liveness', 'indeterminate')}")
+        print(f"  readiness  {snapshot.get('readiness', 'not_ready')}")
+        print(f"  reasons    {', '.join(snapshot.get('reason_codes', []))}")
+    if age_ms > stale_after:
+        return 1
+    if args.ready:
+        return 0 if snapshot.get("readiness") == "ready" else 1
+    return 0 if snapshot.get("liveness") == "live" else 1 if snapshot.get("liveness") == "not_live" else 2
 
 
 def _doctor_loopback_host(host: str) -> str:
@@ -3209,6 +3251,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_cmd_credits_async(args))
     if args.cmd == "doctor":
         return asyncio.run(_cmd_doctor_async(args))
+    if args.cmd == "healthcheck":
+        return _cmd_healthcheck(args)
     if args.cmd == "operator":
         if args.op_cmd == "rename":
             return asyncio.run(_cmd_operator_rename_async(args))
