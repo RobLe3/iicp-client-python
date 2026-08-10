@@ -53,3 +53,27 @@ def test_service_install_dry_run_prints_unit_hints_and_no_daemon(monkeypatch, tm
     assert "logs:" in out
     assert "no classic --daemon fork" in out
     assert not (tmp_path / ".config" / "systemd" / "user" / "network.iicp.node.mynode.service").exists()
+
+
+def test_systemd_install_actions_are_effective_and_linger_is_read_only(monkeypatch, tmp_path):
+    from iicp_client.service import manager_actions
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USER", "operator")
+    unit = render_systemd("mynode")
+    actions = manager_actions(unit, "install")
+    commands = [a.argv for a in actions]
+    assert ("systemctl", "--user", "daemon-reload") in commands
+    assert ("systemctl", "--user", "enable", "network.iicp.node.mynode.service") in commands
+    assert ("systemctl", "--user", "start", "network.iicp.node.mynode.service") in commands
+    assert ("loginctl", "show-user", "operator", "-p", "Linger", "--value") in commands
+    assert not any("enable-linger" in a for command in commands for a in command)
+
+
+def test_no_start_omits_start(monkeypatch, tmp_path):
+    from iicp_client.service import manager_actions
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    unit = render_systemd("mynode")
+    commands = [a.argv for a in manager_actions(unit, "install", no_start=True)]
+    assert not any(command[:3] == ("systemctl", "--user", "start") for command in commands)
