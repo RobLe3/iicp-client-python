@@ -477,6 +477,9 @@ class IicpNode:
         # When present, refreshed registration credentials are persisted so
         # read-only commands such as `credits` do not drift behind the running node.
         self._saved_node_name: str | None = None
+        from iicp_client.runtime_health import RuntimeHealth
+
+        self._runtime_health = RuntimeHealth()
         # #553 / WQ-114 — provider-local backend stability observer.
         # Updated by heartbeat/model probes; consumed by /iicp/health and the
         # task admission gate. The public form is deliberately redacted.
@@ -949,9 +952,12 @@ class IicpNode:
         recovery_supervised = supervised_recovery_enabled()
         while True:
             await asyncio.sleep(_HEARTBEAT_INTERVAL)
+            self._runtime_health.advance_supervisor()
             seq += 1
             try:
                 await self.heartbeat(token)
+                self._runtime_health.set_external("directory", "healthy")
+                self._runtime_health.advance_supervisor()
                 logger.debug("Heartbeat sent for %s", self._cfg.node_id)
                 # #494 — detect model list drift and re-register if needed.
                 await self._maybe_reregister_on_model_drift()
@@ -1014,6 +1020,8 @@ class IicpNode:
                         )
                         os._exit(RECOVERY_EXIT_CODE)  # noqa: SLF001 — supervised recovery path
             except httpx.HTTPStatusError as exc:
+                self._runtime_health.set_external("directory", "unavailable")
+                self._runtime_health.advance_supervisor()
                 # #399 — the directory dropped the node (deregistered on a prior
                 # shutdown, TTL-expired after a heartbeat gap, or the directory
                 # restarted and forgot it). Re-register and resume with the fresh
@@ -1031,7 +1039,23 @@ class IicpNode:
                 else:
                     logger.warning("Heartbeat failed: %s", exc)
             except Exception as exc:  # noqa: BLE001
+                self._runtime_health.set_external("directory", "unavailable")
+                self._runtime_health.advance_supervisor()
                 logger.warning("Heartbeat failed: %s", exc)
+
+    async def _runtime_health_loop(self) -> None:
+        from iicp_client.runtime_health import snapshot_path, write_snapshot
+
+        if not self._saved_node_name:
+            return
+        path = snapshot_path(self._saved_node_name)
+        while True:
+            self._runtime_health.advance_runtime()
+            try:
+                write_snapshot(path, self._runtime_health.snapshot())
+            except OSError as exc:
+                logger.warning("runtime-health snapshot write failed: %s", exc)
+            await asyncio.sleep(5)
 
     # ── Nonce replay protection ───────────────────────────────────────────
 
@@ -1859,11 +1883,15 @@ class IicpNode:
             host,
             port,
         )
+        self._runtime_health.mark_running()
 
         bg_tasks: list[asyncio.Task] = []
+        if self._saved_node_name:
+            bg_tasks.append(asyncio.create_task(self._runtime_health_loop()))
         # #404 — start the heartbeat loop when a token is present OR empty (register
         # failed → loop self-heals via re-register on 401). None = --skip-registration.
         if node_token is not None:
+            self._runtime_health.set_supervisor_required(True)
             bg_tasks.append(asyncio.create_task(self._heartbeat_loop(node_token)))
         if self._pinhole_uid is not None:
             bg_tasks.append(asyncio.create_task(self._pinhole_renewal_loop()))
@@ -2018,6 +2046,7 @@ class IicpNode:
             # the HTTP server never binds its own socket — we feed it routed connections).
             await loop.run_in_executor(None, _accept_loop)
         finally:
+            self._runtime_health.mark_stopping()
             # BUG-3 fix: cancel background tasks BEFORE teardown so the gossip/heartbeat
             # coroutines stop scheduling futures onto the event loop during interpreter
             # teardown — silences the "cannot schedule new futures after interpreter
