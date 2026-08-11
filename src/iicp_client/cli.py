@@ -34,6 +34,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass as _dc
 
 from iicp_client import IicpNode, NodeConfig
@@ -2985,6 +2986,8 @@ def _cmd_mcp_gateway(args: argparse.Namespace) -> int:
             r = httpx.post(f"{mcp_url}/mcp", json=rpc, headers=headers, timeout=30.0)
             r.raise_for_status()
             data = r.json()
+        if not isinstance(data, Mapping):
+            raise ValueError("MCP tool returned a non-object response")
         if mcp_revision == MODERN_MCP_REVISION:
             validate_modern_mcp_response(data, mcp_server_name)
         if "error" in data:

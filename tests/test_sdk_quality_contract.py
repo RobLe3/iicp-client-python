@@ -29,3 +29,8 @@ def test_quality_runner_uses_the_shared_content_free_schema() -> None:
     assert RUNTIMES == ("3.11", "3.12", "3.13")
     assert '"commands"' not in source
     assert '"output"' not in source
+
+
+def test_pull_request_quality_enforces_mypy_no_regression() -> None:
+    workflow = (ROOT / ".github/workflows/quality.yml").read_text()
+    assert "python scripts/check_mypy_baseline.py" in workflow

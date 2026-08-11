@@ -24,4 +24,5 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: ruff check src tests
+      - run: python scripts/check_mypy_baseline.py
       - run: pytest -q
