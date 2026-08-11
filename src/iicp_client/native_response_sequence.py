@@ -44,7 +44,9 @@ class NativeResponseSequence:
 
         status = frame.get("status")
         event = lifecycle.get("event")
-        expected_events = {
+        if not isinstance(status, str):
+            raise NativeResponseSequenceError("status_event_disagreement")
+        expected_events: set[str] | None = {
             "partial": {"partial"},
             "success": {"completed"},
             "error": {"failed", "cancelled"},
