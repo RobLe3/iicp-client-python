@@ -16,6 +16,7 @@ from iicp_client.selection import (
 from iicp_client.types import Node, TaskRequest
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures/candidate-ranker-v0.json").read_text())
+REPLAY_FIXTURE = json.loads((Path(__file__).parent / "fixtures/candidate-ranker-benchmark-replay-v1.json").read_text())
 
 
 def _node(raw: dict[str, object]) -> Node:
@@ -114,3 +115,49 @@ def test_candidate_evidence_is_redacted_and_ineligible_node_is_absent() -> None:
         assert forbidden not in encoded
     assert [candidate.schema_version for candidate in ranker.observed] == [FIXTURE["evidence_schema"]] * 2
     assert [list(candidate.models) for candidate in ranker.observed] == [["model-a"], ["model-b"]]
+
+
+class _ReplayRanker:
+    def __init__(self, selected_ref: str) -> None:
+        self.selected_ref = selected_ref
+
+    def rank(
+        self,
+        _request: RankerRequest,
+        candidates: tuple[CandidateEvidenceV0, ...],
+    ) -> RankerDecision:
+        assert self.selected_ref in {candidate.candidate_ref for candidate in candidates}
+        return RankerDecision(
+            candidate_ref=self.selected_ref,
+            policy_id=REPLAY_FIXTURE["policy_id"],
+            mode=REPLAY_FIXTURE["mode"],
+        )
+
+
+@pytest.mark.parametrize("case", REPLAY_FIXTURE["cases"], ids=lambda case: case["task_id"])
+def test_iicp_heterogeneous_benchmark_decisions_replay(case: dict[str, object]) -> None:
+    node_definitions = {raw["node_id"]: raw for raw in REPLAY_FIXTURE["nodes"]}
+    eligible = [
+        Node(
+            node_id=node_id,
+            endpoint=f"https://{index}.invalid",
+            score=1.0,
+            available=True,
+            region="test",
+            load=0.0,
+            models=list(node_definitions[node_id]["models"]),
+        )
+        for index, node_id in enumerate(case["eligible_node_ids"])
+    ]
+    request = TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={"task": case["task_id"]})
+    applied = _apply_candidate_ranker(
+        _ReplayRanker(str(case["selected_candidate_ref"])),
+        request,
+        str(case["task_id"]),
+        eligible,
+        eligible.copy(),
+        len(eligible),
+    )
+    assert applied.candidates[0].node_id == case["selected_node_id"]
+    assert _ranker_receipt_profile(applied.decision, 0) == case["expected_primary_receipt"]
+    assert _ranker_receipt_profile(applied.decision, 1) == case["expected_fallback_receipt"]
