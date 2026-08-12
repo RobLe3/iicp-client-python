@@ -27,7 +27,13 @@ from iicp_client.routing_policy import (
     resolved_policy,
     routing_policy_refusal_message,
 )
-from iicp_client.selection import weighted_v1_order
+from iicp_client.selection import (
+    CandidateRanker,
+    RankerDecision,
+    _apply_candidate_ranker,
+    _ranker_receipt_profile,
+    weighted_v1_order,
+)
 from iicp_client.types import (
     ChatChoice,
     ChatMessage,
@@ -140,6 +146,13 @@ class IicpClient:
         # Phase 2 (#496): consumer token cache — (target_node_id, intent) → (token, exp_unix)
         self._ct_cache: dict[tuple[str, str], tuple[str, int]] = {}
         self._dispatch_ticket_key: str | None = None
+        self._candidate_ranker: CandidateRanker | None = None
+
+    def with_candidate_ranker(self, ranker: CandidateRanker) -> IicpClient:
+        """Attach an optional ranker for candidates that already passed eligibility."""
+
+        self._candidate_ranker = ranker
+        return self
 
     # ------------------------------------------------------------------
     # Phase 2 consumer token acquisition (#496)
@@ -218,6 +231,11 @@ class IicpClient:
             available=bool(raw.get("available", True)),
             region=str(raw.get("region", "")),
             load=float(raw.get("load", 0.0) or 0.0),
+            models=(
+                [str(model) for model in raw["models"] if isinstance(model, str)]
+                if isinstance(raw.get("models"), list)
+                else None
+            ),
             latency_estimate_ms=raw.get("latency_estimate_ms"),
             reputation_score=raw.get("reputation_score"),
             health_label=raw.get("health_label"),
@@ -501,10 +519,32 @@ class IicpClient:
                 retryable=False,
             )
         top_n = max(1, self._cfg.max_retries)
-        candidates = self._select_candidates(decision.eligible, top_n)
+        built_in_candidates = self._select_candidates(decision.eligible, top_n)
+        ranker_decision: RankerDecision | None = None
+        if self._candidate_ranker is not None:
+            try:
+                applied = _apply_candidate_ranker(
+                    self._candidate_ranker,
+                    request,
+                    task_id,
+                    decision.eligible,
+                    built_in_candidates,
+                    top_n,
+                )
+            except Exception as exc:
+                raise IicpError(
+                    code="IICP-CANDIDATE-RANKER-REFUSED",
+                    message=str(exc) or "candidate ranker failed",
+                    component="sdk",
+                    retryable=False,
+                ) from exc
+            candidates = applied.candidates
+            ranker_decision = applied.decision
+        else:
+            candidates = built_in_candidates
         last_exc: IicpError | None = None
 
-        for node in candidates:
+        for candidate_index, node in enumerate(candidates):
             cx_shared_secret: bytes | None = None
             require_encrypted_response = False
             body: dict[str, Any] = {
@@ -600,9 +640,15 @@ class IicpClient:
                         dispatch_ticket_id_prefix=node.dispatch_ticket_id_prefix,
                         routing_receipt={
                             "receipt_version": "iicp-routing-receipt-v1",
-                            "selection_profile": self._cfg.routing_strategy
-                            if node_list.profile_negotiation
-                            else "directory_ticket_v1",
+                            "selection_profile": (
+                                _ranker_receipt_profile(ranker_decision, candidate_index)
+                                if ranker_decision is not None
+                                else (
+                                    self._cfg.routing_strategy
+                                    if node_list.profile_negotiation
+                                    else "directory_ticket_v1"
+                                )
+                            ),
                             "eligible_candidate_count": len(decision.eligible),
                             "selected_node_id_prefix": _node_short_id(node.node_id),
                             "profile_negotiation": (

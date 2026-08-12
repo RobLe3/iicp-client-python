@@ -10,12 +10,16 @@ import pytest
 import respx
 
 from iicp_client import (
+    CandidateEvidenceV0,
+    CandidateRanker,
     ChatMessage,
     ChatOptions,
     ClientConfig,
     DiscoverOptions,
     IicpClient,
     IicpError,
+    RankerDecision,
+    RankerRequest,
     RoutingPolicy,
     TaskAuth,
     TaskRequest,
@@ -584,6 +588,80 @@ def test_routing_policy_eu_restricted_excludes_non_eu_and_uses_eu_node():
     assert eu_route.call_count == 1
     body = json.loads(eu_route.calls.last.request.content)
     assert "iicp_conf" in body and "payload" not in body
+
+
+@respx.mock
+def test_candidate_ranker_runs_after_policy_eligibility_and_records_exploration():
+    class EuRanker(CandidateRanker):
+        def __init__(self) -> None:
+            self.observed: tuple[CandidateEvidenceV0, ...] = ()
+
+        def rank(
+            self,
+            request: RankerRequest,
+            candidates: tuple[CandidateEvidenceV0, ...],
+        ) -> RankerDecision:
+            assert request.request.payload == {"prompt": "hello"}
+            self.observed = candidates
+            return RankerDecision(candidates[0].candidate_ref, "python-parity-v0", "exploration")
+
+    eu_node = dict(
+        GOOD_NODES["nodes"][0],
+        node_id="eu-node",
+        endpoint=NODE_KEYED_FALLBACK,
+        region="eu-central",
+        models=["model-eu"],
+        cx_public_key=_cx_key("cx-eu"),
+    )
+    us_node = dict(
+        GOOD_NODES["nodes"][0],
+        node_id="us-node",
+        region="us-east",
+        models=["model-us"],
+        score=0.99,
+        cx_public_key=_cx_key("cx-us"),
+    )
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [us_node, eu_node]}))
+    us_route = respx.post(TASK_URL).mock(return_value=httpx.Response(500, json={"message": "no"}))
+    respx.post(TASK_URL_KEYED_FALLBACK).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    ranker = EuRanker()
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY, routing_epsilon=0.0)).with_candidate_ranker(ranker)
+
+    response = client.submit(
+        TaskRequest(
+            intent="urn:iicp:intent:llm:chat:v1",
+            payload={"prompt": "hello"},
+            routing_policy=RoutingPolicy(profile="eu_restricted"),
+        )
+    )
+
+    assert us_route.call_count == 0
+    assert len(ranker.observed) == 1
+    assert list(ranker.observed[0].models) == ["model-eu"]
+    assert response.routing_receipt is not None
+    assert response.routing_receipt["selection_profile"] == "external_ranker/python-parity-v0/exploration"
+
+
+@respx.mock
+def test_candidate_ranker_unknown_reference_fails_before_provider_dispatch():
+    class UnknownRanker(CandidateRanker):
+        def rank(
+            self,
+            request: RankerRequest,
+            candidates: tuple[CandidateEvidenceV0, ...],
+        ) -> RankerDecision:
+            return RankerDecision("outside-eligible-set", "python-parity-v0", "normal")
+
+    node = dict(GOOD_NODES["nodes"][0], cx_public_key=_cx_key("cx-ranker"))
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={"nodes": [node]}))
+    route = respx.post(TASK_URL).mock(return_value=httpx.Response(200, json=_OK_TASK))
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY)).with_candidate_ranker(UnknownRanker())
+
+    with pytest.raises(IicpError) as exc_info:
+        client.submit(TaskRequest(intent="urn:iicp:intent:llm:chat:v1", payload={"prompt": "do not send"}))
+
+    assert exc_info.value.code == "IICP-CANDIDATE-RANKER-REFUSED"
+    assert route.call_count == 0
 
 
 @respx.mock

@@ -80,7 +80,15 @@ from iicp_client.routing_policy import (
     resolved_policy,
 )
 from iicp_client.scheduler import is_queue_eligible, qos_priority
-from iicp_client.selection import weighted_v1_order
+from iicp_client.selection import (
+    CANDIDATE_EVIDENCE_SCHEMA_V0,
+    CandidateEvidenceV0,
+    CandidateRanker,
+    RankerDecision,
+    RankerMode,
+    RankerRequest,
+    weighted_v1_order,
+)
 from iicp_client.service_lifecycle_accounting import (
     LifecycleAccountingDecision,
     decide_lifecycle_accounting,
@@ -177,6 +185,12 @@ __all__ = [
     "evaluate_lifecycle_identity",
     "evaluate_pre_normative_profile",
     "weighted_v1_order",
+    "CANDIDATE_EVIDENCE_SCHEMA_V0",
+    "CandidateEvidenceV0",
+    "CandidateRanker",
+    "RankerDecision",
+    "RankerMode",
+    "RankerRequest",
     "ClientConfig",
     "TaskAuth",
     "TaskConstraints",
