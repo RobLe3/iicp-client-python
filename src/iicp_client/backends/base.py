@@ -50,6 +50,7 @@ def with_backend_cancellation(handler: TaskHandler, registry: Any) -> TaskHandle
 
     return wrapped
 
+
 # #414 — speech-to-text. Multipart file upload, not a JSON body, so it takes a
 # distinct code path below.
 AUDIO_TRANSCRIBE_INTENT = "urn:iicp:intent:audio:transcribe:v1"
@@ -96,9 +97,7 @@ def build_openai_dialect_handler(
         if not isinstance(payload, dict):
             return {
                 "error_code": 400,
-                "error_message": (
-                    f"{engine}: task.payload must be a dict, got {type(payload).__name__}"
-                ),
+                "error_message": (f"{engine}: task.payload must be a dict, got {type(payload).__name__}"),
             }
 
         path = INTENT_TO_PATH.get(intent)
@@ -106,8 +105,7 @@ def build_openai_dialect_handler(
             return {
                 "error_code": 400,
                 "error_message": (
-                    f"{engine}: unsupported intent {intent!r}; "
-                    f"supported: {sorted(INTENT_TO_PATH.keys())}"
+                    f"{engine}: unsupported intent {intent!r}; supported: {sorted(INTENT_TO_PATH.keys())}"
                 ),
             }
 
@@ -121,8 +119,7 @@ def build_openai_dialect_handler(
                 return {
                     "error_code": 400,
                     "error_message": (
-                        f"{engine}: audio:transcribe requires payload.audio "
-                        "(base64-encoded audio bytes)"
+                        f"{engine}: audio:transcribe requires payload.audio (base64-encoded audio bytes)"
                     ),
                 }
             try:
@@ -205,8 +202,7 @@ def build_openai_dialect_handler(
                 "result": {
                     "audio": base64.b64encode(r.content).decode(),
                     "content_type": content_type,
-                    "format": speech_body.get("response_format")
-                    or content_type.split("/")[-1],
+                    "format": speech_body.get("response_format") or content_type.split("/")[-1],
                 }
             }
 
@@ -312,46 +308,99 @@ def build_openai_dialect_streaming_handler(
                             "error_message": f"{engine}: upstream {response.status_code}: {detail}",
                         }
                         return
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            yield {
-                                "status": "success",
-                                "result": "",
-                                **({"tokens_used": tokens_used} if tokens_used is not None else {}),
-                            }
-                            return
-                        if not data:
-                            continue
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            yield {
-                                "status": "error",
-                                "error_code": "invalid_backend_stream",
-                                "error_message": f"{engine}: upstream emitted invalid SSE JSON",
-                            }
-                            return
-                        usage = chunk.get("usage")
-                        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
-                            tokens_used = usage["total_tokens"]
-                        choices = chunk.get("choices")
-                        text = ""
-                        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-                            if intent.endswith(":chat:v1"):
-                                delta = choices[0].get("delta")
-                                if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                                    text = delta["content"]
-                            elif isinstance(choices[0].get("text"), str):
-                                text = choices[0]["text"]
-                        if text:
-                            yield {
-                                "status": "partial",
-                                "result": text,
-                                **({"tokens_used": tokens_used} if tokens_used is not None else {}),
-                            }
+                    lines = response.aiter_lines().__aiter__()
+                    next_line: asyncio.Future[str] | None = asyncio.ensure_future(anext(lines))
+                    output = ""
+                    flush_deadline: float | None = None
+                    try:
+                        while next_line is not None:
+                            timeout = None
+                            if output and flush_deadline is not None:
+                                timeout = max(0.0, flush_deadline - asyncio.get_running_loop().time())
+                            done, _ = await asyncio.wait({next_line}, timeout=timeout)
+                            if not done:
+                                yield {
+                                    "status": "partial",
+                                    "result": output,
+                                    **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+                                }
+                                output = ""
+                                flush_deadline = None
+                                continue
+                            try:
+                                line = next_line.result()
+                            except StopAsyncIteration:
+                                if output:
+                                    yield {
+                                        "status": "partial",
+                                        "result": output,
+                                        **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+                                    }
+                                yield {
+                                    "status": "error",
+                                    "error_code": "stream_incomplete",
+                                    "error_message": f"{engine}: upstream closed before [DONE]",
+                                }
+                                return
+                            next_line = asyncio.ensure_future(anext(lines))
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                if output:
+                                    yield {
+                                        "status": "partial",
+                                        "result": output,
+                                        **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+                                    }
+                                yield {
+                                    "status": "success",
+                                    "result": "",
+                                    **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+                                }
+                                return
+                            if not data:
+                                continue
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                yield {
+                                    "status": "error",
+                                    "error_code": "invalid_backend_stream",
+                                    "error_message": f"{engine}: upstream emitted invalid SSE JSON",
+                                }
+                                return
+                            usage = chunk.get("usage")
+                            if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+                                tokens_used = usage["total_tokens"]
+                            choices = chunk.get("choices")
+                            text = ""
+                            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                                if intent.endswith(":chat:v1"):
+                                    delta = choices[0].get("delta")
+                                    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                                        text = delta["content"]
+                                elif isinstance(choices[0].get("text"), str):
+                                    text = choices[0]["text"]
+                            if text:
+                                if not output:
+                                    flush_deadline = asyncio.get_running_loop().time() + 0.025
+                                output += text
+                                if len(output.encode("utf-8")) >= 256:
+                                    yield {
+                                        "status": "partial",
+                                        "result": output,
+                                        **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+                                    }
+                                    output = ""
+                                    flush_deadline = None
+                    finally:
+                        if next_line is not None and not next_line.done():
+                            next_line.cancel()
+                            try:
+                                await next_line
+                            except (asyncio.CancelledError, StopAsyncIteration):
+                                pass
         except httpx.TimeoutException:
             yield {
                 "status": "timeout",
