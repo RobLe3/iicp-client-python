@@ -24,7 +24,12 @@ from __future__ import annotations
 
 import logging
 
-from iicp_client.backends.base import TaskHandler, build_openai_dialect_handler
+from iicp_client.backends.base import (
+    StreamingTaskHandler,
+    TaskHandler,
+    build_openai_dialect_handler,
+    build_openai_dialect_streaming_handler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,23 @@ def openai_compat_handler(
         `{error_code: int, error_message: str}` on failure.
     """
     return build_openai_dialect_handler(
+        engine="openai_compat",
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        timeout_s=timeout_s,
+    )
+
+
+def openai_compat_streaming_handler(
+    *,
+    base_url: str = "http://localhost:11434/v1",
+    model: str | None = None,
+    api_key: str = "",
+    timeout_s: float = 30.0,
+) -> StreamingTaskHandler:
+    """Build an opt-in SSE streaming handler for compatible chat/completion backends."""
+    return build_openai_dialect_streaming_handler(
         engine="openai_compat",
         base_url=base_url,
         model=model,

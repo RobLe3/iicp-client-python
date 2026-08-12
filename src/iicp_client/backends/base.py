@@ -16,8 +16,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import Any
 
 import httpx
@@ -25,6 +26,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 TaskHandler = Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]]
+StreamingTaskHandler = Callable[[dict[str, Any]], AsyncIterator[dict[str, Any]]]
 
 
 def with_backend_cancellation(handler: TaskHandler, registry: Any) -> TaskHandler:
@@ -249,5 +251,120 @@ def build_openai_dialect_handler(
             }
 
         return {"result": data}
+
+    return handler
+
+
+def build_openai_dialect_streaming_handler(
+    *,
+    engine: str,
+    base_url: str,
+    model: str | None,
+    api_key: str,
+    timeout_s: float,
+) -> StreamingTaskHandler:
+    """Build a genuine SSE-backed streaming handler for chat/completion intents."""
+    base = base_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    async def handler(task: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        intent = str(task.get("intent", ""))
+        if intent not in {
+            "urn:iicp:intent:llm:chat:v1",
+            "urn:iicp:intent:llm:completion:v1",
+        }:
+            yield {
+                "status": "error",
+                "error_code": "unsupported_streaming_intent",
+                "error_message": f"{engine}: streaming is limited to chat and completion intents",
+            }
+            return
+        payload = task.get("payload") or {}
+        if not isinstance(payload, dict):
+            yield {
+                "status": "error",
+                "error_code": "invalid_payload",
+                "error_message": f"{engine}: task.payload must be a dict",
+            }
+            return
+        body = dict(payload)
+        if not body.get("model") and model is not None:
+            body["model"] = model
+        if not body.get("model"):
+            yield {
+                "status": "error",
+                "error_code": "missing_model",
+                "error_message": f"{engine}: no model configured",
+            }
+            return
+        body["stream"] = True
+        body.setdefault("stream_options", {"include_usage": True})
+        path = INTENT_TO_PATH[intent]
+        tokens_used: int | None = None
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s, headers=headers) as client:
+                async with client.stream("POST", f"{base}{path}", json=body) as response:
+                    if response.status_code >= 400:
+                        detail = (await response.aread()).decode("utf-8", errors="replace")[:512]
+                        yield {
+                            "status": "error",
+                            "error_code": f"upstream_{response.status_code}",
+                            "error_message": f"{engine}: upstream {response.status_code}: {detail}",
+                        }
+                        return
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            yield {
+                                "status": "success",
+                                "result": "",
+                                **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+                            }
+                            return
+                        if not data:
+                            continue
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            yield {
+                                "status": "error",
+                                "error_code": "invalid_backend_stream",
+                                "error_message": f"{engine}: upstream emitted invalid SSE JSON",
+                            }
+                            return
+                        usage = chunk.get("usage")
+                        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+                            tokens_used = usage["total_tokens"]
+                        choices = chunk.get("choices")
+                        text = ""
+                        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                            if intent.endswith(":chat:v1"):
+                                delta = choices[0].get("delta")
+                                if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                                    text = delta["content"]
+                            elif isinstance(choices[0].get("text"), str):
+                                text = choices[0]["text"]
+                        if text:
+                            yield {
+                                "status": "partial",
+                                "result": text,
+                                **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+                            }
+        except httpx.TimeoutException:
+            yield {
+                "status": "timeout",
+                "error_code": "backend_timeout",
+                "error_message": f"{engine}: backend timed out",
+                **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+            }
+        except httpx.HTTPError:
+            yield {
+                "status": "error",
+                "error_code": "backend_transport_error",
+                "error_message": f"{engine}: backend transport failed",
+                **({"tokens_used": tokens_used} if tokens_used is not None else {}),
+            }
 
     return handler
