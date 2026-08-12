@@ -18,6 +18,15 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Keep the manual fallback aligned with the guarded local publisher. Twine
+  # 6.2.0 rejects Core Metadata 2.5 emitted by Hatchling 1.32, so constrain the
+  # isolated PEP 517 backend until a released uploader accepts that metadata.
+  IICP_PYTHON_BUILD_VERSION: "1.5.0"
+  IICP_TWINE_VERSION: "6.2.0"
+  IICP_HATCHLING_VERSION: "1.31.0"
+  IICP_UV_VERSION: "0.11.6"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -44,12 +53,17 @@ jobs:
           test "$actual" = "$expected"
       - name: Test and build
         run: |
+          set -euo pipefail
+          constraints="$RUNNER_TEMP/iicp-python-release-constraints.txt"
+          printf 'hatchling==%s\n' "$IICP_HATCHLING_VERSION" > "$constraints"
           python -m pip install --upgrade pip
-          python -m pip install build ruff twine pytest pytest-asyncio
-          python -m pip install -e ".[dev]" || python -m pip install -e .
-          ruff check src tests
-          pytest -q
-          python -m build
+          python -m pip install \
+            "build==$IICP_PYTHON_BUILD_VERSION" \
+            "twine==$IICP_TWINE_VERSION" \
+            "uv==$IICP_UV_VERSION"
+          uv run --locked --extra dev ruff check src tests scripts
+          uv run --locked --extra dev pytest -q
+          PIP_CONSTRAINT="$constraints" python -m build
           twine check dist/*
       - name: Clean-install smoke
         run: |
