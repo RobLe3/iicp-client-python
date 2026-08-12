@@ -65,9 +65,89 @@ async def test_openai_compat_streaming_handler_emits_incremental_chunks_and_term
     request = json.loads(route.calls.last.request.content)
     assert request["stream"] is True
     assert request["stream_options"] == {"include_usage": True}
-    assert [event["status"] for event in events] == ["partial", "partial", "success"]
+    assert [event["status"] for event in events] == ["partial", "success"]
     assert "".join(event["result"] for event in events) == "hello"
     assert events[-1]["tokens_used"] == 7
+
+
+@respx.mock
+async def test_openai_compat_streaming_handler_flushes_at_utf8_byte_bound():
+    text = "é" * 128
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            text=(f'data: {{"choices":[{{"delta":{{"content":"{text}"}}}}]}}\n\ndata: [DONE]\n\n'),
+        )
+    )
+    handler = openai_compat_streaming_handler(model="qwen")
+    events = [
+        event
+        async for event in handler(
+            {
+                "task_id": "task-bound",
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "payload": {"messages": []},
+            }
+        )
+    ]
+    assert events == [
+        {"status": "partial", "result": text},
+        {"status": "success", "result": ""},
+    ]
+
+
+class _DelayedSseStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'data: {"choices":[{"delta":{"content":"timed"}}]}\n\n'
+        await asyncio.sleep(0.1)
+        yield b"data: [DONE]\n\n"
+
+
+@respx.mock
+async def test_openai_compat_streaming_handler_flushes_after_25_ms():
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=httpx.Response(200, stream=_DelayedSseStream())
+    )
+    handler = openai_compat_streaming_handler(model="qwen")
+    events = handler(
+        {
+            "task_id": "task-timed",
+            "intent": "urn:iicp:intent:llm:chat:v1",
+            "payload": {"messages": []},
+        }
+    )
+    first = await asyncio.wait_for(anext(events), timeout=0.075)
+    assert first == {"status": "partial", "result": "timed"}
+    await events.aclose()
+
+
+@respx.mock
+async def test_openai_compat_streaming_handler_rejects_premature_close():
+    respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+        )
+    )
+    handler = openai_compat_streaming_handler(model="qwen")
+    events = [
+        event
+        async for event in handler(
+            {
+                "task_id": "task-incomplete",
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "payload": {"messages": []},
+            }
+        )
+    ]
+    assert events == [
+        {"status": "partial", "result": "partial"},
+        {
+            "status": "error",
+            "error_code": "stream_incomplete",
+            "error_message": "openai_compat: upstream closed before [DONE]",
+        },
+    ]
 
 
 @respx.mock
@@ -93,6 +173,7 @@ async def test_openai_compat_streaming_handler_fails_closed_on_invalid_sse_json(
             "error_message": "openai_compat: upstream emitted invalid SSE JSON",
         }
     ]
+
 
 @pytest.mark.parametrize(
     ("name", "url", "factory"),
@@ -215,9 +296,7 @@ async def test_audio_transcribe_posts_multipart_and_returns_text():
 @respx.mock
 async def test_audio_transcribe_rejects_invalid_base64():
     handler = openai_compat_handler(model="whisper-1")
-    result = await handler(
-        {"intent": "urn:iicp:intent:audio:transcribe:v1", "payload": {"audio": "!!not-base64!!"}}
-    )
+    result = await handler({"intent": "urn:iicp:intent:audio:transcribe:v1", "payload": {"audio": "!!not-base64!!"}})
     assert result["error_code"] == 400
     assert "base64" in result["error_message"]
 
@@ -225,9 +304,7 @@ async def test_audio_transcribe_rejects_invalid_base64():
 @respx.mock
 async def test_audio_transcribe_requires_audio_field():
     handler = openai_compat_handler(model="whisper-1")
-    result = await handler(
-        {"intent": "urn:iicp:intent:audio:transcribe:v1", "payload": {}}
-    )
+    result = await handler({"intent": "urn:iicp:intent:audio:transcribe:v1", "payload": {}})
     assert result["error_code"] == 400
     assert "audio" in result["error_message"]
 
@@ -241,9 +318,7 @@ async def test_audio_speech_returns_base64_audio():
     handler base64-encodes into result.audio. Verified end-to-end against an
     espeak-ng OpenAI-compat shim (#414)."""
     route = respx.post("http://localhost:11434/v1/audio/speech").mock(
-        return_value=httpx.Response(
-            200, content=b"RIFF....fake-wav-audio", headers={"content-type": "audio/wav"}
-        )
+        return_value=httpx.Response(200, content=b"RIFF....fake-wav-audio", headers={"content-type": "audio/wav"})
     )
     handler = openai_compat_handler(model="tts-1")
     result = await handler(
@@ -264,9 +339,7 @@ async def test_audio_speech_returns_base64_audio():
 @respx.mock
 async def test_audio_speech_requires_input_field():
     handler = openai_compat_handler(model="tts-1")
-    result = await handler(
-        {"intent": "urn:iicp:intent:audio:speech:v1", "payload": {}}
-    )
+    result = await handler({"intent": "urn:iicp:intent:audio:speech:v1", "payload": {}})
     assert result["error_code"] == 400
     assert "input" in result["error_message"]
 
@@ -294,9 +367,7 @@ async def test_safety_moderate_routes_without_model():
         )
     )
     handler = openai_compat_handler()  # NO model configured
-    result = await handler(
-        {"intent": "urn:iicp:intent:safety:moderate:v1", "payload": {"input": "bad text"}}
-    )
+    result = await handler({"intent": "urn:iicp:intent:safety:moderate:v1", "payload": {"input": "bad text"}})
     assert "error_code" not in result, result
     assert result["result"]["results"][0]["flagged"] is True
     body = json.loads(bytes(route.calls[0].request.content))
@@ -517,9 +588,7 @@ async def test_timeout_is_classified_deterministically():
 
 @respx.mock
 async def test_connection_refused_is_classified_as_transport_error():
-    respx.post("http://localhost:11434/v1/chat/completions").mock(
-        side_effect=httpx.ConnectError("connection refused")
-    )
+    respx.post("http://localhost:11434/v1/chat/completions").mock(side_effect=httpx.ConnectError("connection refused"))
     result = await openai_compat_handler(model="q")(
         {"intent": "urn:iicp:intent:llm:chat:v1", "payload": {"messages": []}}
     )
