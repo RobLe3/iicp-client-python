@@ -227,6 +227,9 @@ class Node:
     # Phase-1 compliance: public, self-attested node policy manifest.
     node_policy_manifest: dict[str, Any] | None = None
     dispatch_ticket_id_prefix: str | None = None
+    # Existing directory model identifiers retained for local candidate ranking.
+    # Kept last to preserve positional construction compatibility.
+    models: list[str] | None = None
 
 
 @dataclass
