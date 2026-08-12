@@ -23,11 +23,15 @@ from iicp_client.backends.anthropic import anthropic_handler
 from iicp_client.backends.base import TaskHandler, with_backend_cancellation
 from iicp_client.backends.llamacpp import llamacpp_handler
 from iicp_client.backends.meshllm import meshllm_handler
-from iicp_client.backends.openai_compat import openai_compat_handler
+from iicp_client.backends.openai_compat import (
+    openai_compat_handler,
+    openai_compat_streaming_handler,
+)
 from iicp_client.backends.vllm import vllm_handler
 
 __all__ = [
     "openai_compat_handler",
+    "openai_compat_streaming_handler",
     "vllm_handler",
     "llamacpp_handler",
     "meshllm_handler",

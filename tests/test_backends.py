@@ -17,6 +17,7 @@ from iicp_client.backends import (
     llamacpp_handler,
     meshllm_handler,
     openai_compat_handler,
+    openai_compat_streaming_handler,
     vllm_handler,
     with_backend_cancellation,
 )
@@ -34,6 +35,64 @@ class TestFactoryDefaults:
         handler = meshllm_handler(model="model-a")
         assert callable(handler)
 
+
+@respx.mock
+async def test_openai_compat_streaming_handler_emits_incremental_chunks_and_terminal_usage():
+    route = respx.post("http://localhost:11434/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+                'data: {"choices":[],"usage":{"total_tokens":7}}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+    )
+    handler = openai_compat_streaming_handler(model="qwen")
+    events = [
+        event
+        async for event in handler(
+            {
+                "task_id": "task-1",
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "payload": {"messages": [{"role": "user", "content": "hi"}]},
+            }
+        )
+    ]
+    assert route.called
+    request = json.loads(route.calls.last.request.content)
+    assert request["stream"] is True
+    assert request["stream_options"] == {"include_usage": True}
+    assert [event["status"] for event in events] == ["partial", "partial", "success"]
+    assert "".join(event["result"] for event in events) == "hello"
+    assert events[-1]["tokens_used"] == 7
+
+
+@respx.mock
+async def test_openai_compat_streaming_handler_fails_closed_on_invalid_sse_json():
+    respx.post("http://localhost:11434/v1/completions").mock(
+        return_value=httpx.Response(200, text="data: not-json\n\n")
+    )
+    handler = openai_compat_streaming_handler(model="qwen")
+    events = [
+        event
+        async for event in handler(
+            {
+                "task_id": "task-2",
+                "intent": "urn:iicp:intent:llm:completion:v1",
+                "payload": {"prompt": "hi"},
+            }
+        )
+    ]
+    assert events == [
+        {
+            "status": "error",
+            "error_code": "invalid_backend_stream",
+            "error_message": "openai_compat: upstream emitted invalid SSE JSON",
+        }
+    ]
 
 @pytest.mark.parametrize(
     ("name", "url", "factory"),
