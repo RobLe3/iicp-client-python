@@ -321,3 +321,86 @@ async def test_client_roundtrip_init_ping_discover_call_close(server_port):
         assert len(await client.discover("urn:iicp:intent:llm:chat:v1")) == 2
         result = await client.call("urn:iicp:intent:llm:chat:v1", {"k": "v"}, call_id="c1")
         assert result["echo"]["k"] == "v"
+
+
+async def test_client_stream_call_yields_validated_partial_and_terminal(monkeypatch):
+    class Writer:
+        def __init__(self):
+            self.data = b""
+
+        def write(self, data):
+            self.data += data
+
+        async def drain(self):
+            return None
+
+    client = IicpTcpClient("127.0.0.1")
+    writer = Writer()
+    client._writer = writer
+    responses = iter(
+        [
+            {
+                2: "stream-session",
+                3: "stream-call",
+                4: "partial",
+                5: b"hel",
+                12: False,
+                13: {1: "stream-task", 2: 0, 3: "partial", 4: False},
+            },
+            {
+                2: "stream-session",
+                3: "stream-call",
+                4: "success",
+                5: b"lo",
+                12: True,
+                13: {1: "stream-task", 2: 1, 3: "completed", 4: True},
+            },
+        ]
+    )
+
+    async def read_frame(timeout_s=None):
+        return MsgType.RESPONSE, cbor2.dumps(next(responses), canonical=True)
+
+    monkeypatch.setattr(client, "_read_frame", read_frame)
+    events = [
+        event
+        async for event in client.stream_call(
+            "urn:iicp:intent:llm:chat:v1",
+            {"prompt": "hello"},
+            task_id="stream-task",
+            session_id="stream-session",
+            call_id="stream-call",
+        )
+    ]
+    assert [event["status"] for event in events] == ["partial", "success"]
+    assert b"".join(event["result"] for event in events) == b"hello"
+    request = cbor2.loads(writer.data[FRAME_HEADER_LEN:])
+    assert request[15] == "stream-call"
+    assert request[24] == "stream-task"
+
+
+async def test_client_stream_call_rejects_sequence_drift(monkeypatch):
+    class Writer:
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            return None
+
+    client = IicpTcpClient("127.0.0.1")
+    client._writer = Writer()
+
+    async def read_frame(timeout_s=None):
+        response = {
+            2: "s",
+            3: "c",
+            4: "success",
+            12: True,
+            13: {1: "t", 2: 1, 3: "completed", 4: True},
+        }
+        return MsgType.RESPONSE, cbor2.dumps(response, canonical=True)
+
+    monkeypatch.setattr(client, "_read_frame", read_frame)
+    with pytest.raises(IicpTcpClientError, match="sequence_drift"):
+        async for _ in client.stream_call("urn:iicp:intent:test:v1", {}, task_id="t", session_id="s", call_id="c"):
+            pass
