@@ -47,11 +47,19 @@ from iicp_client.relay_session import (
 def _signed_ticket(worker_id: str, relay_id: str) -> tuple[str, str]:
     sk = Ed25519PrivateKey.generate()
     pub_hex = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
-    payload = json.dumps({
-        "v": 1, "typ": "relay-bind-ticket", "jti": secrets.token_hex(16),
-        "iss": "test", "sub": worker_id, "aud": relay_id,
-        "iat": 1, "exp": 9999999999,
-    }, separators=(",", ":")).encode()
+    payload = json.dumps(
+        {
+            "v": 1,
+            "typ": "relay-bind-ticket",
+            "jti": secrets.token_hex(16),
+            "iss": "test",
+            "sub": worker_id,
+            "aud": relay_id,
+            "iat": 1,
+            "exp": 9999999999,
+        },
+        separators=(",", ":"),
+    ).encode()
     b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     sig = sk.sign(b"iicp:relay-bind-ticket:v1\n" + b64.encode()).hex()
     return f"{b64}.{sig}", pub_hex
@@ -98,9 +106,7 @@ class _ServerHandle:
     def _run(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._task = self._loop.create_task(
-            self._node.serve(_echo_handler, host="127.0.0.1", port=self.port)
-        )
+        self._task = self._loop.create_task(self._node.serve(_echo_handler, host="127.0.0.1", port=self.port))
         self._ready.set()
         try:
             self._loop.run_until_complete(self._task)
@@ -165,9 +171,7 @@ class TestHttpPollWorkerSession:
     def test_stream_preserves_partial_and_terminal_sequence(self):
         async def run():
             sess = HttpPollWorkerSession("w-stream")
-            stream = sess.forward_stream(
-                {"task_id": "task-stream", "session_id": "session-stream"}, timeout=1
-            )
+            stream = sess.forward_stream({"task_id": "task-stream", "session_id": "session-stream"}, timeout=1)
             pending = asyncio.create_task(anext(stream))
             call = await sess.next_call(timeout=1)
             assert call is not None
@@ -175,8 +179,11 @@ class TestHttpPollWorkerSession:
             sess.on_stream_response(
                 call_id,
                 {
-                    "session_id": "session-stream", "call_id": call_id, "status": "partial",
-                    "result": b"hel", "is_final": False,
+                    "session_id": "session-stream",
+                    "call_id": call_id,
+                    "status": "partial",
+                    "result": b"hel",
+                    "is_final": False,
                     "lifecycle": {"task_id": "task-stream", "sequence": 0, "event": "partial", "is_final": False},
                 },
             )
@@ -185,14 +192,106 @@ class TestHttpPollWorkerSession:
             sess.on_stream_response(
                 call_id,
                 {
-                    "session_id": "session-stream", "call_id": call_id, "status": "success",
-                    "result": b"lo", "is_final": True,
+                    "session_id": "session-stream",
+                    "call_id": call_id,
+                    "status": "success",
+                    "result": b"lo",
+                    "is_final": True,
                     "lifecycle": {"task_id": "task-stream", "sequence": 1, "event": "completed", "is_final": True},
                 },
             )
             assert (await terminal)["status"] == "success"
             await stream.aclose()
             assert call_id not in sess._stream_pending
+
+        asyncio.run(run())
+
+    def test_stream_rejects_sequence_drift_and_cleans_up(self):
+        async def run():
+            sess = HttpPollWorkerSession("w-drift")
+            stream = sess.forward_stream({"task_id": "task-drift", "session_id": "session-drift"}, timeout=1)
+            pending = asyncio.create_task(anext(stream))
+            call = await sess.next_call(timeout=1)
+            assert call is not None
+            call_id = call["call_id"]
+            sess.on_stream_response(
+                call_id,
+                {
+                    "session_id": "session-drift",
+                    "call_id": call_id,
+                    "status": "partial",
+                    "result": b"bad",
+                    "is_final": False,
+                    "lifecycle": {
+                        "task_id": "task-drift",
+                        "sequence": 1,
+                        "event": "partial",
+                        "is_final": False,
+                    },
+                },
+            )
+            with pytest.raises(Exception, match="sequence_drift"):
+                await pending
+            assert call_id not in sess._stream_pending
+
+        asyncio.run(run())
+
+    def test_stream_bounds_slow_consumer_and_cleans_up_on_cancel(self):
+        async def run():
+            sess = HttpPollWorkerSession("w-backpressure")
+            stream = sess.forward_stream({"task_id": "task-bound", "session_id": "session-bound"}, timeout=1)
+            first_waiter = asyncio.create_task(anext(stream))
+            call = await sess.next_call(timeout=1)
+            assert call is not None
+            call_id = call["call_id"]
+
+            def event(sequence: int) -> dict[str, Any]:
+                return {
+                    "session_id": "session-bound",
+                    "call_id": call_id,
+                    "status": "partial",
+                    "result": b"x",
+                    "is_final": False,
+                    "lifecycle": {
+                        "task_id": "task-bound",
+                        "sequence": sequence,
+                        "event": "partial",
+                        "is_final": False,
+                    },
+                }
+
+            sess.on_stream_response(call_id, event(0))
+            assert (await first_waiter)["status"] == "partial"
+            for sequence in range(1, 34):
+                sess.on_stream_response(call_id, event(sequence))
+            with pytest.raises(Exception, match="relay_backpressure_exceeded"):
+                await anext(stream)
+            assert call_id not in sess._stream_pending
+
+            cancelled = sess.forward_stream({"task_id": "task-cancel", "session_id": "session-cancel"}, timeout=1)
+            wait = asyncio.create_task(anext(cancelled))
+            cancel_call = await sess.next_call(timeout=1)
+            assert cancel_call is not None
+            wait.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await wait
+            assert cancel_call["call_id"] not in sess._stream_pending
+
+        asyncio.run(run())
+
+    def test_stream_times_out_when_worker_never_sends_terminal(self):
+        async def run():
+            sess = HttpPollWorkerSession("w-incomplete")
+            stream = sess.forward_stream(
+                {"task_id": "task-incomplete", "session_id": "session-incomplete"},
+                timeout=0.01,
+            )
+            pending = asyncio.create_task(anext(stream))
+            call = await sess.next_call(timeout=1)
+            assert call is not None
+            with pytest.raises(TimeoutError):
+                await pending
+            assert call["call_id"] not in sess._stream_pending
 
         asyncio.run(run())
 
@@ -278,13 +377,13 @@ class TestRelayHttpPollEndpoints:
         )
         assert status == 200
         status, _, _ = relay.request(
-            "POST", "/v1/relay/unbind", {},
+            "POST",
+            "/v1/relay/unbind",
+            {},
             headers={"Authorization": f"Bearer {accepted['session_token']}"},
         )
         assert status == 204
-        status, body, _ = self._bind(
-            relay, worker_id="w-http-ticket", models=[], extra={"bind_ticket": good_ticket}
-        )
+        status, body, _ = self._bind(relay, worker_id="w-http-ticket", models=[], extra={"bind_ticket": good_ticket})
         assert status == 409
         assert "replayed" in body["error"]["message"]
         status, body, _ = self._bind(relay, worker_id="w-http-ticket-2", models=[], extra={"bind_ticket": bad_ticket})
@@ -301,12 +400,12 @@ class TestRelayHttpPollEndpoints:
     def test_pull_and_result_require_bearer(self, relay):
         status, _, _ = relay.request("GET", "/v1/relay/pull")
         assert status == 401
-        status, _, _ = relay.request(
-            "GET", "/v1/relay/pull", headers={"Authorization": "Bearer nope"}
-        )
+        status, _, _ = relay.request("GET", "/v1/relay/pull", headers={"Authorization": "Bearer nope"})
         assert status == 401
         status, _, _ = relay.request(
-            "POST", "/v1/relay/result", {"call_id": "x", "result": {}},
+            "POST",
+            "/v1/relay/result",
+            {"call_id": "x", "result": {}},
             headers={"Authorization": "Bearer nope"},
         )
         assert status == 401
@@ -324,7 +423,9 @@ class TestRelayHttpPollEndpoints:
         def worker_loop():
             # one pull → answer → done
             s, call, _ = relay.request(
-                "GET", "/v1/relay/pull", headers={"Authorization": f"Bearer {token}"},
+                "GET",
+                "/v1/relay/pull",
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=35,
             )
             if s == 200 and call:
@@ -332,8 +433,7 @@ class TestRelayHttpPollEndpoints:
                 relay.request(
                     "POST",
                     "/v1/relay/result",
-                    {"call_id": call["call_id"],
-                     "result": {"result": {"text": "MESH OK from browser"}}},
+                    {"call_id": call["call_id"], "result": {"result": {"text": "MESH OK from browser"}}},
                     headers={"Authorization": f"Bearer {token}"},
                 )
             worker_done.set()
@@ -344,8 +444,11 @@ class TestRelayHttpPollEndpoints:
         status, resp, headers = relay.request(
             "POST",
             "/v1/relay-for/w-roundtrip/v1/task",
-            {"task_id": "t-1", "intent": "urn:iicp:intent:llm:chat:v1",
-             "payload": {"messages": [{"role": "user", "content": "hi"}]}},
+            {
+                "task_id": "t-1",
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "payload": {"messages": [{"role": "user", "content": "hi"}]},
+            },
             timeout=40,
         )
         assert worker_done.wait(timeout=10)
@@ -355,9 +458,7 @@ class TestRelayHttpPollEndpoints:
         assert worker_seen["task"]["task_id"] == "t-1"
         assert headers.get("Access-Control-Allow-Origin") == "*"
 
-    def test_strict_bind_encrypted_request_and_response_are_opaque_to_relay(
-        self, relay, monkeypatch, tmp_path
-    ):
+    def test_strict_bind_encrypted_request_and_response_are_opaque_to_relay(self, relay, monkeypatch, tmp_path):
         """A strict-bound worker receives only CX ciphertext and returns an
         encrypted response which the consumer can open end to end."""
         worker_id = "w-cx-roundtrip"
@@ -373,9 +474,7 @@ class TestRelayHttpPollEndpoints:
         request_envelope, consumer_secret = encrypt_payload_with_context(
             {"secret": secret_text}, cx_public, task_id, "urn:iicp:intent:llm:chat:v1"
         )
-        status, body, _ = self._bind(
-            relay, worker_id=worker_id, extra={"bind_ticket": good_ticket}
-        )
+        status, body, _ = self._bind(relay, worker_id=worker_id, extra={"bind_ticket": good_ticket})
         assert status == 200
         token = body["session_token"]
 
@@ -427,9 +526,7 @@ class TestRelayHttpPollEndpoints:
         assert "encrypted relay response" not in json.dumps(response, sort_keys=True)
 
     def test_relay_for_unknown_worker_404(self, relay):
-        status, body, _ = relay.request(
-            "POST", "/v1/relay-for/w-ghost/v1/task", {"task_id": "t-x"}
-        )
+        status, body, _ = relay.request("POST", "/v1/relay-for/w-ghost/v1/task", {"task_id": "t-x"})
         assert status == 404
         assert body["error"]["code"] == "IICP-E030"
 
@@ -445,9 +542,7 @@ class TestRelayHttpPollEndpoints:
     def test_unbind_releases_worker_id(self, relay):
         status, body, _ = self._bind(relay, worker_id="w-unbind")
         token = body["session_token"]
-        s, _, _ = relay.request(
-            "POST", "/v1/relay/unbind", {}, headers={"Authorization": f"Bearer {token}"}
-        )
+        s, _, _ = relay.request("POST", "/v1/relay/unbind", {}, headers={"Authorization": f"Bearer {token}"})
         assert s == 204
         # rebind now allowed
         status2, _, _ = self._bind(relay, worker_id="w-unbind")
@@ -500,8 +595,11 @@ class TestNodeWideCors:
         status, _, headers = relay.request(
             "POST",
             "/v1/task",
-            {"task_id": "t-cors", "intent": "urn:iicp:intent:llm:chat:v1",
-             "payload": {"messages": [{"role": "user", "content": "hi"}]}},
+            {
+                "task_id": "t-cors",
+                "intent": "urn:iicp:intent:llm:chat:v1",
+                "payload": {"messages": [{"role": "user", "content": "hi"}]},
+            },
         )
         assert headers.get("Access-Control-Allow-Origin") == "*"
 
@@ -520,15 +618,16 @@ class TestSessionCap:
         reg.bind("a", HttpPollWorkerSession("a"))
         reg.bind("b", HttpPollWorkerSession("b"))
         assert reg.count() == 2
-        assert reg.at_capacity("c") is True       # new worker → capped
-        assert reg.at_capacity("a") is False      # rebind → exempt
+        assert reg.at_capacity("c") is True  # new worker → capped
+        assert reg.at_capacity("a") is False  # rebind → exempt
 
     def test_http_bind_503_at_capacity(self, relay):
         # Fill to the default cap is impractical; instead drive a tiny relay.
         # The endpoint path is covered by the unit test above; here we assert
         # the registry on the real node is the capacity-aware type.
         status, body, _ = relay.request(
-            "POST", "/v1/relay/bind",
+            "POST",
+            "/v1/relay/bind",
             {"worker_id": "cap-probe", "intent": "urn:iicp:intent:llm:chat:v1"},
         )
         assert status == 200  # well under cap
