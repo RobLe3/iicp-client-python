@@ -1369,14 +1369,18 @@ class IicpNode:
                     return
                 call_id = payload.get("call_id", "")
                 result = payload.get("result")
-                if not call_id or not isinstance(result, dict):
+                event = payload.get("event")
+                if not call_id or (not isinstance(result, dict) and not isinstance(event, dict)):
                     err = json.dumps(
                         {"error": {"code": "IICP-E001", "message": "call_id and result are required"}}
                     ).encode()
                     self._json_response(422, err, cors=True)
                     return
                 # Future was created on the asyncio loop — resolve it there.
-                loop.call_soon_threadsafe(session.on_response, call_id, result)
+                if isinstance(event, dict):
+                    loop.call_soon_threadsafe(session.on_stream_response, call_id, event)
+                else:
+                    loop.call_soon_threadsafe(session.on_response, call_id, result)
                 self.send_response(204)
                 self._send_cors_headers()
                 self.end_headers()

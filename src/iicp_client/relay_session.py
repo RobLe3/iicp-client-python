@@ -35,9 +35,13 @@ import struct
 import threading
 import time
 import uuid
+from collections.abc import AsyncIterator
 from typing import Any
 
 from iicp_client.relay_ticket import consume_relay_bind_ticket, verify_relay_bind_ticket
+
+from .iicp_tcp import _decode_lifecycle_response
+from .native_response_sequence import NativeResponseSequence, NativeResponseSequenceError
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +100,7 @@ class RelayWorkerSession:
         self._writer = writer
         self._write_lock = asyncio.Lock()
         self._pending: dict[str, asyncio.Future[dict]] = {}
+        self._stream_pending: dict[str, tuple[asyncio.Queue[object], NativeResponseSequence]] = {}
 
     async def forward_task(self, task: dict, timeout: float = 120.0) -> dict:
         """Push a task CALL to the worker and await the RESPONSE."""
@@ -125,6 +130,59 @@ class RelayWorkerSession:
         fut = self._pending.get(call_id)
         if fut is not None and not fut.done():
             fut.set_result(result)
+
+    async def forward_stream(
+        self, task: dict, timeout: float = 120.0
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Push a negotiated streaming CALL and yield validated lifecycle events."""
+        call_id = str(uuid.uuid4())
+        task_id = str(task.get("task_id") or call_id)
+        session_id = str(task.get("session_id") or call_id)
+        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=32)
+        self._stream_pending[call_id] = (
+            queue,
+            NativeResponseSequence(session_id, call_id, task_id),
+        )
+        try:
+            payload = _enc(
+                {
+                    2: session_id,
+                    15: call_id,
+                    24: task_id,
+                    5: __import__("json").dumps(task).encode(),
+                }
+            )
+            async with self._write_lock:
+                self._writer.write(_make_frame(_MT_CALL, payload))
+                await self._writer.drain()
+            while True:
+                item = await asyncio.wait_for(queue.get(), timeout=timeout)
+                if isinstance(item, Exception):
+                    raise item
+                event = item
+                assert isinstance(event, dict)
+                yield event
+                if event["is_final"]:
+                    return
+        finally:
+            self._stream_pending.pop(call_id, None)
+
+    def on_stream_response(self, call_id: str, event: dict[str, Any]) -> None:
+        pending = self._stream_pending.get(call_id)
+        if pending is None:
+            return
+        queue, sequence = pending
+        try:
+            sequence.accept(event)
+            queue.put_nowait(event)
+        except (NativeResponseSequenceError, asyncio.QueueFull) as exc:
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait(
+                NativeResponseSequenceError(
+                    exc.code if isinstance(exc, NativeResponseSequenceError) else "relay_backpressure_exceeded"
+                )
+            )
 
 
 class HttpPollWorkerSession:
@@ -159,6 +217,7 @@ class HttpPollWorkerSession:
         self.session_token = uuid.uuid4().hex
         self._queue: asyncio.Queue[dict] = asyncio.Queue()
         self._pending: dict[str, asyncio.Future[dict]] = {}
+        self._stream_pending: dict[str, tuple[asyncio.Queue[object], NativeResponseSequence]] = {}
         self._last_pull = time.monotonic()
         self._liveness_window = liveness_window
         self._closed = False
@@ -193,6 +252,56 @@ class HttpPollWorkerSession:
         fut = self._pending.get(call_id)
         if fut is not None and not fut.done():
             fut.set_result(result)
+
+    async def forward_stream(
+        self, task: dict, timeout: float = 120.0
+    ) -> AsyncIterator[dict[str, Any]]:
+        call_id = str(uuid.uuid4())
+        task_id = str(task.get("task_id") or call_id)
+        session_id = str(task.get("session_id") or call_id)
+        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=32)
+        self._stream_pending[call_id] = (
+            queue,
+            NativeResponseSequence(session_id, call_id, task_id),
+        )
+        await self._queue.put(
+            {
+                "call_id": call_id,
+                "task_id": task_id,
+                "session_id": session_id,
+                "stream": True,
+                "task": task,
+            }
+        )
+        try:
+            while True:
+                item = await asyncio.wait_for(queue.get(), timeout=timeout)
+                if isinstance(item, Exception):
+                    raise item
+                event = item
+                assert isinstance(event, dict)
+                yield event
+                if event["is_final"]:
+                    return
+        finally:
+            self._stream_pending.pop(call_id, None)
+
+    def on_stream_response(self, call_id: str, event: dict[str, Any]) -> None:
+        pending = self._stream_pending.get(call_id)
+        if pending is None:
+            return
+        queue, sequence = pending
+        try:
+            sequence.accept(event)
+            queue.put_nowait(event)
+        except (NativeResponseSequenceError, asyncio.QueueFull) as exc:
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait(
+                NativeResponseSequenceError(
+                    exc.code if isinstance(exc, NativeResponseSequenceError) else "relay_backpressure_exceeded"
+                )
+            )
 
     def close(self) -> None:
         self._closed = True
@@ -524,6 +633,10 @@ class RelayAcceptServer:
                 try:
                     rb = _dec(payload)
                     if isinstance(rb, dict):
+                        if 13 in rb:
+                            event = _decode_lifecycle_response(rb)
+                            session.on_stream_response(str(event["call_id"]), event)
+                            continue
                         call_id = str(rb.get(15, ""))
                         raw5 = rb.get(5, b"")
                         import json as _json
