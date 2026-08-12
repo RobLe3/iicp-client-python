@@ -30,10 +30,13 @@ import asyncio
 import json
 import logging
 import struct
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
+
+from .native_response_sequence import NativeResponseSequence, NativeResponseSequenceError
 
 logger = logging.getLogger(__name__)
 
@@ -707,6 +710,61 @@ class IicpTcpClient:
             return decoded if isinstance(decoded, dict) else {"value": decoded}
         return result_bytes if isinstance(result_bytes, dict) else {"value": result_bytes}
 
+    async def stream_call(
+        self,
+        intent: str,
+        payload: dict[str, Any],
+        *,
+        task_id: str,
+        session_id: str = "call-1",
+        call_id: str | None = None,
+        idempotency_key: str | None = None,
+        timeout_s: float | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield validated events from the negotiated service-lifecycle profile.
+
+        This method is explicitly opt-in. ``call()`` retains the buffered base
+        contract and does not add lifecycle fields or wait for partial frames.
+        """
+        assert self._writer is not None
+        if not task_id:
+            raise ValueError("task_id is required for lifecycle streaming")
+        attempt_id = call_id or str(uuid.uuid4())
+        body: dict[int, object] = {
+            2: session_id,
+            3: intent,
+            5: json.dumps(payload).encode("utf-8"),
+            15: attempt_id,
+            24: task_id,
+        }
+        if idempotency_key is not None:
+            body[16] = idempotency_key
+        self._writer.write(IicpFrame.make(MsgType.CALL, encode_cbor(body)).encode())
+        await self._writer.drain()
+
+        sequence = NativeResponseSequence(session_id, attempt_id, task_id)
+        while True:
+            try:
+                mt, body_bytes = await self._read_frame(timeout_s=timeout_s)
+            except (TimeoutError, asyncio.IncompleteReadError) as exc:
+                try:
+                    sequence.finish()
+                except NativeResponseSequenceError as lifecycle_error:
+                    raise IicpTcpClientError(lifecycle_error.code) from exc
+                raise
+            if mt != MsgType.RESPONSE:
+                raise IicpTcpClientError(f"expected RESPONSE (0x06), got 0x{mt:02x}")
+            raw = decode_cbor(body_bytes) if body_bytes else {}
+            frame = _decode_lifecycle_response(raw)
+            try:
+                sequence.accept(frame)
+            except NativeResponseSequenceError as exc:
+                raise IicpTcpClientError(exc.code) from exc
+            yield frame
+            if frame["is_final"]:
+                sequence.finish()
+                return
+
     async def close(self) -> None:
         """Send CLOSE (graceful teardown). Server hangs up; caller should disconnect."""
         if self._writer is None or self._writer.is_closing():
@@ -733,3 +791,30 @@ class IicpTcpClient:
             else b""
         )
         return mt, payload
+
+
+def _decode_lifecycle_response(raw: object) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise IicpTcpClientError("CALL response body not a CBOR map")
+    lifecycle = raw.get(13)
+    if not isinstance(lifecycle, dict):
+        raise IicpTcpClientError("missing_lifecycle")
+    error = raw.get(6)
+    decoded_error = None
+    if isinstance(error, dict):
+        decoded_error = {"code": error.get(1), "message": error.get(2)}
+    return {
+        "session_id": raw.get(2),
+        "call_id": raw.get(3),
+        "status": raw.get(4),
+        "result": raw.get(5),
+        "error": decoded_error,
+        "tokens_used": raw.get(7),
+        "is_final": raw.get(12),
+        "lifecycle": {
+            "task_id": lifecycle.get(1),
+            "sequence": lifecycle.get(2),
+            "event": lifecycle.get(3),
+            "is_final": lifecycle.get(4),
+        },
+    }
