@@ -37,6 +37,13 @@ def test_empty_models_yields_default_intent_capability():
     assert caps == [{"intent": CHAT, "models": [], "max_tokens": 1024, "input_modalities": ["text"]}]
 
 
+def test_supported_profiles_are_explicit_and_deduplicated():
+    profile = "urn:iicp:profile:service-lifecycle:v1"
+    assert "supported_profiles" not in _build_capabilities(["qwen"], CHAT, 4096)[0]
+    caps = _build_capabilities(["qwen"], CHAT, 4096, [profile, profile])
+    assert caps[0]["supported_profiles"] == [profile]
+
+
 def test_vision_model_advertises_image_modality_chat_capability():
     # #408/ADR-046 — vision model → chat capability with image input, distinct
     # from the text-only chat capability. Fails without modality grouping.
