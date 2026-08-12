@@ -379,6 +379,73 @@ async def test_client_stream_call_yields_validated_partial_and_terminal(monkeypa
     assert request[24] == "stream-task"
 
 
+async def test_stream_call_roundtrip_uses_negotiated_server_handler():
+    port = _free_port()
+
+    async def stream_handler(task):
+        assert task["task_id"] == "task-live"
+        yield {"status": "partial", "result": b"hel", "tokens_used": 1}
+        yield {"status": "success", "result": b"lo", "tokens_used": 2}
+
+    server = IicpTcpServer(
+        host="127.0.0.1", port=port, node_id="stream-node", streaming_handler=stream_handler
+    )
+    await server.start()
+    try:
+        async with IicpTcpClient("127.0.0.1", port) as client:
+            await client.handshake()
+            events = [
+                event
+                async for event in client.stream_call(
+                    "urn:iicp:intent:llm:chat:v1",
+                    {"prompt": "hello"},
+                    task_id="task-live",
+                    session_id="session-live",
+                    call_id="call-live",
+                )
+            ]
+        assert [event["status"] for event in events] == ["partial", "success"]
+        assert [event["lifecycle"]["sequence"] for event in events] == [0, 1]
+        assert b"".join(event["result"] for event in events) == b"hello"
+        assert events[-1]["tokens_used"] == 2
+    finally:
+        await server.stop()
+
+
+async def test_stream_handler_exception_after_partial_emits_terminal_error():
+    port = _free_port()
+
+    async def stream_handler(_task):
+        yield {"status": "partial", "result": b"some"}
+        raise RuntimeError("sensitive backend detail")
+
+    server = IicpTcpServer(
+        host="127.0.0.1", port=port, node_id="stream-node", streaming_handler=stream_handler
+    )
+    await server.start()
+    try:
+        async with IicpTcpClient("127.0.0.1", port) as client:
+            await client.handshake()
+            events = [
+                event
+                async for event in client.stream_call(
+                    "urn:iicp:intent:llm:chat:v1",
+                    {},
+                    task_id="task-error",
+                    session_id="session-error",
+                    call_id="call-error",
+                )
+            ]
+        assert [event["status"] for event in events] == ["partial", "error"]
+        assert events[-1]["error"] == {
+            "code": "backend_error",
+            "message": "streaming handler raised exception",
+        }
+        assert events[-1]["is_final"] is True
+    finally:
+        await server.stop()
+
+
 async def test_client_stream_call_rejects_sequence_drift(monkeypatch):
     class Writer:
         def write(self, data):

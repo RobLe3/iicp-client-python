@@ -215,6 +215,46 @@ def encode_response(
     return encode_cbor(payload)
 
 
+def encode_lifecycle_response(
+    *,
+    session_id: str,
+    call_id: str,
+    task_id: str,
+    sequence: int,
+    status: str,
+    result: object | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    tokens_used: int | None = None,
+    event: str | None = None,
+) -> bytes:
+    """Encode one RESPONSE in the negotiated service-lifecycle profile."""
+    is_final = status != "partial"
+    event_name = event or {
+        "partial": "partial",
+        "success": "completed",
+        "error": "failed",
+        "timeout": "timed_out",
+    }.get(status)
+    if event_name is None:
+        raise ValueError(f"unsupported lifecycle status: {status}")
+    payload: dict[int, object] = {
+        1: FRAMING_VERSION,
+        2: session_id,
+        3: call_id,
+        4: status,
+        12: is_final,
+        13: {1: task_id, 2: sequence, 3: event_name, 4: is_final},
+    }
+    if result is not None:
+        payload[5] = result
+    if error_code is not None or error_message is not None:
+        payload[6] = {1: error_code or "stream_error", 2: error_message or "stream failed"}
+    if tokens_used is not None:
+        payload[7] = tokens_used
+    return encode_cbor(payload)
+
+
 def encode_discover_response(session_id: str, intent: str, nodes: list[dict[str, object]]) -> bytes:
     return encode_cbor({2: session_id, 3: intent, 20: nodes})
 
@@ -226,6 +266,7 @@ def encode_discover_response(session_id: str, intent: str, nodes: list[dict[str,
 # task dict has keys {task_id, intent, payload, ...}. Handler returns
 # {"result": ...} or {"error_code": int, "error_message": str}.
 TcpTaskHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+TcpStreamingHandler = Callable[[dict[str, Any]], AsyncIterator[dict[str, Any]]]
 
 # Discover lookup — given an intent URN, return a list of node descriptors.
 # Typically delegated back to the IicpClient.discover() against the directory.
@@ -259,6 +300,7 @@ class IicpTcpServer:
         port: int = 9484,
         node_id: str | None = None,
         handler: TcpTaskHandler | None = None,
+        streaming_handler: TcpStreamingHandler | None = None,
         discover_lookup: DiscoverLookup | None = None,
         concurrency_gate: object | None = None,
         relay_registry: object | None = None,
@@ -267,6 +309,7 @@ class IicpTcpServer:
         self.port = port
         self.node_id = node_id
         self.handler = handler
+        self.streaming_handler = streaming_handler
         self.discover_lookup = discover_lookup
         # Optional ConcurrencyGate (iicp_client.concurrency.ConcurrencyGate).
         # When set, every CALL frame acquires a slot before invoking the
@@ -454,6 +497,7 @@ class IicpTcpServer:
         intent = ""
         task_id = ""
         payload_obj: dict[str, Any] = {}
+        body: object = {}
 
         try:
             body = decode_cbor(frame.payload)
@@ -480,9 +524,19 @@ class IicpTcpServer:
                                 payload_obj = decoded
                         except json.JSONDecodeError:
                             pass
-                task_id = str(call_id or session_id)
+                task_id = str(body.get(24) or call_id or session_id)
         except Exception:  # noqa: BLE001
             pass
+
+        if isinstance(body, dict) and body.get(24) and self.streaming_handler is not None:
+            return await self._on_stream_call(
+                writer=writer,
+                session_id=session_id,
+                call_id=str(call_id or ""),
+                task_id=task_id,
+                intent=intent,
+                payload=payload_obj,
+            )
 
         result: bytes | str | None = None
         error_code: int | None = None
@@ -549,6 +603,84 @@ class IicpTcpServer:
         )
         writer.write(resp.encode())
         await writer.drain()
+        return True
+
+    async def _on_stream_call(
+        self,
+        *,
+        writer: asyncio.StreamWriter,
+        session_id: str,
+        call_id: str,
+        task_id: str,
+        intent: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Emit an ordered partial/final sequence for an explicitly opted-in CALL."""
+        assert self.streaming_handler is not None
+        streaming_handler = self.streaming_handler
+        task = {"task_id": task_id, "call_id": call_id, "intent": intent, "payload": payload}
+        sequence = 0
+        terminal_sent = False
+
+        async def emit(event: dict[str, Any]) -> None:
+            nonlocal sequence, terminal_sent
+            status = str(event.get("status", ""))
+            if terminal_sent:
+                raise ValueError("response_after_terminal")
+            if status not in {"partial", "success", "error", "timeout"}:
+                raise ValueError("invalid_stream_status")
+            encoded = encode_lifecycle_response(
+                session_id=session_id,
+                call_id=call_id,
+                task_id=task_id,
+                sequence=sequence,
+                status=status,
+                result=event.get("result"),
+                error_code=str(event["error_code"]) if "error_code" in event else None,
+                error_message=str(event["error_message"]) if "error_message" in event else None,
+                tokens_used=int(event["tokens_used"]) if "tokens_used" in event else None,
+                event=str(event["event"]) if "event" in event else None,
+            )
+            writer.write(IicpFrame.make(MsgType.RESPONSE, encoded).encode())
+            await writer.drain()
+            sequence += 1
+            terminal_sent = status != "partial"
+
+        async def run_handler() -> None:
+            async for event in streaming_handler(task):
+                await emit(event)
+            if not terminal_sent:
+                await emit(
+                    {
+                        "status": "error",
+                        "error_code": "stream_incomplete",
+                        "error_message": "stream ended without a terminal response",
+                    }
+                )
+
+        try:
+            from iicp_client.concurrency import ConcurrencyGate
+
+            gate = (
+                self.concurrency_gate
+                if isinstance(self.concurrency_gate, ConcurrencyGate)
+                else None
+            )
+            if gate is None:
+                await run_handler()
+            else:
+                async with gate.acquire():
+                    await run_handler()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("TCP streaming CALL handler failed: %s", exc)
+            if not terminal_sent:
+                await emit(
+                    {
+                        "status": "error",
+                        "error_code": "backend_error",
+                        "error_message": "streaming handler raised exception",
+                    }
+                )
         return True
 
     async def _on_relay_bind(self, frame: IicpFrame, writer: asyncio.StreamWriter) -> bool:
