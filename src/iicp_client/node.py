@@ -179,7 +179,12 @@ def _modalities_for_model(model: str) -> list[str]:
     return mods
 
 
-def _build_capabilities(models: list[str], default_intent: str, max_tokens: int) -> list[dict[str, Any]]:
+def _build_capabilities(
+    models: list[str],
+    default_intent: str,
+    max_tokens: int,
+    supported_profiles: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """#409 + #408 — group detected backend models into one capability object per
     (intent, input_modalities): advertise every intent the backend serves (chat +
     embedding) AND distinguish text-only vs image-capable (vision) chat. The
@@ -187,8 +192,12 @@ def _build_capabilities(models: list[str], default_intent: str, max_tokens: int)
     per-(intent,modality) model from discover. Back-compatible: a single text chat
     model yields the same single ["text"] capability. First-seen group leads.
     """
+    profiles = list(dict.fromkeys(supported_profiles or []))
     if not models:
-        return [{"intent": default_intent, "models": [], "max_tokens": max_tokens, "input_modalities": ["text"]}]
+        capability = {"intent": default_intent, "models": [], "max_tokens": max_tokens, "input_modalities": ["text"]}
+        if profiles:
+            capability["supported_profiles"] = profiles
+        return [capability]
     order: list[str] = []
     groups: dict[str, dict[str, Any]] = {}
     for m in models:
@@ -200,7 +209,11 @@ def _build_capabilities(models: list[str], default_intent: str, max_tokens: int)
             order.append(key)
         if m not in groups[key]["models"]:
             groups[key]["models"].append(m)
-    return [groups[key] for key in order]
+    capabilities = [groups[key] for key in order]
+    if profiles:
+        for capability in capabilities:
+            capability["supported_profiles"] = profiles.copy()
+    return capabilities
 
 
 _DEFAULT_TIMEOUT = 5.0
@@ -253,6 +266,8 @@ class NodeConfig:
     # Pre-normative receipt profiles this provider can verify/produce. Unknown
     # values are never advertised. Empty keeps the capability dormant.
     supported_receipt_profiles: list[str] = field(default_factory=list)
+    # Explicit opt-in capability profiles. Empty means no profile claim.
+    supported_profiles: list[str] = field(default_factory=list)
     region: str | None = None
     capabilities: list[str] = field(default_factory=list)
     directory_url: str = "https://iicp.network/api"
@@ -641,7 +656,9 @@ class IicpNode:
             "region": self._cfg.region or "unknown",
             # #409 — one capability object per intent the backend can serve
             # (e.g. chat + embedding), classified from the detected model set.
-            "capabilities": _build_capabilities(models, self._cfg.intent, self._cfg.max_tokens),
+            "capabilities": _build_capabilities(
+                models, self._cfg.intent, self._cfg.max_tokens, self._cfg.supported_profiles
+            ),
             "limits": {
                 "max_concurrent": self._cfg.max_concurrent,
                 "tokens_per_min": self._cfg.tokens_per_min,
@@ -686,9 +703,7 @@ class IicpNode:
         if self._cfg.policy_manifest:
             payload["policy_manifest"] = self._cfg.policy_manifest
         receipt_profiles = [
-            profile
-            for profile in self._cfg.supported_receipt_profiles
-            if profile == "consumer_cosignature_v1"
+            profile for profile in self._cfg.supported_receipt_profiles if profile == "consumer_cosignature_v1"
         ]
         if receipt_profiles:
             payload["supported_receipt_profiles"] = list(dict.fromkeys(receipt_profiles))
