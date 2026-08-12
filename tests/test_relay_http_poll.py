@@ -162,6 +162,40 @@ def relay():
 
 
 class TestHttpPollWorkerSession:
+    def test_stream_preserves_partial_and_terminal_sequence(self):
+        async def run():
+            sess = HttpPollWorkerSession("w-stream")
+            stream = sess.forward_stream(
+                {"task_id": "task-stream", "session_id": "session-stream"}, timeout=1
+            )
+            pending = asyncio.create_task(anext(stream))
+            call = await sess.next_call(timeout=1)
+            assert call is not None
+            call_id = call["call_id"]
+            sess.on_stream_response(
+                call_id,
+                {
+                    "session_id": "session-stream", "call_id": call_id, "status": "partial",
+                    "result": b"hel", "is_final": False,
+                    "lifecycle": {"task_id": "task-stream", "sequence": 0, "event": "partial", "is_final": False},
+                },
+            )
+            assert (await pending)["status"] == "partial"
+            terminal = asyncio.create_task(anext(stream))
+            sess.on_stream_response(
+                call_id,
+                {
+                    "session_id": "session-stream", "call_id": call_id, "status": "success",
+                    "result": b"lo", "is_final": True,
+                    "lifecycle": {"task_id": "task-stream", "sequence": 1, "event": "completed", "is_final": True},
+                },
+            )
+            assert (await terminal)["status"] == "success"
+            await stream.aclose()
+            assert call_id not in sess._stream_pending
+
+        asyncio.run(run())
+
     def test_forward_pull_result_roundtrip(self):
         async def scenario():
             sess = HttpPollWorkerSession("w-browser", models=["tinyllama"])
