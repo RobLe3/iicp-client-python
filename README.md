@@ -36,7 +36,7 @@ What good looks like:
 ```bash
 iicp-node --help       # shows query, serve, proxy, mcp-gateway, credits, ...
 which iicp-node        # points to your Python environment
-iicp-node --version    # prints iicp-node 0.7.102 or newer
+iicp-node --version    # prints iicp-node 0.7.103 or newer
 ```
 
 The query command contacts the public directory, discovers a matching live node,
@@ -170,7 +170,7 @@ base URL. Full guide: <https://iicp.network/docs/proxy>
 
 ## Keep provider nodes current
 
-The current public release line is **0.7.102**. Upgrade through your package
+The current public release line is **0.7.103**. Upgrade through your package
 manager before troubleshooting an older installation. Routing profiles can
 refuse remote dispatch before a prompt leaves the client; use `sensitive` for
 local-only work, `eu-restricted` for EU/EEA routing, or `strict-policy` when a
@@ -186,7 +186,7 @@ If an older supervised node does not update itself, perform one manual upgrade
 with the same interpreter and restart it through its normal supervisor:
 
 ```bash
-python -m pip install --upgrade 'iicp-client==0.7.102'
+python -m pip install --upgrade 'iicp-client==0.7.103'
 python -c 'import iicp_client; print(iicp_client.__version__)'
 ```
 
