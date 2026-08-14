@@ -38,6 +38,21 @@ from iicp_client.dispatch_ticket_trust import (
     TrustBundleStoreError,
     TrustBundleStoreLocked,
 )
+from iicp_client.effective_capability import (
+    EFFECTIVE_CAPABILITY_PROFILE_ID,
+    EFFECTIVE_CAPABILITY_SCHEMA_VERSION,
+    CapabilityClaimProvenance,
+    CapabilityExtension,
+    CapabilityLimit,
+    CapabilityLimitRequirement,
+    CapabilityRequirement,
+    CapabilityRequirements,
+    EffectiveCapability,
+    EffectiveCapabilityMatch,
+    effective_capabilities_from_advertisement,
+    match_effective_capabilities,
+    resolve_effective_capabilities,
+)
 from iicp_client.errors import IicpError
 from iicp_client.idempotency import IdempotencyGuard
 from iicp_client.iicp_tcp import IicpTcpClient, IicpTcpClientError, IicpTcpServer, MsgType
@@ -118,6 +133,19 @@ __version__ = "0.7.103"
 __all__ = [
     "IicpClient",
     "IicpError",
+    "EFFECTIVE_CAPABILITY_PROFILE_ID",
+    "EFFECTIVE_CAPABILITY_SCHEMA_VERSION",
+    "CapabilityClaimProvenance",
+    "CapabilityExtension",
+    "CapabilityLimit",
+    "CapabilityLimitRequirement",
+    "CapabilityRequirement",
+    "CapabilityRequirements",
+    "EffectiveCapability",
+    "EffectiveCapabilityMatch",
+    "effective_capabilities_from_advertisement",
+    "match_effective_capabilities",
+    "resolve_effective_capabilities",
     "AdminRecoveryAuthorization",
     "FileTrustBundleStore",
     "StoredTrustBundle",
