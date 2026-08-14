@@ -25,6 +25,8 @@ import time
 
 import httpx
 
+from iicp_client.proxy.clients.directory import DirectoryClient
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TTL_S = 30.0
@@ -44,6 +46,7 @@ class PeerCache:
         self._cache: dict[str, tuple[list[dict], float]] = {}  # intent → (nodes, ts)
         self._lock = asyncio.Lock()
         self._refresh_task: asyncio.Task | None = None
+        self._directory = DirectoryClient(directory_url, timeout_ms=int(_DEFAULT_TIMEOUT_S * 1000))
 
     async def start(self) -> None:
         """Warm the cache by bootstrapping from directory."""
@@ -77,18 +80,8 @@ class PeerCache:
         limit: int = 10,
     ) -> list[dict]:
         """Query directory and update cache. Always returns fresh data."""
-        params: dict[str, str | int] = {"intent": intent, "limit": limit}
-        if region:
-            params["region"] = region
-
         try:
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_S) as client:
-                resp = await client.get(
-                    f"{self._directory_url}/v1/discover",
-                    params=params,
-                )
-                resp.raise_for_status()
-                nodes: list[dict] = resp.json().get("nodes", [])
+            nodes = await self._directory.discover(intent=intent, region=region, limit=limit)
         except Exception as exc:
             logger.warning("Directory discover failed for %s: %s", intent, exc)
             return []

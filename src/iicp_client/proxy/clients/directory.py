@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from iicp_client.dispatch_ticket import policy_manifest_binding_matches, verify_dispatch_route_ticket
 from iicp_client.proxy.otel_tracer import proxy_discover_span
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ class DirectoryClient:
         # (TLS+DNS trust). When set, replica responses without a valid sig are
         # REJECTED — proxy refuses to use unverifiable node lists.
         self._did_resolver = did_resolver
+        self._dispatch_ticket_key: str | None = None
         self._route_discovery_mode = os.getenv("IICP_ROUTE_DISCOVERY_MODE", "auto").strip().lower()
         if self._route_discovery_mode not in {"auto", "ticketed", "legacy"}:
             self._route_discovery_mode = "auto"
@@ -80,15 +82,40 @@ class DirectoryClient:
                 error_code = body.get("error", {}).get("code") if isinstance(body, dict) else None
                 if resp.status_code == 201:
                     route = body.get("route")
-                    if not isinstance(route, dict) or not isinstance(body.get("node_id"), str):
+                    node_id = body.get("node_id")
+                    ticket = body.get("ticket")
+                    if not isinstance(route, dict) or not isinstance(node_id, str):
                         raise httpx.HTTPStatusError("Malformed ticketed route", request=resp.request, response=resp)
+                    if self._dispatch_ticket_key is None:
+                        key_response = await client.get(f"{self._base_url}/v1/directory-key")
+                        key_response.raise_for_status()
+                        key_body = key_response.json()
+                        key = key_body.get("public_key") if isinstance(key_body, dict) else None
+                        algorithm = key_body.get("algorithm") if isinstance(key_body, dict) else None
+                        if not isinstance(key, str) or algorithm != "ed25519":
+                            raise RuntimeError("Directory returned an invalid dispatch-ticket key")
+                        self._dispatch_ticket_key = key
+                    issuer = self._base_url.removesuffix("/api")
+                    claims = (
+                        verify_dispatch_route_ticket(
+                            ticket,
+                            self._dispatch_ticket_key,
+                            issuer,
+                            node_id,
+                            str(params.get("intent", "")),
+                        )
+                        if isinstance(ticket, str)
+                        else None
+                    )
+                    if claims is None or not policy_manifest_binding_matches(claims, route):
+                        raise RuntimeError("Directory returned an unverifiable dispatch ticket")
                     route = {
                         **route,
-                        "node_id": body["node_id"],
+                        "node_id": node_id,
                         "dispatch_ticket_id_prefix": body.get("ticket_id_prefix"),
                     }
                     routes.append(route)
-                    excluded.append(body["node_id"][:8])
+                    excluded.append(node_id[:8])
                     continue
                 if resp.status_code == 404 and error_code == "no_route_available":
                     break
@@ -300,6 +327,10 @@ class DirectoryClient:
                 return ticketed
             if self._route_discovery_mode == "ticketed":
                 raise RuntimeError("Directory does not support ticketed dispatch")
+
+        # Compatibility rollback remains explicit and is only reached when the
+        # operator selects legacy mode or an older directory lacks tickets.
+        params["view"] = "dispatch"
 
         with proxy_discover_span(intent or "") as span:
             current_base = self._redirect_target_or_none(self._base_url) or self._base_url
