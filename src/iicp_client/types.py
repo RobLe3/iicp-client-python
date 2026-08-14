@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from iicp_client.errors import IicpError
+    from iicp_client.runtime_identity import RuntimeIdentityOptions
 
 
 RoutingProfile = str
@@ -136,6 +137,7 @@ class ChatOptions:
     profile_request: ProfileRequest | None = None
     node_token: str | None = None
     routing_policy: RoutingPolicy | None = None
+    runtime_identity: RuntimeIdentityOptions | None = None
 
 
 @dataclass

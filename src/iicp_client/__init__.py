@@ -94,6 +94,14 @@ from iicp_client.routing_policy import (
     filter_nodes_for_routing_policy,
     resolved_policy,
 )
+from iicp_client.runtime_identity import (
+    RUNTIME_IDENTITY_MARKER,
+    RUNTIME_IDENTITY_PROFILE_ID,
+    RuntimeIdentityContextUnsupported,
+    RuntimeIdentityOptions,
+    compose_runtime_identity,
+    render_runtime_identity,
+)
 from iicp_client.scheduler import is_queue_eligible, qos_priority
 from iicp_client.selection import (
     CANDIDATE_EVIDENCE_SCHEMA_V0,
@@ -193,6 +201,12 @@ __all__ = [
     "POLICY_REFUSAL_CODE",
     "PROHIBITED_INTENT_RULES",
     "ROUTING_POLICY_REFUSAL_CODE",
+    "RUNTIME_IDENTITY_MARKER",
+    "RUNTIME_IDENTITY_PROFILE_ID",
+    "RuntimeIdentityContextUnsupported",
+    "RuntimeIdentityOptions",
+    "compose_runtime_identity",
+    "render_runtime_identity",
     "ensure_intent_allowed",
     "classify_intent",
     "intent_risk_reason",

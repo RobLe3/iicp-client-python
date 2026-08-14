@@ -687,6 +687,13 @@ class IicpClient:
     ) -> ChatResponse:
         """OpenAI-compatible chat over urn:iicp:intent:llm:chat:v1 (SDK-02)."""
         opts = options or ChatOptions()
+        from iicp_client.runtime_identity import compose_runtime_identity
+
+        messages = compose_runtime_identity(
+            messages,
+            intent="urn:iicp:intent:llm:chat:v1",
+            options=opts.runtime_identity,
+        )
         payload: dict[str, Any] = {
             "messages": [{"role": m.role, "content": m.content} for m in messages],
         }
