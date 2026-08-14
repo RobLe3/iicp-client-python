@@ -244,6 +244,47 @@ def effective_capabilities_from_advertisement(raw: Mapping[str, Any]) -> tuple[E
     return parsed
 
 
+def effective_capability_to_dict(capability: EffectiveCapability) -> dict[str, Any]:
+    """Project one typed variant into the canonical registration shape."""
+
+    result: dict[str, Any] = {"intent": capability.intent}
+    for key in ("version", "phase", "variant_id", "max_tokens"):
+        value = getattr(capability, key)
+        if value is not None:
+            result[key] = value
+    for key in (
+        "models",
+        "input_modalities",
+        "output_modalities",
+        "features",
+        "execution_capabilities",
+        "supported_profiles",
+    ):
+        value = getattr(capability, key)
+        if value:
+            result[key] = list(value)
+    if capability.limits:
+        result["limits"] = {key: {"value": limit.value, "unit": limit.unit} for key, limit in capability.limits.items()}
+    if capability.claim_provenance is not None:
+        claim = capability.claim_provenance
+        result["claim_provenance"] = {
+            key: value
+            for key, value in {
+                "source": claim.source,
+                "observed_at": claim.observed_at,
+                "valid_until": claim.valid_until,
+                "evidence_ref": claim.evidence_ref,
+            }.items()
+            if value is not None
+        }
+    if capability.extensions:
+        result["extensions"] = {
+            key: {"required": extension.required, "value": extension.value}
+            for key, extension in capability.extensions.items()
+        }
+    return result
+
+
 def resolve_effective_capabilities(
     *,
     explicit: Sequence[EffectiveCapability] = (),

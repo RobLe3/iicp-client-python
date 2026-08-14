@@ -36,6 +36,7 @@ import httpx
 
 from iicp_client.availability import AvailabilityEvaluator, Window
 from iicp_client.backend_stability import BackendStabilityObservation, observe_backend_stability
+from iicp_client.effective_capability import EffectiveCapability, effective_capability_to_dict
 from iicp_client.idempotency import IdempotencyGuard
 from iicp_client.iicp_tcp import IICP_MAGIC, IicpTcpServer  # #457 single-port multiplexer
 from iicp_client.peer_manager import PeerManager
@@ -270,6 +271,9 @@ class NodeConfig:
     supported_profiles: list[str] = field(default_factory=list)
     region: str | None = None
     capabilities: list[str] = field(default_factory=list)
+    # Complete, explicit service-path variants. When present these replace the
+    # legacy model-name heuristic advertisement rather than being unioned with it.
+    effective_capabilities: list[EffectiveCapability] = field(default_factory=list)
     directory_url: str = "https://iicp.network/api"
     timeout: float = _DEFAULT_TIMEOUT
     max_concurrent: int = 4
@@ -651,14 +655,17 @@ class IicpNode:
                 if cap not in models:
                     models.append(cap)
 
+        advertised_capabilities = (
+            [effective_capability_to_dict(capability) for capability in self._cfg.effective_capabilities]
+            if self._cfg.effective_capabilities
+            else _build_capabilities(models, self._cfg.intent, self._cfg.max_tokens, self._cfg.supported_profiles)
+        )
         payload: dict[str, Any] = {
             "endpoint": self._cfg.endpoint,
             "region": self._cfg.region or "unknown",
             # #409 — one capability object per intent the backend can serve
             # (e.g. chat + embedding), classified from the detected model set.
-            "capabilities": _build_capabilities(
-                models, self._cfg.intent, self._cfg.max_tokens, self._cfg.supported_profiles
-            ),
+            "capabilities": advertised_capabilities,
             "limits": {
                 "max_concurrent": self._cfg.max_concurrent,
                 "tokens_per_min": self._cfg.tokens_per_min,
