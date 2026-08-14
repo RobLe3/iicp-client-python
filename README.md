@@ -186,7 +186,7 @@ If an older supervised node does not update itself, perform one manual upgrade
 with the same interpreter and restart it through its normal supervisor:
 
 ```bash
-python -m pip install --upgrade 'iicp-client==0.7.103'
+python -m pip install --upgrade 'iicp-client==0.7.104'
 python -c 'import iicp_client; print(iicp_client.__version__)'
 ```
 
