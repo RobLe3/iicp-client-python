@@ -50,6 +50,7 @@ from iicp_client.effective_capability import (
     EffectiveCapability,
     EffectiveCapabilityMatch,
     effective_capabilities_from_advertisement,
+    effective_capability_to_dict,
     match_effective_capabilities,
     resolve_effective_capabilities,
 )
@@ -152,6 +153,7 @@ __all__ = [
     "EffectiveCapability",
     "EffectiveCapabilityMatch",
     "effective_capabilities_from_advertisement",
+    "effective_capability_to_dict",
     "match_effective_capabilities",
     "resolve_effective_capabilities",
     "AdminRecoveryAuthorization",
