@@ -20,6 +20,9 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from tests.proxy.ticket_helpers import public_key_hex, signed_ticket
 
 
 def _free_port() -> int:
@@ -57,6 +60,11 @@ class _MockHandler(BaseHTTPRequestHandler):
                 "count": 1,
                 "query_ms": 1,
             })
+        elif self.path == "/api/v1/directory-key":
+            self._json({
+                "public_key": public_key_hex(self.server.ticket_private_key),  # type: ignore[attr-defined]
+                "algorithm": "ed25519",
+            })
         else:
             self.send_response(404)
             self.end_headers()
@@ -64,9 +72,15 @@ class _MockHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         if self.path == "/api/v1/dispatch/ticket":
             n = int(self.headers.get("content-length", 0))
-            self.rfile.read(n)
+            request = json.loads(self.rfile.read(n))
             self._json({
-                "ticket": "e2e-route-ticket-not-forwarded",
+                "ticket": signed_ticket(
+                    self.server.ticket_private_key,  # type: ignore[attr-defined]
+                    issuer=self.server.directory_issuer,  # type: ignore[attr-defined]
+                    node_id="mock-node-1",
+                    intent=request["intent"],
+                    jti="eeeeeeeeeeeeeeeeeeeeeeee",
+                ),
                 "ticket_id_prefix": "e2e-ticket-1",
                 "node_id": "mock-node-1",
                 "route": {
@@ -102,6 +116,8 @@ def test_e2e_all_surfaces_through_real_proxy_process():
 
     srv = ThreadingHTTPServer(("127.0.0.1", mock_port), _MockHandler)
     srv.node_endpoint = f"http://127.0.0.1:{mock_port}"  # type: ignore[attr-defined]
+    srv.directory_issuer = f"http://127.0.0.1:{mock_port}"  # type: ignore[attr-defined]
+    srv.ticket_private_key = Ed25519PrivateKey.generate()  # type: ignore[attr-defined]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     env = {

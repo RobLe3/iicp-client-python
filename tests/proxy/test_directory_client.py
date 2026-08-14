@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from iicp_client.proxy.clients.directory import DirectoryClient
+from tests.proxy.ticket_helpers import public_key_hex, signed_ticket
 
 
 def _make_client(base_url: str = "https://dir.example.com", timeout_ms: int = 5000) -> DirectoryClient:
@@ -38,9 +40,18 @@ def _patch_client(response: MagicMock):
     return patch("iicp_client.proxy.clients.directory.httpx.AsyncClient", return_value=mock_ctx)
 
 
-def _patch_ticket_client(*responses: httpx.Response):
+def _patch_ticket_client(*responses: httpx.Response, public_key: str | None = None):
     mock_instance = AsyncMock()
     mock_instance.post = AsyncMock(side_effect=responses)
+    if public_key is not None:
+        endpoint = "https://dir.example.com/v1/directory-key"
+        mock_instance.get = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                request=httpx.Request("GET", endpoint),
+                json={"public_key": public_key, "algorithm": "ed25519"},
+            )
+        )
     mock_ctx = MagicMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_instance)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -79,28 +90,63 @@ async def test_discover_returns_empty_list_on_empty_nodes():
 @pytest.mark.asyncio
 @pytest.mark.ticketed_dispatch
 async def test_discover_prefers_ticketed_routes_and_uses_bounded_exclusions():
+    private_key = Ed25519PrivateKey.generate()
+    intent = "urn:iicp:intent:llm:chat:v1"
     endpoint = "https://dir.example.com/v1/dispatch/ticket"
     first = httpx.Response(201, request=httpx.Request("POST", endpoint), json={
-        "ticket": "secret-one",
+        "ticket": signed_ticket(
+            private_key,
+            issuer="https://dir.example.com",
+            node_id="node-11111111",
+            intent=intent,
+            jti="111111111111111111111111",
+        ),
         "ticket_id_prefix": "ticket-one",
         "node_id": "node-11111111",
         "route": {"endpoint": "https://node-one.example.com"},
     })
     second = httpx.Response(201, request=httpx.Request("POST", endpoint), json={
-        "ticket": "secret-two",
+        "ticket": signed_ticket(
+            private_key,
+            issuer="https://dir.example.com",
+            node_id="node-22222222",
+            intent=intent,
+            jti="222222222222222222222222",
+        ),
         "ticket_id_prefix": "ticket-two",
         "node_id": "node-22222222",
         "route": {"endpoint": "https://node-two.example.com"},
     })
-    patcher, mock_instance = _patch_ticket_client(first, second)
+    patcher, mock_instance = _patch_ticket_client(first, second, public_key=public_key_hex(private_key))
 
     with patcher:
-        result = await _make_client().discover(intent="urn:iicp:intent:llm:chat:v1", limit=2)
+        result = await _make_client().discover(intent=intent, limit=2)
 
     assert [node["node_id"] for node in result] == ["node-11111111", "node-22222222"]
     assert result[0]["dispatch_ticket_id_prefix"] == "ticket-one"
     assert "ticket" not in result[0]
     assert mock_instance.post.call_args_list[1].kwargs["json"]["exclude_node_id_prefixes"] == ["node-111"]
+    assert mock_instance.get.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.ticketed_dispatch
+async def test_unverifiable_ticket_does_not_downgrade_to_legacy_discovery():
+    private_key = Ed25519PrivateKey.generate()
+    endpoint = "https://dir.example.com/v1/dispatch/ticket"
+    response = httpx.Response(201, request=httpx.Request("POST", endpoint), json={
+        "ticket": "not-a-ticket",
+        "ticket_id_prefix": "invalid",
+        "node_id": "node-11111111",
+        "route": {"endpoint": "https://node-one.example.com"},
+    })
+    patcher, _ = _patch_ticket_client(response, public_key=public_key_hex(private_key))
+
+    with patcher, patch.object(DirectoryClient, "_fetch_discover_once", new_callable=AsyncMock) as legacy:
+        with pytest.raises(RuntimeError, match="unverifiable dispatch ticket"):
+            await _make_client().discover(intent="urn:iicp:intent:llm:chat:v1")
+
+    legacy.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -117,6 +163,41 @@ async def test_ticket_policy_error_does_not_downgrade_to_legacy_discovery():
     with patcher, patch.object(DirectoryClient, "_fetch_discover_once", new_callable=AsyncMock) as legacy:
         with pytest.raises(httpx.HTTPStatusError):
             await _make_client().discover(intent="urn:iicp:intent:llm:chat:v1")
+
+    legacy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.ticketed_dispatch
+async def test_auto_mode_falls_back_explicitly_for_unsupported_directory():
+    client = _make_client()
+    legacy_response = httpx.Response(
+        200,
+        request=httpx.Request("GET", "https://dir.example.com/v1/discover"),
+        json={"nodes": [{"node_id": "legacy-node"}]},
+    )
+    with (
+        patch.object(client, "_ticketed_routes", new_callable=AsyncMock, return_value=None) as tickets,
+        patch.object(client, "_fetch_discover_once", new_callable=AsyncMock, return_value=legacy_response) as legacy,
+    ):
+        result = await client.discover(intent="urn:iicp:intent:llm:chat:v1")
+
+    assert result == [{"node_id": "legacy-node"}]
+    tickets.assert_awaited_once()
+    assert legacy.await_args.args[1]["view"] == "dispatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.ticketed_dispatch
+async def test_ticketed_mode_refuses_unsupported_directory(monkeypatch):
+    monkeypatch.setenv("IICP_ROUTE_DISCOVERY_MODE", "ticketed")
+    client = _make_client()
+    with (
+        patch.object(client, "_ticketed_routes", new_callable=AsyncMock, return_value=None),
+        patch.object(client, "_fetch_discover_once", new_callable=AsyncMock) as legacy,
+        pytest.raises(RuntimeError, match="does not support ticketed dispatch"),
+    ):
+        await client.discover(intent="urn:iicp:intent:llm:chat:v1")
 
     legacy.assert_not_awaited()
 

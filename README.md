@@ -267,6 +267,11 @@ Loopback-only consumer (never registers with the directory). Override the port w
 `--port` / `IICP_PROXY_PORT`; co-host next to a node with `iicp-node serve --with-proxy`.
 Every response carries `Server: iicp-proxy`. Full guide: <https://iicp.network/docs/proxy>
 
+The proxy prefers directory-signed route tickets and verifies each ticket before
+using its route. It falls back only when an older directory does not support the
+ticket endpoint. Set `IICP_ROUTE_DISCOVERY_MODE=legacy` for an explicit rollback,
+or `IICP_ROUTE_DISCOVERY_MODE=ticketed` to refuse unsupported directories.
+
 ## Configuration
 
 ```python

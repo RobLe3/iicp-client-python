@@ -9,6 +9,10 @@ in the main repo).
 
 ## [Unreleased]
 
+### Security — proxy ticket verification
+- The packaged proxy and its peer cache now verify directory-signed route tickets and policy-manifest bindings before using disclosed routes.
+- Automatic fallback is limited to directories that do not support ticket issuance. Invalid tickets and policy refusals fail closed, while `IICP_ROUTE_DISCOVERY_MODE=legacy` remains an explicit rollback setting.
+
 ## [0.7.103] — 2026-08-13
 
 ### Added — eligibility-bounded candidate ranking

@@ -104,7 +104,12 @@ async def test_valid_replica_sig_accepted():
     respx.get(f"{SEED}/v1/discover").mock(return_value=_redirect_to_replica())
     body = b'{"nodes":[{"node_id":"n1"}],"count":1}'
     respx.get(f"{REPLICA}/v1/discover").mock(
-        return_value=_signed_discover(priv, body, 42, "intent=urn%3Aiicp%3Aintent%3Allm%3Achat%3Av1&limit=5")
+        return_value=_signed_discover(
+            priv,
+            body,
+            42,
+            "intent=urn%3Aiicp%3Aintent%3Allm%3Achat%3Av1&limit=5&view=dispatch",
+        )
     )
 
     reg = ReplicaRegistry(SEED)
@@ -153,7 +158,13 @@ async def test_tampered_body_rejected():
     respx.get(f"{SEED}/v1/discover").mock(return_value=_redirect_to_replica())
     # Sign one body, return a different one (mid-flight tamper)
     signed_for = b'{"nodes":[{"node_id":"legitimate"}]}'
-    msg = signing_input("GET", "/v1/discover", "intent=urn%3Aiicp%3Aintent%3Allm%3Achat%3Av1&limit=5", 42, signed_for)
+    msg = signing_input(
+        "GET",
+        "/v1/discover",
+        "intent=urn%3Aiicp%3Aintent%3Allm%3Achat%3Av1&limit=5&view=dispatch",
+        42,
+        signed_for,
+    )
     sig = priv.sign(msg).hex()
     tampered = b'{"nodes":[{"node_id":"attacker-injection"}]}'
     respx.get(f"{REPLICA}/v1/discover").mock(
