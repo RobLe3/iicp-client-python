@@ -9,6 +9,12 @@ in the main repo).
 
 ## [Unreleased]
 
+## [0.7.104] — 2026-08-14
+
+### Added — effective capabilities and runtime identity
+- Added the shared effective-capability-v1 parser, matcher and explicit provider variants without inferring verified behavior from model names.
+- Added opt-in, chat-only runtime identity composition. It preserves application instructions, omits unknown facts and leaves non-chat payloads unchanged.
+
 ### Security — proxy ticket verification
 - The packaged proxy and its peer cache now verify directory-signed route tickets and policy-manifest bindings before using disclosed routes.
 - Automatic fallback is limited to directories that do not support ticket issuance. Invalid tickets and policy refusals fail closed, while `IICP_ROUTE_DISCOVERY_MODE=legacy` remains an explicit rollback setting.
