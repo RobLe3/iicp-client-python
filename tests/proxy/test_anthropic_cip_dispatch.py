@@ -43,6 +43,7 @@ def _make_request(*, cip_config=None, cip_budget_tracker=None, nodes=None):
     )
     request = MagicMock()
     request.app = SimpleNamespace(state=state)
+    request.headers = {}
     return request
 
 

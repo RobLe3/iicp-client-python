@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """OpenAI-compatible FastAPI endpoint for the proxy."""
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +18,7 @@ from iicp_client.proxy.cip.dispatch import (
 )
 from iicp_client.proxy.openai_compat.translator import to_iicp_task, to_openai_response
 from iicp_client.proxy.otel_tracer import proxy_route_span
+from iicp_client.proxy.runtime_identity import RUNTIME_IDENTITY_HEADER, options_from_header
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,7 @@ def _format_completion_response(response: dict, body: dict) -> JSONResponse:
         err = response.get("error", {})
         return JSONResponse(
             status_code=502,
-            content={
-                "error": {"code": err.get("code", "proxy_error"), "message": "Upstream error"}
-            },
+            content={"error": {"code": err.get("code", "proxy_error"), "message": "Upstream error"}},
         )
     model = body.get("model", "iicp")
     return JSONResponse(content=to_openai_response(response, model))
@@ -77,6 +77,18 @@ def create_compat_app() -> FastAPI:
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> JSONResponse:
         body: dict[str, Any] = await request.json()
+        try:
+            runtime_identity = options_from_header(request.headers.get(RUNTIME_IDENTITY_HEADER))
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "code": "invalid_runtime_identity_mode",
+                        "message": "X-IICP-Runtime-Identity must be auto, disabled, explicit or required",
+                    }
+                },
+            )
         fallback_chain = request.app.state.fallback_chain
         directory = request.app.state.directory
         selector = request.app.state.selector
@@ -102,40 +114,60 @@ def create_compat_app() -> FastAPI:
             consumer_balance = await resolve_consumer_balance(directory, node_token, cip_config)
             try:
                 cip_envelope = compute_cip_envelope(
-                    nodes, body, cip_config, str(task_id), qos, session_tracker,
+                    nodes,
+                    body,
+                    cip_config,
+                    str(task_id),
+                    qos,
+                    session_tracker,
                     consumer_balance=consumer_balance,
                 )
             except CIPInsufficientCredits as exc:
                 return JSONResponse(
                     status_code=402,
-                    content={"error": {
+                    content={
+                        "error": {
                         "code": exc.error_code,
                         "message": "Insufficient S-Credit balance for remote dispatch",
-                    }},
+                        }
+                    },
                 )
             except CIPNoEligibleWorkers as exc:
                 return JSONResponse(
                     status_code=503,
-                    content={"error": {
+                    content={
+                        "error": {
                         "code": exc.error_code,
                         "message": "No eligible CIP workers available for remote dispatch",
-                    }},
+                        }
+                    },
                 )
             cip_block = body.get("cip") if isinstance(body.get("cip"), dict) else {}
 
             # Phase 3.4: parallel redundancy for realtime QoS
             if qos in REALTIME_QOS and aggregator is not None and len(nodes) > 1:
                 response = await aggregator.execute(
-                    nodes, task_id, intent, payload, timeout_ms, source_node_id=source_node_id,
+                    nodes,
+                    task_id,
+                    intent,
+                    payload,
+                    timeout_ms,
+                    source_node_id=source_node_id,
+                    runtime_identity=runtime_identity,
                 )
             else:
                 response = await fallback_chain.execute(
-                    nodes, task_id, intent, payload, timeout_ms,
+                    nodes,
+                    task_id,
+                    intent,
+                    payload,
+                    timeout_ms,
                     cip_envelope=cip_envelope,
                     cip_policy=cip_block.get("policy", "best_of_n"),
                     cip_replicas=int(cip_block.get("replicas", 1)),
                     cip_quorum=cip_block.get("quorum"),
                     source_node_id=source_node_id,
+                    runtime_identity=runtime_identity,
                 )
 
         return _format_completion_response(response, body)

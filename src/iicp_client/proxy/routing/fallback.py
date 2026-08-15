@@ -12,6 +12,7 @@ Cross-references:
     - spec/iicp-core.md §10 — client retry / fallback semantics
     - spec/iicp-core.md §7 — IICP-E033 (empty discover) vs no_available_node (runtime exhaustion)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +24,8 @@ from uuid import UUID
 
 from iicp_client.proxy.routing.circuit_breaker import CircuitOpenError
 from iicp_client.proxy.routing.router import TaskRouter
+from iicp_client.proxy.runtime_identity import compose_proxy_payload
+from iicp_client.runtime_identity import RuntimeIdentityOptions
 
 if TYPE_CHECKING:
     from iicp_client.proxy.cip.coordinator import ReplayCache
@@ -41,6 +44,7 @@ async def _fire_award(
     """TC-9d: best-effort background credit award — never raises."""
     try:
         from iicp_client.proxy.cip.coordinator import CIPWorkerReceipt, submit_award
+
         receipt = CIPWorkerReceipt.from_dict(raw_receipt)
         await submit_award(
             receipt=receipt,
@@ -128,13 +132,15 @@ class FallbackChain:
             return
         raw_receipt = response.get("cip_receipt")
         if raw_receipt:
-            asyncio.create_task(_fire_award(
+            asyncio.create_task(
+                _fire_award(
                 raw_receipt=raw_receipt,
                 expected_session_key=cip_envelope.get("cip_session_key"),
                 replay_cache=self._replay_cache,
                 directory_url=self._directory_url,
                 node_token=self._node_token,
-            ))
+                )
+            )
 
     async def execute(
         self,
@@ -148,6 +154,7 @@ class FallbackChain:
         cip_replicas: int = 1,
         cip_quorum: int | None = None,
         source_node_id: str | None = None,
+        runtime_identity: RuntimeIdentityOptions | None = None,
     ) -> dict[str, Any]:
         """Try `nodes` in order; return first success, or an exhaustion error.
 
@@ -191,18 +198,39 @@ class FallbackChain:
                 },
             }
             if cip_envelope is not None:
-                err["trace"] = {"cip_aggregation": _build_cip_aggregation(
-                    cip_policy, cip_replicas, 0, None, cip_quorum,
-                )}
+                err["trace"] = {
+                    "cip_aggregation": _build_cip_aggregation(
+                        cip_policy,
+                        cip_replicas,
+                        0,
+                        None,
+                        cip_quorum,
+                    )
+                }
             return err
 
         last_error: str = "no_nodes_available"
 
-        for node in nodes:
+        for candidate_index, node in enumerate(nodes):
             node_id = node.get("node_id", "unknown")
+            candidate_payload = (
+                compose_proxy_payload(
+                    payload,
+                    intent=intent,
+                    node=node,
+                    candidate_index=candidate_index,
+                    options=runtime_identity,
+                )
+                if runtime_identity is not None
+                else payload
+            )
             try:
                 response = await self._router.route(
-                    node, task_id, intent, payload, timeout_ms,
+                    node,
+                    task_id,
+                    intent,
+                    candidate_payload,
+                    timeout_ms,
                     cip_envelope=cip_envelope,
                     source_node_id=source_node_id,
                 )
@@ -232,7 +260,11 @@ class FallbackChain:
                 if cip_envelope is not None:
                     trace = dict(response.get("trace") or {})
                     trace["cip_aggregation"] = _build_cip_aggregation(
-                        cip_policy, cip_replicas, 1, node.get("node_id"), cip_quorum,
+                        cip_policy,
+                        cip_replicas,
+                        1,
+                        node.get("node_id"),
+                        cip_quorum,
                     )
                     response = {**response, "trace": trace}
                     # TC-9d: CIP-CR1-WIRE — submit credit award (§7 ADR-012)
@@ -256,7 +288,13 @@ class FallbackChain:
             },
         }
         if cip_envelope is not None:
-            exhausted["trace"] = {"cip_aggregation": _build_cip_aggregation(
-                cip_policy, cip_replicas, 0, None, cip_quorum,
-            )}
+            exhausted["trace"] = {
+                "cip_aggregation": _build_cip_aggregation(
+                    cip_policy,
+                    cip_replicas,
+                    0,
+                    None,
+                    cip_quorum,
+                )
+            }
         return exhausted

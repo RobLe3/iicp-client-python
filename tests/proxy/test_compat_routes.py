@@ -5,6 +5,7 @@ Translator-level logic is covered by test_ollama_compat.py / test_anthropic_comp
 These tests verify routes are registered, shapes are correct, and error formats diverge
 as specified (Ollama plain-string error vs Anthropic typed error object).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -30,6 +31,7 @@ def client():
 # ---------------------------------------------------------------------------
 # Ollama static endpoints
 # ---------------------------------------------------------------------------
+
 
 def test_api_version_returns_200(client: TestClient) -> None:
     """GET /api/version returns 200 with a version field."""
@@ -58,6 +60,7 @@ def test_api_tags_contains_iicp_model(client: TestClient) -> None:
 # Anthropic static endpoints
 # ---------------------------------------------------------------------------
 
+
 def test_v1_models_returns_200(client: TestClient) -> None:
     """GET /v1/models returns 200 with a data array (Anthropic SDK validation)."""
     r = client.get("/v1/models")
@@ -77,6 +80,7 @@ def test_v1_models_contains_iicp_model(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 # Ollama routing endpoints — IICP-E033 error path (no nodes available)
 # ---------------------------------------------------------------------------
+
 
 def test_api_chat_returns_502_when_no_nodes(client: TestClient) -> None:
     """POST /api/chat with unreachable directory returns 502 (IICP-E033 path)."""
@@ -107,6 +111,7 @@ def test_api_generate_returns_502_when_no_nodes(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 # Anthropic routing endpoint — IICP-E033 error path
 # ---------------------------------------------------------------------------
+
 
 def test_v1_messages_returns_502_when_no_nodes(client: TestClient) -> None:
     """POST /v1/messages with unreachable directory returns 502."""
@@ -142,6 +147,7 @@ def test_v1_messages_error_is_typed_object(client: TestClient) -> None:
 # Streaming error paths — stream=True with unreachable directory still returns
 # 502 JSON (errors are never streamed; only success responses are streamed).
 # ---------------------------------------------------------------------------
+
 
 def test_api_chat_stream_true_error_returns_502(client: TestClient) -> None:
     """stream=True with no nodes: error path still returns 502 JSON (not a stream)."""
@@ -207,14 +213,16 @@ def test_api_chat_stream_true_success_returns_ndjson(client: TestClient) -> None
     with patch(
         "iicp_client.proxy.ollama_compat.server._execute_iicp",
         new=AsyncMock(return_value=_SUCCESS_RESPONSE),
-    ):
+    ) as execute:
         r = client.post(
             "/api/chat",
             json={"model": "iicp", "messages": [{"role": "user", "content": "hi"}], "stream": True},
         )
+    assert execute.await_args.kwargs["compose_runtime_context"] is True
     assert r.status_code == 200
     assert "application/x-ndjson" in r.headers.get("content-type", "")
     import json
+
     line = r.text.strip()
     data = json.loads(line)
     assert data.get("done") is True
@@ -228,14 +236,16 @@ def test_api_generate_stream_true_success_returns_ndjson(client: TestClient) -> 
     with patch(
         "iicp_client.proxy.ollama_compat.server._execute_iicp",
         new=AsyncMock(return_value=_SUCCESS_RESPONSE),
-    ):
+    ) as execute:
         r = client.post(
             "/api/generate",
             json={"model": "iicp", "prompt": "hi", "stream": True},
         )
+    assert execute.await_args.kwargs["compose_runtime_context"] is False
     assert r.status_code == 200
     assert "application/x-ndjson" in r.headers.get("content-type", "")
     import json
+
     data = json.loads(r.text.strip())
     assert data.get("done") is True
     assert "response" in data
@@ -263,7 +273,11 @@ def test_v1_messages_stream_true_success_returns_sse(client: TestClient) -> None
     # The body must contain all six required SSE event types
     body = r.text
     for event_name in (
-        "message_start", "content_block_start", "content_block_delta",
-        "content_block_stop", "message_delta", "message_stop",
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
     ):
         assert event_name in body, f"SSE event '{event_name}' missing from response"
