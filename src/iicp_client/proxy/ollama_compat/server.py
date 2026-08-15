@@ -22,6 +22,7 @@ first chunk and immediately see done=true to terminate the loop.
 
 Spec: spec/iicp-core.md §3. ADR: ADR-001, ADR-005. Issues: #278, #280.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,6 +45,7 @@ from iicp_client.proxy.ollama_compat.translator import (
     to_ollama_response,
 )
 from iicp_client.proxy.otel_tracer import proxy_route_span
+from iicp_client.proxy.runtime_identity import RUNTIME_IDENTITY_HEADER, options_from_header
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,12 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     )
 
 
-async def _execute_iicp(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+async def _execute_iicp(
+    request: Request,
+    body: dict[str, Any],
+    *,
+    compose_runtime_context: bool,
+) -> dict[str, Any]:
     """Run an IICP task through the proxy routing stack."""
     fallback_chain = request.app.state.fallback_chain
     directory = request.app.state.directory
@@ -77,6 +84,9 @@ async def _execute_iicp(request: Request, body: dict[str, Any]) -> dict[str, Any
     node_token = getattr(request.app.state, "node_token", None)
     source_node_id = getattr(request.app.state, "node_id", None)
 
+    runtime_identity = (
+        options_from_header(request.headers.get(RUNTIME_IDENTITY_HEADER)) if compose_runtime_context else None
+    )
     task_id, intent, payload = to_iicp_task(body)
     timeout_ms = int(body.get("timeout_ms", 30000))
 
@@ -95,17 +105,26 @@ async def _execute_iicp(request: Request, body: dict[str, Any]) -> dict[str, Any
         nodes = selector.select(raw)
         consumer_balance = await resolve_consumer_balance(directory, node_token, cip_config)
         cip_envelope = compute_cip_envelope(
-            nodes, body, cip_config, str(task_id),
-            session_tracker=session_tracker, consumer_balance=consumer_balance,
+            nodes,
+            body,
+            cip_config,
+            str(task_id),
+            session_tracker=session_tracker,
+            consumer_balance=consumer_balance,
         )
         cip_block = body.get("cip") if isinstance(body.get("cip"), dict) else {}
         response: dict[str, Any] = await fallback_chain.execute(
-            nodes, task_id, intent, payload, timeout_ms,
+            nodes,
+            task_id,
+            intent,
+            payload,
+            timeout_ms,
             cip_envelope=cip_envelope,
             cip_policy=cip_block.get("policy", "best_of_n"),
             cip_replicas=int(cip_block.get("replicas", 1)),
             cip_quorum=cip_block.get("quorum"),
             source_node_id=source_node_id,
+            runtime_identity=runtime_identity,
         )
 
     return response
@@ -121,7 +140,8 @@ def add_ollama_routes(app: FastAPI) -> None:
     @app.get("/api/tags", include_in_schema=False)
     async def api_tags() -> JSONResponse:
         """Static model list — IICP proxy surfaces as a single 'iicp' model."""
-        return JSONResponse({
+        return JSONResponse(
+            {
             "models": [
                 {
                     "name": "iicp",
@@ -137,7 +157,8 @@ def add_ollama_routes(app: FastAPI) -> None:
                     },
                 }
             ]
-        })
+            }
+        )
 
     @app.post("/api/chat", include_in_schema=False)
     async def api_chat(request: Request) -> Response:
@@ -150,7 +171,15 @@ def add_ollama_routes(app: FastAPI) -> None:
         body: dict[str, Any] = await request.json()
         stream: bool = body.get("stream", True)  # Ollama protocol default is True
         try:
-            response = await _execute_iicp(request, body)
+            response = await _execute_iicp(request, body, compose_runtime_context=True)
+        except ValueError as exc:
+            if str(exc) != "invalid_runtime_identity_mode":
+                raise
+            return _error_response(
+                400,
+                "invalid_runtime_identity_mode",
+                "X-IICP-Runtime-Identity must be auto, disabled, explicit or required",
+            )
         except CIPInsufficientCredits as exc:
             return _error_response(402, exc.error_code, "Insufficient S-Credit balance for remote dispatch")
         except CIPNoEligibleWorkers as exc:
@@ -177,7 +206,9 @@ def add_ollama_routes(app: FastAPI) -> None:
         body: dict[str, Any] = await request.json()
         stream: bool = body.get("stream", True)  # Ollama protocol default is True
         try:
-            response = await _execute_iicp(request, body)
+            # /api/generate is a raw-prompt compatibility surface rather than a
+            # chat-message helper. Keep its translated task byte-compatible.
+            response = await _execute_iicp(request, body, compose_runtime_context=False)
         except CIPInsufficientCredits as exc:
             return _error_response(402, exc.error_code, "Insufficient S-Credit balance for remote dispatch")
         except CIPNoEligibleWorkers as exc:

@@ -16,6 +16,7 @@ Cross-references:
     - spec/iicp-core.md §4 — QoS hints inform when to switch from fallback
     - spec/iicp-core.md §7 — IICP-E033 (empty discover) vs no_available_node
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +24,8 @@ import logging
 from uuid import UUID
 
 from iicp_client.proxy.routing.router import TaskRouter
+from iicp_client.proxy.runtime_identity import compose_proxy_payload
+from iicp_client.runtime_identity import RuntimeIdentityOptions
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,7 @@ class ResultAggregator:
         payload: dict,
         timeout_ms: int,
         source_node_id: str | None = None,
+        runtime_identity: RuntimeIdentityOptions | None = None,
     ) -> dict:
         """Race up to `fan_out` nodes; cancel losers as soon as one wins.
 
@@ -83,9 +87,27 @@ class ResultAggregator:
         targets = nodes[: self._fan_out]
         tasks = [
             asyncio.create_task(
-                self._router.route(node, task_id, intent, payload, timeout_ms, source_node_id=source_node_id),
+                self._router.route(
+                    node,
+                    task_id,
+                    intent,
+                    compose_proxy_payload(
+                        payload,
+                        intent=intent,
+                        node=node,
+                        candidate_index=0,
+                        options=runtime_identity,
+                    )
+                    if runtime_identity is not None
+                    else payload,
+                    timeout_ms,
+                    source_node_id=source_node_id,
+                ),
                 name=f"redundant-{node.get('node_id', '')[:8]}",
             )
+            # These candidates are dispatched concurrently, not as fallback
+            # attempts.  Do not describe a later list position as a recovery
+            # from an unavailable candidate.
             for node in targets
         ]
 

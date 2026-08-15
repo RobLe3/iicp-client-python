@@ -27,6 +27,7 @@ from iicp_client.routing_policy import (
     resolved_policy,
     routing_policy_refusal_message,
 )
+from iicp_client.runtime_identity import RuntimeIdentityOptions
 from iicp_client.selection import (
     CandidateRanker,
     RankerDecision,
@@ -446,6 +447,16 @@ class IicpClient:
         )
 
     async def submit_async(self, request: TaskRequest) -> TaskResponse:
+        """Submit a raw task without changing its payload."""
+        return await self._submit_async(request)
+
+    async def _submit_async(
+        self,
+        request: TaskRequest,
+        *,
+        runtime_identity_messages: list[ChatMessage] | None = None,
+        runtime_identity_options: RuntimeIdentityOptions | None = None,
+    ) -> TaskResponse:
         """Discover → select best node → submit task.
 
         Retries up to max_retries on transient errors (SDK-01).
@@ -545,6 +556,39 @@ class IicpClient:
         last_exc: IicpError | None = None
 
         for candidate_index, node in enumerate(candidates):
+            candidate_payload = request.payload
+            if runtime_identity_messages is not None:
+                from iicp_client import __version__
+                from iicp_client.runtime_identity import compose_runtime_identity, with_runtime_facts
+
+                selected_model = None
+                requested_model = request.constraints.model if request.constraints else None
+                if requested_model and node.models and requested_model in node.models:
+                    selected_model = requested_model
+                elif node.models and len(node.models) == 1:
+                    selected_model = node.models[0]
+                candidate_options = with_runtime_facts(
+                    runtime_identity_options,
+                    client_name="iicp-client-python",
+                    client_version=__version__,
+                    connection_mode="routed",
+                    selected_model=selected_model,
+                    selection_reason=(
+                        "matched_intent_and_constraints"
+                        if candidate_index == 0
+                        else "fallback_after_unavailable_candidate"
+                    ),
+                )
+                candidate_messages = compose_runtime_identity(
+                    runtime_identity_messages,
+                    intent=request.intent,
+                    options=candidate_options,
+                )
+                candidate_payload = {
+                    **request.payload,
+                    "messages": [{"role": message.role, "content": message.content} for message in candidate_messages],
+                }
+
             cx_shared_secret: bytes | None = None
             require_encrypted_response = False
             body: dict[str, Any] = {
@@ -565,7 +609,7 @@ class IicpClient:
                 from iicp_client._confidentiality import encrypt_payload_with_context
 
                 body["iicp_conf"], cx_shared_secret = encrypt_payload_with_context(
-                    request.payload, node.cx_public_key, task_id, request.intent
+                    candidate_payload, node.cx_public_key, task_id, request.intent
                 )
                 features = node.cx_public_key.get("features", [])
                 require_encrypted_response = isinstance(features, list) and "response_encryption_v1" in features
@@ -577,7 +621,7 @@ class IicpClient:
                     "only because IICP_CX_ALLOW_PLAINTEXT=1 is set.",
                     node.node_id,
                 )
-                body["payload"] = request.payload
+                body["payload"] = candidate_payload
 
             # Phase 2 (#496): acquire consumer token if configured
             node_headers: dict[str, str] = {}
@@ -687,15 +731,9 @@ class IicpClient:
     ) -> ChatResponse:
         """OpenAI-compatible chat over urn:iicp:intent:llm:chat:v1 (SDK-02)."""
         opts = options or ChatOptions()
-        from iicp_client.runtime_identity import compose_runtime_identity
-
-        messages = compose_runtime_identity(
-            messages,
-            intent="urn:iicp:intent:llm:chat:v1",
-            options=opts.runtime_identity,
-        )
+        original_messages = list(messages)
         payload: dict[str, Any] = {
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": m.content} for m in original_messages],
         }
         if opts.model:
             payload["model"] = opts.model
@@ -704,7 +742,7 @@ class IicpClient:
         if opts.temperature is not None:
             payload["temperature"] = opts.temperature
 
-        response = await self.submit_async(
+        response = await self._submit_async(
             TaskRequest(
                 intent="urn:iicp:intent:llm:chat:v1",
                 payload=payload,
@@ -723,7 +761,9 @@ class IicpClient:
                 ),
                 auth=TaskAuth(node_token=opts.node_token),
                 routing_policy=opts.routing_policy,
-            )
+            ),
+            runtime_identity_messages=original_messages,
+            runtime_identity_options=opts.runtime_identity,
         )
 
         result = response.result or {}

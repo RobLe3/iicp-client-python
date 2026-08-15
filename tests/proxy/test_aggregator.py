@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 
 from iicp_client.proxy.routing.aggregator import ResultAggregator
+from iicp_client.runtime_identity import RuntimeIdentityOptions
 
 TASK_ID = UUID("12345678-0000-0000-0000-000000000001")
 INTENT = "urn:iicp:intent:llm:chat:v1"
@@ -77,3 +78,27 @@ async def test_aggregator_respects_fan_out_limit(aggregator, router):
     router.route = route
     await aggregator.execute([NODE_A, NODE_B, NODE_C], TASK_ID, INTENT, PAYLOAD, TIMEOUT)
     assert len(called_nodes) <= 3
+
+
+async def test_parallel_candidates_are_not_labelled_as_fallback(aggregator, router, monkeypatch):
+    observed_indexes = []
+
+    def compose(payload, **kwargs):
+        observed_indexes.append(kwargs["candidate_index"])
+        return payload
+
+    async def route(*args, **kwargs):
+        await asyncio.sleep(0)
+        return SUCCESS
+
+    monkeypatch.setattr("iicp_client.proxy.routing.aggregator.compose_proxy_payload", compose)
+    router.route = route
+    await aggregator.execute(
+        [NODE_A, NODE_B],
+        TASK_ID,
+        INTENT,
+        PAYLOAD,
+        TIMEOUT,
+        runtime_identity=RuntimeIdentityOptions(),
+    )
+    assert observed_indexes == [0, 0]

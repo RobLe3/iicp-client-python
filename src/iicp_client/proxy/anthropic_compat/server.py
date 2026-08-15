@@ -20,6 +20,7 @@ granularity. True streaming requires adapter-side SSE (Phase 4 stretch goal, #28
 
 Spec: spec/iicp-core.md §3. ADR: ADR-001, ADR-005. Issues: #279, #280.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,8 +39,10 @@ from iicp_client.proxy.cip.dispatch import (
     resolve_consumer_balance,
 )
 from iicp_client.proxy.otel_tracer import proxy_route_span
+from iicp_client.proxy.runtime_identity import RUNTIME_IDENTITY_HEADER, options_from_header
 
 logger = logging.getLogger(__name__)
+
 
 def _sse_events(
     iicp_response: dict[str, Any],
@@ -65,7 +68,9 @@ def _sse_events(
     def _event(name: str, data: dict[str, Any]) -> bytes:
         return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
-    yield _event("message_start", {
+    yield _event(
+        "message_start",
+        {
         "type": "message_start",
         "message": {
             "id": f"msg_{task_id or 'iicp'}",
@@ -77,23 +82,33 @@ def _sse_events(
             "stop_sequence": None,
             "usage": {"input_tokens": input_tokens, "output_tokens": 0},
         },
-    })
-    yield _event("content_block_start", {
+        },
+    )
+    yield _event(
+        "content_block_start",
+        {
         "type": "content_block_start",
         "index": 0,
         "content_block": {"type": "text", "text": ""},
-    })
-    yield _event("content_block_delta", {
+        },
+    )
+    yield _event(
+        "content_block_delta",
+        {
         "type": "content_block_delta",
         "index": 0,
         "delta": {"type": "text_delta", "text": text},
-    })
+        },
+    )
     yield _event("content_block_stop", {"type": "content_block_stop", "index": 0})
-    yield _event("message_delta", {
+    yield _event(
+        "message_delta",
+        {
         "type": "message_delta",
         "delta": {"stop_reason": "end_turn", "stop_sequence": None},
         "usage": {"output_tokens": output_tokens},
-    })
+        },
+    )
     yield _event("message_stop", {"type": "message_stop"})
 
 
@@ -122,6 +137,7 @@ async def _execute_iicp(request: Request, body: dict[str, Any]) -> tuple[dict[st
     node_token = getattr(request.app.state, "node_token", None)
     source_node_id = getattr(request.app.state, "node_id", None)
 
+    runtime_identity = options_from_header(request.headers.get(RUNTIME_IDENTITY_HEADER))
     task_id, intent, payload = to_iicp_task(body)
     timeout_ms = int(body.get("timeout_ms", 30000))
 
@@ -140,17 +156,26 @@ async def _execute_iicp(request: Request, body: dict[str, Any]) -> tuple[dict[st
         nodes = selector.select(raw)
         consumer_balance = await resolve_consumer_balance(directory, node_token, cip_config)
         cip_envelope = compute_cip_envelope(
-            nodes, body, cip_config, str(task_id),
-            session_tracker=session_tracker, consumer_balance=consumer_balance,
+            nodes,
+            body,
+            cip_config,
+            str(task_id),
+            session_tracker=session_tracker,
+            consumer_balance=consumer_balance,
         )
         cip_block = body.get("cip") if isinstance(body.get("cip"), dict) else {}
         response: dict[str, Any] = await fallback_chain.execute(
-            nodes, task_id, intent, payload, timeout_ms,
+            nodes,
+            task_id,
+            intent,
+            payload,
+            timeout_ms,
             cip_envelope=cip_envelope,
             cip_policy=cip_block.get("policy", "best_of_n"),
             cip_replicas=int(cip_block.get("replicas", 1)),
             cip_quorum=cip_block.get("quorum"),
             source_node_id=source_node_id,
+            runtime_identity=runtime_identity,
         )
 
     return response, str(task_id)
@@ -176,6 +201,19 @@ def add_anthropic_routes(app: FastAPI) -> None:
         stream: bool = body.get("stream", False)  # Anthropic SDK default is False
         try:
             response, task_id = await _execute_iicp(request, body)
+        except ValueError as exc:
+            if str(exc) != "invalid_runtime_identity_mode":
+                raise
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "X-IICP-Runtime-Identity must be auto, disabled, explicit or required",
+                    },
+                },
+            )
         except CIPInsufficientCredits as exc:
             return JSONResponse(
                 status_code=402,

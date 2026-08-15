@@ -6,6 +6,7 @@ cip_config and cip_budget_tracker from app.state and forwards them to
 compute_cip_envelope(). Tests cover the app-state plumbing path only —
 CIP decision logic is covered by test_openai_cip_dispatch.py.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -49,9 +50,11 @@ def _make_request(*, cip_config=None, cip_budget_tracker=None, nodes=None):
 async def test_cip_config_none_passes_none_to_compute():
     """When cip_config is absent, compute_cip_envelope is called with None (3rd arg)."""
     request = _make_request(cip_config=None)
-    with patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip, \
-         patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"):
-        await _execute_iicp(request, _BODY)
+    with (
+        patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip,
+        patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"),
+    ):
+        await _execute_iicp(request, _BODY, compose_runtime_context=False)
 
     mock_cip.assert_called_once()
     assert mock_cip.call_args.args[2] is None
@@ -61,9 +64,11 @@ async def test_cip_config_forwarded_as_third_positional_arg():
     """cip_config set on app.state is forwarded as the 3rd positional arg."""
     cfg = CIPDispatchConfig(enabled=True, strategy=CIPStrategy.REMOTE_FIRST)
     request = _make_request(cip_config=cfg)
-    with patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip, \
-         patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"):
-        await _execute_iicp(request, _BODY)
+    with (
+        patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip,
+        patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"),
+    ):
+        await _execute_iicp(request, _BODY, compose_runtime_context=False)
 
     assert mock_cip.call_args.args[2] is cfg
 
@@ -73,9 +78,11 @@ async def test_session_tracker_forwarded_as_kwarg():
     cfg = CIPDispatchConfig(enabled=True, strategy=CIPStrategy.REMOTE_FIRST)
     tracker = SessionBudgetTracker(session_credit_budget=10.0)
     request = _make_request(cip_config=cfg, cip_budget_tracker=tracker)
-    with patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip, \
-         patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"):
-        await _execute_iicp(request, _BODY)
+    with (
+        patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip,
+        patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"),
+    ):
+        await _execute_iicp(request, _BODY, compose_runtime_context=False)
 
     assert mock_cip.call_args.kwargs.get("session_tracker") is tracker
 
@@ -85,9 +92,11 @@ async def test_envelope_from_compute_cip_forwarded_to_execute():
     cfg = CIPDispatchConfig(enabled=True, strategy=CIPStrategy.REMOTE_FIRST)
     request = _make_request(cip_config=cfg)
     fake_envelope = {"cip_role": "worker", "cip_session_key": "a" * 64, "cip_parent_task_id": "t-1"}
-    with patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=fake_envelope), \
-         patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"):
-        await _execute_iicp(request, _BODY)
+    with (
+        patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=fake_envelope),
+        patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"),
+    ):
+        await _execute_iicp(request, _BODY, compose_runtime_context=False)
 
     fc = request.app.state.fallback_chain
     assert fc.execute.call_args.kwargs.get("cip_envelope") is fake_envelope
@@ -97,8 +106,10 @@ async def test_no_tracker_passes_none_session_tracker():
     """When cip_budget_tracker is absent, session_tracker=None is passed."""
     cfg = CIPDispatchConfig(enabled=True, strategy=CIPStrategy.REMOTE_FIRST)
     request = _make_request(cip_config=cfg, cip_budget_tracker=None)
-    with patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip, \
-         patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"):
-        await _execute_iicp(request, _BODY)
+    with (
+        patch("iicp_client.proxy.ollama_compat.server.compute_cip_envelope", return_value=None) as mock_cip,
+        patch("iicp_client.proxy.ollama_compat.server.proxy_route_span"),
+    ):
+        await _execute_iicp(request, _BODY, compose_runtime_context=False)
 
     assert mock_cip.call_args.kwargs.get("session_tracker") is None
