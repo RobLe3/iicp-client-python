@@ -6,7 +6,7 @@ timeout before the proxy moves on. With it, persistently-failing nodes are
 short-circuited at the cost of one extra probe per `reset_s` window.
 
 Cross-references:
-    - project/RELIABILITY.md — circuit-breaker policy (5 failures, 30s recovery)
+    - IICP `spec/v1.9/iicp-semantics.md` §7.1 — circuit-breaker policy
     - ADR-008 — directory score eventually reflects failure; the breaker is an
       in-process fast-path that does NOT mutate the directory's view
 

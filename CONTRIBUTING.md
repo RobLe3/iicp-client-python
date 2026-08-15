@@ -21,6 +21,21 @@ and TypeScript parity in mind and mention which clients are affected.
 Pull requests are welcome. Prefer small, test-backed changes; update the README
 or CHANGELOG whenever operator-facing behaviour changes.
 
+## Reproducing the checks
+
+From a clean checkout with Python 3.11 or later and `uv` installed:
+
+```bash
+uv sync --locked --extra dev
+uv run --locked --extra dev ruff check src tests scripts
+uv run --locked --extra dev pytest -q
+```
+
+The public [IICP repository map](https://github.com/RobLe3/IICP/blob/main/ecosystem/public-repositories.json)
+identifies normative and implementation ownership. A pull request does not
+authorize a package release. Maintainers publish immutable, versioned artifacts
+only after the repository's release checks pass.
+
 ## License
 
 By contributing, you agree your contributions are licensed under Apache-2.0.
