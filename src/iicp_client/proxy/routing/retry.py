@@ -7,7 +7,7 @@ transport errors (timeouts, connect errors, mid-stream protocol drops) and
 specific overload signals (429, 503) are retried.
 
 Cross-references:
-    - project/RELIABILITY.md — retry policy spec (max 3, exponential, ±20% jitter)
+    - IICP `spec/v1.9/iicp-semantics.md` §6 — retry policy
     - ADR-010 — idempotency: safe-by-design because the proxy uses the same task_id
 
 Backoff formula: base * 2^attempt * (0.8 + 0.4*rand) — the ±20% jitter avoids

@@ -7,7 +7,7 @@ try them in directory-score order until one works or we run out".
 
 Cross-references:
     - ADR-008 — directory-supplied score order is preserved (NodeSelector enforces this)
-    - project/RELIABILITY.md — fallback contract: exhaustion returns a structured
+    - IICP `spec/v1.9/iicp-semantics.md` §7.3 — fallback contract: exhaustion returns a structured
       error envelope, never a raw exception (project rule #6)
     - spec/iicp-core.md §10 — client retry / fallback semantics
     - spec/iicp-core.md §7 — IICP-E033 (empty discover) vs no_available_node (runtime exhaustion)
