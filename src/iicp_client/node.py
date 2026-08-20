@@ -839,7 +839,7 @@ class IicpNode:
             payload.update(auto_update_status_payload())
         except Exception:  # noqa: BLE001 — update metadata must never block heartbeat
             pass
-        if ok > 0 or fail > 0:
+        if pending is not None and (ok > 0 or fail > 0):
             metrics: dict[str, float | int] = {"tasks_success": ok, "tasks_failed": fail}
             total = ok + fail
             if total > 0 and latency_total_ms > 0:
