@@ -25,6 +25,7 @@ import os
 import socket
 import threading
 import time
+import uuid
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -449,6 +450,7 @@ class IicpNode:
         self._tasks_success = 0
         self._tasks_failed = 0
         self._tasks_latency_total_ms = 0.0
+        self._pending_metrics_batch: tuple[str, int, int, float] | None = None
         self._task_counters_lock = threading.Lock()
         # R1 relay-as-last-resort (#341): session registry populated when
         # RelayAcceptServer is started by serve(). HTTP /v1/relay checks here
@@ -803,14 +805,21 @@ class IicpNode:
         The token also stays in the JSON body for back-compat with
         older directory builds that read it from the payload.
         """
-        # Drain incremental task counters for directory reputation reporting.
+        # Keep one batch outstanding until the directory acknowledges it. New
+        # task counters continue accumulating while a failed batch is retried.
         with self._task_counters_lock:
-            ok = self._tasks_success
-            fail = self._tasks_failed
-            latency_total_ms = self._tasks_latency_total_ms
-            self._tasks_success = 0
-            self._tasks_failed = 0
-            self._tasks_latency_total_ms = 0.0
+            if self._pending_metrics_batch is None and (self._tasks_success > 0 or self._tasks_failed > 0):
+                self._pending_metrics_batch = (
+                    str(uuid.uuid4()),
+                    self._tasks_success,
+                    self._tasks_failed,
+                    self._tasks_latency_total_ms,
+                )
+                self._tasks_success = 0
+                self._tasks_failed = 0
+                self._tasks_latency_total_ms = 0.0
+            pending = self._pending_metrics_batch
+        _, ok, fail, latency_total_ms = pending or ("", 0, 0, 0.0)
         public_available = self._runtime_available
         payload: dict = {
             "node_id": self._cfg.node_id,
@@ -836,6 +845,7 @@ class IicpNode:
             if total > 0 and latency_total_ms > 0:
                 metrics["avg_latency_ms"] = round(latency_total_ms / total, 2)
             payload["metrics"] = metrics
+            payload["metrics_batch_id"] = pending[0]
         # #494 — report live model list from backend so directory can filter stale-model
         # nodes from discover. Best-effort: if probe fails, omit health_models (backward compat).
         if self._cfg.backend_url:
@@ -860,9 +870,20 @@ class IicpNode:
         resp.raise_for_status()
         # Capture the fresh nonce to answer on the next beat.
         try:
-            self._liveness_challenge = resp.json().get("challenge") or self._liveness_challenge
+            data = resp.json()
+            self._liveness_challenge = data.get("challenge") or self._liveness_challenge
+            if pending is not None:
+                accepted = data.get("metrics_batch_accepted")
+                if accepted is None or accepted == pending[0]:
+                    with self._task_counters_lock:
+                        if self._pending_metrics_batch == pending:
+                            self._pending_metrics_batch = None
         except Exception:  # noqa: BLE001
-            pass
+            # A successful legacy-directory response may not be JSON or may omit
+            # the additive acknowledgement. Preserve legacy at-most-once behavior.
+            with self._task_counters_lock:
+                if self._pending_metrics_batch == pending:
+                    self._pending_metrics_batch = None
 
     async def _probe_health_models(self) -> list[str] | None:
         """Best-effort: return the backend's current model list for health_models reporting.

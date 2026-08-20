@@ -703,6 +703,44 @@ async def test_heartbeat_includes_avg_latency_when_task_counters_present(monkeyp
     assert n._tasks_latency_total_ms == 0.0
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_retries_unacknowledged_metric_batch(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import httpx
+
+    payloads: list[dict] = []
+    attempts = 0
+
+    async def fake_post(url, **kwargs):  # noqa: ANN001
+        nonlocal attempts
+        attempts += 1
+        payloads.append(kwargs["json"])
+        request = httpx.Request("POST", url)
+        if attempts == 1:
+            raise httpx.ConnectError("directory unavailable", request=request)
+        batch_id = kwargs["json"]["metrics_batch_id"]
+        return httpx.Response(200, json={"ok": True, "metrics_batch_accepted": batch_id}, request=request)
+
+    n = IicpNode(NodeConfig(
+        node_id="retry-metrics",
+        endpoint="http://127.0.0.1:9999",
+        intent="urn:iicp:intent:llm:chat:v1",
+    ))
+    with n._task_counters_lock:
+        n._tasks_success = 2
+        n._tasks_latency_total_ms = 14000.0
+    monkeypatch.setattr(n._http, "post", AsyncMock(side_effect=fake_post))
+
+    with pytest.raises(httpx.ConnectError):
+        await n.heartbeat("tok")
+    await n.heartbeat("tok")
+
+    assert payloads[0]["metrics_batch_id"] == payloads[1]["metrics_batch_id"]
+    assert payloads[1]["metrics"]["tasks_success"] == 2
+    assert n._pending_metrics_batch is None
+
+
 def test_task_refuses_during_backend_stability_drain():
     """#553: provider-local observer can temporarily drain new tasks with Retry-After."""
     from iicp_client.backend_stability import BackendStabilityObservation
