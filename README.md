@@ -160,6 +160,17 @@ Set `ClientConfig(consumer_auth_mode="required")` when a workload must not
 silently fall back to anonymous dispatch if consumer-token acquisition fails.
 The default remains `"optional"`; `"disabled"` skips token acquisition.
 
+### Restricted trust-domain directories
+
+Restricted operation is opt-in and fail closed. Supply a
+`RestrictedDirectoryContext` whose membership credential is referenced through
+an environment variable or an owner-only regular file. The client sends it only
+to the configured directory, refuses redirects and legacy discovery fallback,
+and accepts candidates or tokens only when the directory returns a matching,
+current operation decision. Public behavior is unchanged when the context is
+absent. This client does not expose peer-gossip or CIP-worker participation, so
+those capabilities are not implied by restricted directory support.
+
 ### Experimental local candidate rankers
 
 Library users may attach a `CandidateRanker` to test a learned or

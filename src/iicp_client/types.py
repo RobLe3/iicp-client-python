@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from iicp_client.errors import IicpError
+    from iicp_client.restricted_directory import RestrictedDirectoryContext
     from iicp_client.runtime_identity import RuntimeIdentityOptions
 
 
@@ -57,6 +58,7 @@ class ClientConfig:
     # directory explicitly lacks the endpoint. ticketed and legacy force a mode.
     route_discovery_mode: str = "auto"
     profile_request: ProfileRequest | None = None
+    restricted_directory: RestrictedDirectoryContext | None = None
 
 
 @dataclass

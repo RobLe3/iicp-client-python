@@ -90,6 +90,17 @@ from iicp_client.qualify import (
     qualify_service,
     qualify_service_async,
 )
+from iicp_client.restricted_directory import (
+    PROFILE_ID as RESTRICTED_TRUST_DOMAIN_PROFILE_ID,
+)
+from iicp_client.restricted_directory import (
+    RestrictedDirectoryContext,
+    RestrictedEligibility,
+    SecretRef,
+)
+from iicp_client.restricted_directory import (
+    validate_decision as validate_restricted_directory_decision,
+)
 from iicp_client.routing_policy import (
     ROUTING_POLICY_REFUSAL_CODE,
     filter_nodes_for_routing_policy,
@@ -142,6 +153,11 @@ __version__ = "0.7.106"
 __all__ = [
     "IicpClient",
     "IicpError",
+    "RestrictedDirectoryContext",
+    "RestrictedEligibility",
+    "SecretRef",
+    "RESTRICTED_TRUST_DOMAIN_PROFILE_ID",
+    "validate_restricted_directory_decision",
     "EFFECTIVE_CAPABILITY_PROFILE_ID",
     "EFFECTIVE_CAPABILITY_SCHEMA_VERSION",
     "CapabilityClaimProvenance",

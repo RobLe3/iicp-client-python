@@ -21,6 +21,7 @@ from iicp_client.dispatch_ticket import policy_manifest_binding_matches, verify_
 from iicp_client.errors import IicpError
 from iicp_client.policy import ensure_intent_allowed
 from iicp_client.request_projection import project_execution_constraints, project_route_options
+from iicp_client.restricted_directory import validate_decision
 from iicp_client.routing_policy import (
     ROUTING_POLICY_REFUSAL_CODE,
     filter_nodes_for_routing_policy,
@@ -148,6 +149,11 @@ class IicpClient:
         self._ct_cache: dict[tuple[str, str], tuple[str, int]] = {}
         self._dispatch_ticket_key: str | None = None
         self._candidate_ranker: CandidateRanker | None = None
+        self._restricted_eligibility: dict[int, object] = {}
+        if self._cfg.restricted_directory is not None:
+            self._cfg.restricted_directory.validate()
+            if self._cfg.route_discovery_mode == "legacy":
+                raise ValueError("restricted directory mode cannot use legacy route discovery")
 
     def with_candidate_ranker(self, ranker: CandidateRanker) -> IicpClient:
         """Attach an optional ranker for candidates that already passed eligibility."""
@@ -171,22 +177,29 @@ class IicpClient:
                 return tok
         base = self._cfg.directory_url.rstrip("/").removesuffix("/api")
         url = f"{base}/api/v1/consumer-token"
+        restricted = self._cfg.restricted_directory
         try:
-            async with httpx.AsyncClient(timeout=timeout_s) as client:
+            async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=False) as client:
+                headers = {"Authorization": f"Bearer {node_token}"}
+                if restricted:
+                    headers.update(restricted.headers())
                 r = await client.post(
                     url,
                     json={"target_node_id": target_node_id, "intent": intent},
-                    headers={"Authorization": f"Bearer {node_token}"},
+                    headers=headers,
                 )
                 if r.status_code == 201:
                     data = r.json()
+                    if restricted:
+                        validate_decision(data, restricted, "consumer_token")
                     token: str = data.get("token", "")
                     exp_unix: int = int(data.get("expires_at", 0))
                     if token:
                         self._ct_cache[cache_key] = (token, exp_unix)
                         return token
         except Exception:
-            pass
+            if restricted:
+                raise
         return None
 
     def _select_candidates(self, all_nodes: list[Node], top_n: int) -> list[Node]:
@@ -281,6 +294,8 @@ class IicpClient:
         excluded: list[str] = []
         candidates: list[Node] = []
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self._cfg.restricted_directory is not None:
+            headers.update(self._cfg.restricted_directory.headers())
         if traceparent:
             headers["traceparent"] = traceparent
 
@@ -298,6 +313,11 @@ class IicpClient:
                 error_code = data.get("error", {}).get("code") if isinstance(data, dict) else None
 
                 if response.status_code == 201:
+                    eligibility = (
+                        validate_decision(data, self._cfg.restricted_directory, "dispatch_ticket")
+                        if self._cfg.restricted_directory is not None
+                        else None
+                    )
                     ticket = data.get("ticket") if isinstance(data, dict) else None
                     node_id = data.get("node_id") if isinstance(data, dict) else None
                     if self._dispatch_ticket_key is None:
@@ -334,6 +354,8 @@ class IicpClient:
                         route = {**route, "node_id": data.get("node_id", route.get("node_id"))}
                         node = self._node_from_route(route, ticket_id_prefix=data.get("ticket_id_prefix"))
                         if node is not None:
+                            if eligibility is not None:
+                                self._restricted_eligibility[id(node)] = eligibility
                             candidates.append(node)
                             excluded.append(node.node_id[:8])
                             continue
@@ -349,6 +371,8 @@ class IicpClient:
                 if response.status_code in {404, 405, 501} or (
                     response.status_code == 503 and error_code == "not_configured"
                 ):
+                    if self._cfg.restricted_directory is not None:
+                        raise IicpError("restricted_directory_fallback_refused", "restricted mode cannot fall back to legacy discovery", "directory")
                     raise _LegacyDiscoveryRequired
                 raise IicpError(
                     code=f"IICP-DISPATCH-TICKET-{response.status_code}",
@@ -398,6 +422,13 @@ class IicpClient:
             component="directory",
             tls_verify=self._cfg.tls_verify,
             traceparent=traceparent,
+            extra_headers=self._cfg.restricted_directory.headers() if self._cfg.restricted_directory else None,
+            follow_redirects=self._cfg.restricted_directory is None,
+        )
+        eligibility = (
+            validate_decision(data, self._cfg.restricted_directory, "discovery")
+            if self._cfg.restricted_directory is not None
+            else None
         )
         elapsed = int((time.monotonic() - t0) * 1000)
 
@@ -438,6 +469,8 @@ class IicpClient:
             ):
                 continue
             nodes.append(node)
+            if eligibility is not None:
+                self._restricted_eligibility[id(node)] = eligibility
         diversity = data.get("diversity_evidence")
         return NodeList(
             nodes=nodes,
