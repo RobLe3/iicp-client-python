@@ -708,6 +708,7 @@ ruff check src tests       # lint
 - [Agent bootstrap guide](https://github.com/RobLe3/IICP/blob/main/docs/agent-bootstrap.md) — connect a consumer or provider agent
 - [Implementation registry](https://github.com/RobLe3/IICP/blob/main/IMPLEMENTATIONS.md) — supported and preview components
 - [Node setup guide](https://iicp.network/docs/node-setup) — run your own node
+- [CLI examples](https://iicp.network/docs/cli-examples) — copyable `iicp-node` tasks and operator recipes
 - [Error reference](https://iicp.network/docs/error-reference) — all error codes
 - [iicp-client-typescript](https://github.com/RobLe3/iicp-client-typescript) — TypeScript SDK
 - [iicp-client-rust](https://github.com/RobLe3/iicp-client-rust) — Rust SDK
