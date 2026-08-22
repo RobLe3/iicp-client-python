@@ -672,6 +672,13 @@ distributed store. None of these APIs is used by normal discovery, submission
 or node serving. They are unstable research surfaces and must not be treated as
 deployed protocol guarantees.
 
+`iicp_client.restricted_membership` verifies the shared restricted trust-domain
+membership and authenticated-gossip fixtures with the same bounded refusal
+reasons as the Rust reference. It is a verification foundation only: Python
+bootstrap, peer storage, relay selection and CIP do not claim restricted-domain
+support until issue #103 and the cross-implementation black-box gate are
+complete. Public behavior is unchanged.
+
 ---
 
 ## Development
