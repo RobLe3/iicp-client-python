@@ -43,11 +43,15 @@ async def get_json(
     component: str = "directory",
     tls_verify: bool = True,
     traceparent: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+    follow_redirects: bool = False,
 ) -> dict[str, Any]:
     timeout = timeout_ms / 1000.0
     headers = {"traceparent": traceparent or _traceparent()}
+    if extra_headers:
+        headers.update(extra_headers)
     try:
-        async with httpx.AsyncClient(timeout=timeout, verify=_tls_context(tls_verify)) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=_tls_context(tls_verify), follow_redirects=follow_redirects) as client:
             resp = await client.get(url, params=params, headers=headers)
     except httpx.TimeoutException:
         raise IicpError(
