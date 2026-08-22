@@ -143,6 +143,14 @@ def test_e2e_all_surfaces_through_real_proxy_process():
             except Exception:  # noqa: BLE001
                 time.sleep(0.25)
         if not ready:
+            # Reading a live process pipe to EOF blocks forever. Stop the failed
+            # child first so the readiness diagnostic remains bounded.
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
             out = proc.stdout.read().decode() if proc.stdout else ""
             pytest.fail(f"iicp-node proxy did not become ready on :{proxy_port}\n{out}")
 
