@@ -149,7 +149,7 @@ from iicp_client.types import (
     TaskResponse,
 )
 
-__version__ = "0.7.107"
+__version__ = "0.7.108"
 __all__ = [
     "IicpClient",
     "IicpError",
