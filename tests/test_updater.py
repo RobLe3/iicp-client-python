@@ -25,14 +25,16 @@ class TestVersionCompare:
             ("0.7.57", "0.7.56", False),
             ("0.7.9", "0.7.10", True),  # numeric, not lexicographic
             ("1.0.0", "0.9.9", False),
-            ("v0.7.56", "0.7.57", True),  # leading v tolerated
+            ("v0.7.56", "0.7.57", False),
         ],
     )
     def test_is_outdated(self, cur, latest, expected):
         assert updater.is_outdated(cur, latest) is expected
 
-    def test_parse_version_truncates_prerelease(self):
-        assert updater.parse_version("1.2.3rc1") == (1, 2, 3)
+    def test_parse_version_rejects_non_stable_candidates(self):
+        assert updater.parse_version("1.2.3rc1") is None
+        assert updater.parse_version("1.2.3-rc1") is None
+        assert updater.parse_version("v1.2.3") is None
         assert updater.parse_version("0.7.57") == (0, 7, 57)
 
 
@@ -40,7 +42,7 @@ class TestCheckUpdate:
     def test_outdated_verdict(self):
         v = updater.check_update("0.7.56", "0.7.57")
         assert v["outdated"] is True
-        assert v["command"] == "pip install -U iicp-client"
+        assert v["command"].endswith("iicp-client==0.7.57")
 
     def test_unknown_latest_is_not_outdated(self):
         v = updater.check_update("0.7.57", None)
@@ -118,7 +120,7 @@ class TestPerformSelfUpdate:
             updater.subprocess, "run",
             lambda *a, **k: pytest.fail("must not pip-install without pip"),
         )
-        assert updater.perform_self_update() is False
+        assert updater.perform_self_update("0.7.80") is False
         assert updater.auto_update_status_payload()["sdk_update_error_class"] == "ensurepip_failed"
 
     def test_perform_self_update_installs_after_bootstrap(self, monkeypatch):
@@ -126,10 +128,12 @@ class TestPerformSelfUpdate:
         monkeypatch.setattr(updater, "_ensure_pip", lambda *a, **k: None)
         ran = []
         monkeypatch.setattr(updater.subprocess, "run", lambda cmd, **k: ran.append(cmd))
-        assert updater.perform_self_update() is True
+        assert updater.perform_self_update("0.7.80") is True
         assert ran and ran[0][:5] == [
             updater.sys.executable, "-m", "pip", "install", "--upgrade",
         ]
+        assert "https://pypi.org/simple" in ran[0]
+        assert ran[0][-1] == "iicp-client==0.7.80"
         assert updater.auto_update_status_payload()["sdk_update_error_class"] is None
 
     def test_perform_self_update_reports_pip_upgrade_failed(self, monkeypatch):
@@ -139,7 +143,7 @@ class TestPerformSelfUpdate:
             raise updater.subprocess.CalledProcessError(1, cmd)
 
         monkeypatch.setattr(updater.subprocess, "run", boom)
-        assert updater.perform_self_update() is False
+        assert updater.perform_self_update("0.7.80") is False
         assert updater.auto_update_status_payload()["sdk_update_error_class"] == "pip_upgrade_failed"
 
 
@@ -153,7 +157,7 @@ def test_auto_update_tick_upgrades_and_reexecs_when_newer():
     reexec_calls = []
     result = auto_update_tick(
         "0.7.59", "0.7.60", True,
-        upgrade_fn=lambda: True,
+        upgrade_fn=lambda version: version == "0.7.60",
         reexec_fn=lambda: reexec_calls.append(1),
         log_fn=log_fn,
     )
@@ -164,7 +168,7 @@ def test_auto_update_tick_upgrades_and_reexecs_when_newer():
 def test_auto_update_tick_noop_when_current():
     result = auto_update_tick(
         "0.7.60", "0.7.60", True,
-        upgrade_fn=lambda: (_ for _ in ()).throw(AssertionError("must not upgrade")),
+        upgrade_fn=lambda _version: (_ for _ in ()).throw(AssertionError("must not upgrade")),
         reexec_fn=lambda: (_ for _ in ()).throw(AssertionError("must not reexec")),
         log_fn=lambda *a: None,
     )
@@ -172,18 +176,18 @@ def test_auto_update_tick_noop_when_current():
 
 
 def test_auto_update_tick_disabled_is_noop():
-    assert auto_update_tick("0.7.59", "0.7.60", False, lambda: True, lambda: None, lambda *a: None) == "disabled"
+    assert auto_update_tick("0.7.59", "0.7.60", False, lambda _version: True, lambda: None, lambda *a: None) == "disabled"
 
 
 def test_auto_update_tick_unknown_latest_is_noop():
-    assert auto_update_tick("0.7.59", None, True, lambda: True, lambda: None, lambda *a: None) == "unknown"
+    assert auto_update_tick("0.7.59", None, True, lambda _version: True, lambda: None, lambda *a: None) == "unknown"
 
 
 def test_auto_update_tick_failed_upgrade_does_not_reexec():
     reexec_calls = []
     result = auto_update_tick(
         "0.7.59", "0.7.60", True,
-        upgrade_fn=lambda: False,
+        upgrade_fn=lambda _version: False,
         reexec_fn=lambda: reexec_calls.append(1),
         log_fn=lambda *a: None,
     )

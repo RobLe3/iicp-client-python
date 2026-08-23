@@ -3,8 +3,8 @@
 
 `iicp-node update` still supports the safe read-only version check, but normal
 long-running `iicp-node serve` processes now also run a default-on background
-loop: check PyPI hourly (first check within five minutes), `pip install
---upgrade` when a newer stable release exists, and re-exec the process so the
+loop: check PyPI hourly (first check within five minutes), install the exact
+stable candidate from the official index, and re-exec the process so the
 node comes back on the new code in covered service paths. The loop is
 failure-isolated and opt-out via `IICP_AUTO_UPDATE=0`.
 """
@@ -31,27 +31,21 @@ _status: dict[str, str | int | bool | None] = {
 }
 
 
-def parse_version(v: str) -> tuple[int, ...]:
-    """Parse a dotted version into a comparable tuple. Non-numeric/pre-release
-    suffixes (e.g. '1.2.3rc1') truncate at the first non-numeric segment —
-    good enough for the stable-channel compare P1 does."""
-    out: list[int] = []
-    for part in v.strip().lstrip("vV").split("."):
-        num = ""
-        for ch in part:
-            if ch.isdigit():
-                num += ch
-            else:
-                break
-        if num == "":
-            break
-        out.append(int(num))
-    return tuple(out)
+def parse_version(v: str) -> tuple[int, int, int] | None:
+    """Parse the stable channel's exact MAJOR.MINOR.PATCH form."""
+    parts = v.strip().split(".")
+    if len(parts) != 3:
+        return None
+    if any(not part.isascii() or not part.isdigit() or (len(part) > 1 and part.startswith("0")) for part in parts):
+        return None
+    return int(parts[0]), int(parts[1]), int(parts[2])
 
 
 def is_outdated(current: str, latest: str) -> bool:
     """True when `latest` is strictly newer than `current`."""
-    return parse_version(latest) > parse_version(current)
+    parsed_current = parse_version(current)
+    parsed_latest = parse_version(latest)
+    return parsed_current is not None and parsed_latest is not None and parsed_latest > parsed_current
 
 
 def latest_pypi_version(timeout: float = 5.0) -> str | None:
@@ -75,7 +69,7 @@ def check_update(current: str, latest: str | None) -> dict:
         "current": current,
         "latest": latest,
         "outdated": outdated,
-        "command": "pip install -U iicp-client",
+        "command": f"python -m pip install --upgrade --index-url https://pypi.org/simple iicp-client=={latest}" if outdated else None,
     }
 
 
@@ -129,19 +123,32 @@ def _ensure_pip(timeout: float = 120.0) -> str | None:
     return None if _pip_available() else "pip_missing"
 
 
-def perform_self_update(spec: str = "iicp-client", timeout: float = 600.0) -> bool:
-    """`pip install --upgrade` the package in a subprocess. True on success.
+def perform_self_update(version: str, timeout: float = 600.0) -> bool:
+    """Install the exact stable PyPI candidate. True on success.
 
     Ensures pip exists first (pipx app-venvs ship without it), so the updater
     actually upgrades instead of failing every tick with "No module named pip"."""
     _set_update_error_class(None)
+    if parse_version(version) is None:
+        _set_update_error_class("invalid_candidate")
+        return False
     pip_error = _ensure_pip()
     if pip_error:
         _set_update_error_class(pip_error)
         return False
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", spec],
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--quiet",
+                "--index-url",
+                "https://pypi.org/simple",
+                f"iicp-client=={version}",
+            ],
             check=True,
             timeout=timeout,
         )
@@ -196,7 +203,7 @@ def auto_update_tick(
     if not is_outdated(current, latest):
         return "current"
     log_fn(f"auto-update: newer release {latest} available (running {current}) — upgrading…")
-    if upgrade_fn():
+    if upgrade_fn(latest):
         log_fn(f"auto-update: upgraded to {latest}; restarting to apply…")
         reexec_fn()  # normally does not return (process replaced)
         return "upgraded"

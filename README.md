@@ -25,7 +25,7 @@ and [adjacent-protocol comparison](https://github.com/RobLe3/IICP/blob/main/stan
 ## Install
 
 ```bash
-pip install --upgrade iicp-client
+pip install --upgrade iicp-client==0.7.107
 ```
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
@@ -222,7 +222,7 @@ no-retention policy manifest is required.
 Provider nodes run an hourly official-registry check by default
 (`IICP_AUTO_UPDATE=1`, `IICP_AUTO_UPDATE_INTERVAL_S=3600`; minimum 300s).
 When PyPI publishes a newer stable release, `serve` runs
-`python -m pip install --upgrade iicp-client` and re-execs the node so identity
+`python -m pip install --upgrade iicp-client==0.7.107` and re-execs the node so identity
 and cached node tokens are preserved.
 
 If an older supervised node does not update itself, perform one manual upgrade
