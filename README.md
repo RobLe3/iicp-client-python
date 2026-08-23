@@ -25,7 +25,7 @@ and [adjacent-protocol comparison](https://github.com/RobLe3/IICP/blob/main/stan
 ## Install
 
 ```bash
-pip install --upgrade iicp-client==0.7.107
+pip install --upgrade iicp-client==0.7.108
 ```
 
 Requires **Python ≥ 3.11** and [`httpx`](https://www.python-httpx.org/).
@@ -226,14 +226,14 @@ of being reinstalled every check. The non-sensitive retry status is stored under
 `$IICP_HOME/state/update-status.json`; `IICP_UPDATE_STATE_FILE` overrides that
 path for managed or test environments.
 When PyPI publishes a newer stable release, `serve` runs
-`python -m pip install --upgrade iicp-client==0.7.107` and re-execs the node so identity
+`python -m pip install --upgrade iicp-client==0.7.108` and re-execs the node so identity
 and cached node tokens are preserved.
 
 If an older supervised node does not update itself, perform one manual upgrade
 with the same interpreter and restart it through its normal supervisor:
 
 ```bash
-python -m pip install --upgrade 'iicp-client==0.7.107'
+python -m pip install --upgrade 'iicp-client==0.7.108'
 python -c 'import iicp_client; print(iicp_client.__version__)'
 ```
 
