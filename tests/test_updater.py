@@ -16,6 +16,22 @@ from iicp_client.updater import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_update_state(monkeypatch, tmp_path):
+    """Keep updater persistence deterministic and outside the operator home."""
+    monkeypatch.setenv("IICP_UPDATE_STATE_FILE", str(tmp_path / "update-status.json"))
+    with updater._status_lock:
+        updater._status.update(
+            sdk_latest_seen=None,
+            sdk_update_last_checked_at=None,
+            sdk_update_error_class=None,
+            sdk_update_last_attempted_version=None,
+            sdk_update_last_result=None,
+            sdk_update_consecutive_failures=0,
+            sdk_update_next_retry_at=None,
+        )
+
+
 class TestVersionCompare:
     @pytest.mark.parametrize(
         ("cur", "latest", "expected"),
@@ -193,6 +209,52 @@ def test_auto_update_tick_failed_upgrade_does_not_reexec():
     )
     assert result == "upgrade-failed"
     assert reexec_calls == []  # no restart on a failed upgrade
+
+
+def test_failed_candidate_is_persisted_and_backed_off():
+    assert auto_update_tick(
+        "0.7.59", "0.7.60", True,
+        upgrade_fn=lambda _version: False,
+        reexec_fn=lambda: pytest.fail("must not reexec"),
+        log_fn=lambda *a: None,
+    ) == "upgrade-failed"
+    assert updater.candidate_retry_blocked("0.7.60") is True
+    assert auto_update_tick(
+        "0.7.59", "0.7.60", True,
+        upgrade_fn=lambda _version: pytest.fail("must not retry during backoff"),
+        reexec_fn=lambda: pytest.fail("must not reexec"),
+        log_fn=lambda *a: None,
+    ) == "backoff"
+
+
+def test_new_candidate_is_not_blocked_by_previous_failure():
+    updater.record_update_result("0.7.60", False, "package_install_failed")
+    assert updater.candidate_retry_blocked("0.7.60") is True
+    assert updater.candidate_retry_blocked("0.7.61") is False
+
+
+def test_success_clears_candidate_backoff():
+    updater.record_update_result("0.7.60", False, "package_install_failed")
+    updater.record_update_result("0.7.60", True)
+    payload = updater.auto_update_status_payload()
+    assert payload["sdk_update_last_result"] == "success"
+    assert payload["sdk_update_consecutive_failures"] == 0
+    assert payload["sdk_update_next_retry_at"] is None
+
+
+def test_corrupt_persisted_state_fails_open_for_check_not_install(monkeypatch, tmp_path):
+    state = tmp_path / "update-status.json"
+    state.write_text("not-json")
+    monkeypatch.setenv("IICP_UPDATE_STATE_FILE", str(state))
+    assert updater.candidate_retry_blocked("0.7.60") is False
+
+
+def test_wrong_typed_persisted_state_cannot_break_result_recording(monkeypatch, tmp_path):
+    state = tmp_path / "update-status.json"
+    state.write_text('{"sdk_update_consecutive_failures":"many"}')
+    monkeypatch.setenv("IICP_UPDATE_STATE_FILE", str(state))
+    updater.record_update_result("0.7.60", False, "package_install_failed")
+    assert updater.auto_update_status_payload()["sdk_update_consecutive_failures"] == 1
 
 
 @pytest.mark.parametrize(

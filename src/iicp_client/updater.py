@@ -18,7 +18,8 @@ import subprocess
 import sys
 import threading
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 PYPI_URL = "https://pypi.org/pypi/iicp-client/json"
 DEFAULT_AUTO_UPDATE_INTERVAL_S = 3600
@@ -28,7 +29,96 @@ _status: dict[str, str | int | bool | None] = {
     "sdk_latest_seen": None,
     "sdk_update_last_checked_at": None,
     "sdk_update_error_class": None,
+    "sdk_update_last_attempted_version": None,
+    "sdk_update_last_result": None,
+    "sdk_update_consecutive_failures": 0,
+    "sdk_update_next_retry_at": None,
 }
+
+
+def _state_path() -> Path:
+    override = os.environ.get("IICP_UPDATE_STATE_FILE")
+    if override:
+        return Path(override)
+    home = Path(os.environ.get("IICP_HOME", Path.home() / ".iicp"))
+    return home / "state" / "update-status.json"
+
+
+def _load_persisted_state() -> None:
+    try:
+        value = json.loads(_state_path().read_text())
+        if isinstance(value, dict):
+            for key in (
+                "sdk_latest_seen",
+                "sdk_update_last_checked_at",
+                "sdk_update_error_class",
+                "sdk_update_last_attempted_version",
+                "sdk_update_next_retry_at",
+            ):
+                if value.get(key) is None or isinstance(value.get(key), str):
+                    _status[key] = value.get(key)
+            result = value.get("sdk_update_last_result")
+            if result in {None, "success", "failed"}:
+                _status["sdk_update_last_result"] = result
+            failures = value.get("sdk_update_consecutive_failures")
+            if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0:
+                _status["sdk_update_consecutive_failures"] = failures
+    except (OSError, ValueError, TypeError):
+        return
+
+
+def _persist_state() -> bool:
+    path = _state_path()
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(_status, sort_keys=True) + "\n")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+        return True
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def _retry_delay_s(failures: int, interval: int) -> int:
+    return min(86_400, interval * (2 ** min(max(failures - 1, 0), 5)))
+
+
+def candidate_retry_blocked(version: str, now: datetime | None = None) -> bool:
+    with _status_lock:
+        _load_persisted_state()
+        if _status["sdk_update_last_attempted_version"] != version or _status["sdk_update_last_result"] != "failed":
+            return False
+        retry = _status.get("sdk_update_next_retry_at")
+    try:
+        return datetime.fromisoformat(str(retry)) > (now or datetime.now(UTC))
+    except (TypeError, ValueError):
+        return False
+
+
+def record_update_result(version: str, success: bool, error_class: str | None = None) -> None:
+    with _status_lock:
+        _load_persisted_state()
+        same = _status["sdk_update_last_attempted_version"] == version
+        failures = int(_status.get("sdk_update_consecutive_failures") or 0)
+        _status["sdk_update_last_attempted_version"] = version
+        _status["sdk_update_last_result"] = "success" if success else "failed"
+        _status["sdk_update_error_class"] = error_class
+        if success:
+            _status["sdk_update_consecutive_failures"] = 0
+            _status["sdk_update_next_retry_at"] = None
+        else:
+            failures = failures + 1 if same else 1
+            _status["sdk_update_consecutive_failures"] = failures
+            _status["sdk_update_next_retry_at"] = (
+                datetime.now(UTC) + timedelta(seconds=_retry_delay_s(failures, auto_update_interval_s()))
+            ).isoformat()
+        if not _persist_state():
+            _status["sdk_update_error_class"] = "update_state_write_failed"
 
 
 def parse_version(v: str) -> tuple[int, int, int] | None:
@@ -94,7 +184,10 @@ def _pip_available() -> bool:
 def _set_update_error_class(error_class: str | None) -> None:
     """Update only the updater error class without changing latest/timestamp."""
     with _status_lock:
+        _load_persisted_state()
         _status["sdk_update_error_class"] = error_class
+        if not _persist_state():
+            _status["sdk_update_error_class"] = "update_state_write_failed"
 
 
 def _ensure_pip(timeout: float = 120.0) -> str | None:
@@ -202,26 +295,34 @@ def auto_update_tick(
         return "unknown"
     if not is_outdated(current, latest):
         return "current"
+    if candidate_retry_blocked(latest):
+        return "backoff"
     log_fn(f"auto-update: newer release {latest} available (running {current}) — upgrading…")
     if upgrade_fn(latest):
+        record_update_result(latest, True)
         log_fn(f"auto-update: upgraded to {latest}; restarting to apply…")
         reexec_fn()  # normally does not return (process replaced)
         return "upgraded"
-    log_fn("auto-update: upgrade failed; staying on current version, will retry next check")
+    record_update_result(latest, False, "package_install_failed")
+    log_fn("auto-update: upgrade failed; staying on current version with bounded retry backoff")
     return "upgrade-failed"
 
 
 def record_update_check(latest: str | None, error_class: str | None = None) -> None:
     """Record the latest updater check for heartbeat observability."""
     with _status_lock:
+        _load_persisted_state()
         _status["sdk_latest_seen"] = latest
         _status["sdk_update_last_checked_at"] = datetime.now(UTC).isoformat()
         _status["sdk_update_error_class"] = error_class
+        if not _persist_state():
+            _status["sdk_update_error_class"] = "update_state_write_failed"
 
 
 def auto_update_status_payload() -> dict[str, str | int | bool | None]:
     """Optional heartbeat fields that let the directory see updater health."""
     with _status_lock:
+        _load_persisted_state()
         snapshot = dict(_status)
     snapshot["auto_update_enabled"] = auto_update_enabled()
     snapshot["auto_update_interval_s"] = auto_update_interval_s()
