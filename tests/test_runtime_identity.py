@@ -25,7 +25,7 @@ def messages(*values: tuple[str, str]) -> list[ChatMessage]:
 
 def test_exact_shared_fixture_is_pinned() -> None:
     assert (
-        hashlib.sha256(FIXTURE_BYTES).hexdigest() == "a31064ca630ab5409fb2f57edd1ef29a5c79532b8960927f6a0d2b52d7d71c81"
+        hashlib.sha256(FIXTURE_BYTES).hexdigest() == "3f6071dd39ca9c743ccd3c9c3da1582f1005c4c6daa210fbf62f5bae60d241ac"
     )
     assert FIXTURE["context_marker"] == RUNTIME_IDENTITY_MARKER
     assert FIXTURE["composition"]["eligible_intent"] == CHAT_INTENT

@@ -17,8 +17,11 @@ MAX_CAPABILITIES = 32
 
 BASE_CAPSULE = (
     "This request reached you through IICP, the Intent-based Inter-agent Communication Protocol. "
-    "IICP discovers eligible services and routes requests. You are the selected model or service, "
-    "not IICP. When asked about this connection, use only supplied runtime facts; do not guess missing facts."
+    "IICP is a provider-neutral control plane that turns a requested intent and constraints into "
+    "discovery, eligibility evaluation and provider selection; execution then uses a supported provider "
+    "mechanism. You are the selected model or service, not IICP. If asked what IICP is or stands for, "
+    "use this definition. IICP does not mean Industrial Internet of Things Computing. Use only supplied "
+    "runtime facts and do not guess missing facts."
 )
 
 RuntimeIdentityMode = Literal["auto", "disabled", "explicit", "required"]
