@@ -7,21 +7,30 @@ from iicp_client.policy_detail_disclosure import (
     verify_policy_detail_consumer_token,
 )
 
-FIXTURE = json.loads((Path(__file__).parents[1] / "parity/policy-detail-disclosure-v0.json").read_text())
+PARITY = Path(__file__).parents[1] / "parity"
+FIXTURES = [
+    json.loads((PARITY / name).read_text())
+    for name in (
+        "policy-detail-disclosure-v0.json",
+        "policy-detail-disclosure-authority-v0.json",
+    )
+]
+FIXTURE = FIXTURES[0]
 
 
 def test_policy_detail_disclosure_fixture() -> None:
-    assert tuple(FIXTURE["allowed_detail_fields"]) == ALLOWED_DETAIL_FIELDS
-    for case in FIXTURE["cases"]:
-        decision = evaluate_policy_detail_disclosure(case["context"])
-        assert decision.status == case["expected"]["status"], case["id"]
-        assert decision.reason == case["expected"]["reason"], case["id"]
-        if decision.status == 200:
-            assert decision.body is not None
-            assert set(decision.body["details"]) <= set(ALLOWED_DETAIL_FIELDS)
-            serialized = json.dumps(decision.body)
-            for forbidden in ("must-not-leak", "private.example", "backend_topology", "natural_person_contact"):
-                assert forbidden not in serialized
+    for fixture in FIXTURES:
+        assert tuple(fixture["allowed_detail_fields"]) == ALLOWED_DETAIL_FIELDS
+        for case in fixture["cases"]:
+            decision = evaluate_policy_detail_disclosure(case["context"])
+            assert decision.status == case["expected"]["status"], case["id"]
+            assert decision.reason == case["expected"]["reason"], case["id"]
+            if decision.status == 200:
+                assert decision.body is not None
+                assert set(decision.body["details"]) <= set(ALLOWED_DETAIL_FIELDS)
+                serialized = json.dumps(decision.body)
+                for forbidden in ("must-not-leak", "private.example", "backend_topology", "natural_person_contact"):
+                    assert forbidden not in serialized
 
 
 def test_unrecognized_auth_state_fails_as_invalid() -> None:

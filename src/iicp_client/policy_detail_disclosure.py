@@ -65,17 +65,29 @@ def verify_policy_detail_consumer_token(
 def evaluate_policy_detail_disclosure(context: dict[str, Any]) -> PolicyDetailDisclosureDecision:
     """Apply the portable authorization, concealment and redaction contract.
 
-    ``consumer_auth`` MUST be the result of cryptographic verification by the
-    integration adapter, never a value copied from an untrusted request body.
+    ``consumer_auth`` and ``dispatch_ticket`` MUST be verification results from
+    the integration adapter, never values copied from an untrusted request body.
     """
 
     auth = context.get("consumer_auth")
     if auth == "missing":
         return PolicyDetailDisclosureDecision(401, "consumer_auth_required")
-    if auth == "invalid" or auth not in {"valid", "expired"}:
+    if auth == "invalid" or auth not in {"valid", "expired", "revoked"}:
         return PolicyDetailDisclosureDecision(401, "consumer_auth_invalid")
     if auth == "expired":
         return PolicyDetailDisclosureDecision(401, "consumer_auth_expired")
+    if auth == "revoked":
+        return PolicyDetailDisclosureDecision(401, "consumer_auth_revoked")
+
+    ticket = context.get("dispatch_ticket")
+    if ticket is None:
+        pass  # Historical v0 fixture: ticket authorization was not projected.
+    elif ticket == "expired":
+        return PolicyDetailDisclosureDecision(401, "dispatch_ticket_expired")
+    elif ticket == "revoked":
+        return PolicyDetailDisclosureDecision(401, "dispatch_ticket_revoked")
+    elif ticket != "valid":
+        return PolicyDetailDisclosureDecision(401, "dispatch_ticket_invalid")
     if context.get("disclosure_allowed") is not True:
         return PolicyDetailDisclosureDecision(403, "disclosure_forbidden")
 
