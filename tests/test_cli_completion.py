@@ -6,7 +6,6 @@ import pytest
 from iicp_client.cli import main
 from iicp_client.completion import candidates, script
 
-
 FIXTURE = json.loads((Path(__file__).parents[1] / "parity/cli-completion-v1.json").read_text())
 
 
