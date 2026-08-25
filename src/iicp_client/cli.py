@@ -211,6 +211,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "help",
         help="Print this top-level usage and exit.",
     )
+    completion = sub.add_parser("completion", help="Print a shell completion script.")
+    completion.add_argument("shell", choices=["bash", "zsh", "fish", "powershell", "pwsh"])
     sub.add_parser(
         "init",
         help="Interactive wizard — set up operator identity + first node config.",
@@ -3245,11 +3247,21 @@ def _cmd_service(args: object) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
     raw_argv = sys.argv[1:] if argv is None else argv
+    if raw_argv[:1] == ["__complete"]:
+        from iicp_client.completion import candidates
+
+        sys.stdout.write("".join(f"{item}\n" for item in candidates(raw_argv[1:])))
+        return 0
+    parser = _build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "help":
         parser.print_help()
+        return 0
+    if args.cmd == "completion":
+        from iicp_client.completion import script
+
+        sys.stdout.write(script(args.shell))
         return 0
     if args.cmd == "serve":
         # Record whether the operator explicitly toggled the NAT flag on the CLI
