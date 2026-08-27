@@ -1,0 +1,186 @@
+{
+  "component": "client-python",
+  "evidence_policy": "digest-only",
+  "network_policy": "isolated-fixtures-only",
+  "non_authorizing": true,
+  "scenario_commands": {
+    "ciphertext-tamper": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_confidentiality.py"
+    ],
+    "confidentiality-downgrade": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_confidentiality.py"
+    ],
+    "confidentiality-key-missing": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_confidentiality.py"
+    ],
+    "config-malformed": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_cli_ux.py"
+    ],
+    "config-missing": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_cli_ux.py"
+    ],
+    "config-permission-denied": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_operator_identity.py"
+    ],
+    "credential-expired": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_dispatch_ticket_trust_runtime.py"
+    ],
+    "credential-missing": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_current_node_token.py"
+    ],
+    "credential-replayed": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_dispatch_ticket_trust_store.py"
+    ],
+    "credential-rotated": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_dispatch_ticket_trust_store.py"
+    ],
+    "cross-flavor-equivalence": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_conformance.py"
+    ],
+    "directory-unavailable": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_restricted_directory.py"
+    ],
+    "dns-failure": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_endpoint_security.py"
+    ],
+    "duplicate-registration": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_register_operator_wiring.py"
+    ],
+    "minimum-version": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_cli_ux.py"
+    ],
+    "offline-locked-install": [
+      "@python",
+      "scripts/run_sdk_quality.py"
+    ],
+    "package-version-self-report": [
+      "@python",
+      "scripts/run_sdk_quality.py"
+    ],
+    "partial-response": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_conformance.py"
+    ],
+    "process-crash-restart": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_service_lifecycle_identity.py"
+    ],
+    "rate-limit": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_tunnel.py"
+    ],
+    "request-timeout": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_client.py"
+    ],
+    "rollback-last-supported": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_updater.py"
+    ],
+    "signature-mismatch": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_dispatch_ticket_trust_crypto.py"
+    ],
+    "tls-failure": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_endpoint_security.py"
+    ],
+    "unsupported-version": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_updater.py"
+    ]
+  },
+  "schema": "iicp.pre1-component-case-map.v1",
+  "support_command": [
+    "@python",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/test_client.py",
+    "tests/test_conformance.py"
+  ]
+}
