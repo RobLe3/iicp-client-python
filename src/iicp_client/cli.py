@@ -2150,7 +2150,12 @@ async def _serve(args: argparse.Namespace) -> int:
     # None is reserved for --skip-registration (no heartbeat by design).
     token: str | None = None
     if not args.skip_registration:
-        for attempt in range(1, 4):
+        # A dynamic public route becomes eligible only after the node is
+        # listening and the directory can dial it. One expected pre-listener
+        # attempt is enough; the empty-token heartbeat re-registers immediately
+        # after serve() binds.
+        registration_attempts = 1 if _tunnel is not None else 3
+        for attempt in range(1, registration_attempts + 1):
             try:
                 token = await node.register()
                 logger.info("Registered as %s (token=%s…)", node_id, (token or "")[:8])
@@ -2172,7 +2177,7 @@ async def _serve(args: argparse.Namespace) -> int:
                     _complete_handoff_for_node(args.node)
                 break
             except Exception as exc:  # noqa: BLE001
-                if attempt >= 3:
+                if attempt >= registration_attempts:
                     logger.warning(
                         "Registration failed after %d attempts: %s — starting heartbeat loop "
                         "anyway; it will re-register on the first 401",
@@ -3213,6 +3218,13 @@ def _cmd_service(args: object) -> int:
                 raise RuntimeError(f"service manager action failed ({completed.returncode}): {' '.join(action.argv)}")
 
     if cmd == "install":
+        from iicp_client.tunnel import cloudflared_path
+
+        if os.environ.get("IICP_CLOUDFLARED_PATH") is None and cloudflared_path() is None:
+            sys.stderr.write(
+                "WARNING: Quick Tunnel fallback is unavailable under the supervisor because "
+                "cloudflared could not be resolved. Direct reachability remains supported.\n"
+            )
         if dry_run:
             sys.stdout.write(f"# {unit.platform} service: {unit.name}\n# path: {unit.path}\n")
             sys.stdout.write(unit.content)

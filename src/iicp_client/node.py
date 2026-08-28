@@ -993,8 +993,13 @@ class IicpNode:
         recovery_grace = env_grace_checks()
         recovery_check_every = env_check_every_heartbeats()
         recovery_supervised = supervised_recovery_enabled()
+        # Empty means startup registration was deferred until the listener
+        # existed. Recover immediately; registered nodes keep normal cadence.
+        wait_before_tick = bool(token)
         while True:
-            await asyncio.sleep(_HEARTBEAT_INTERVAL)
+            if wait_before_tick:
+                await asyncio.sleep(_HEARTBEAT_INTERVAL)
+            wait_before_tick = True
             self._runtime_health.advance_supervisor()
             seq += 1
             try:

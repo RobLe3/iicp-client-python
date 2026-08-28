@@ -34,3 +34,8 @@ def test_quality_runner_uses_the_shared_content_free_schema() -> None:
 def test_pull_request_quality_enforces_mypy_no_regression() -> None:
     workflow = (ROOT / ".github/workflows/quality.yml").read_text()
     assert "python scripts/check_mypy_baseline.py" in workflow
+
+
+def test_mypy_baseline_uses_the_active_python_environment() -> None:
+    source = (ROOT / "scripts/check_mypy_baseline.py").read_text()
+    assert '[sys.executable, "-m", "mypy", "src"]' in source
