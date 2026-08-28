@@ -123,6 +123,20 @@ def build(destination: Path, requested_target: str | None) -> dict:
                 "pip",
                 "install",
                 "--disable-pip-version-check",
+                "--require-hashes",
+                "--requirement",
+                str(requirements),
+            ],
+            ROOT,
+        )
+        common.run(
+            [
+                str(venv_python(online)),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-deps",
                 str(wheel),
             ],
             ROOT,
@@ -143,6 +157,21 @@ def build(destination: Path, requested_target: str | None) -> dict:
                 "--no-index",
                 "--find-links",
                 str(wheelhouse),
+                "--require-hashes",
+                "--requirement",
+                str(requirements),
+            ],
+            ROOT,
+        )
+        common.run(
+            [
+                str(venv_python(offline)),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-index",
+                "--no-deps",
                 str(wheel),
             ],
             ROOT,
