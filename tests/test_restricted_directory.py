@@ -35,6 +35,12 @@ def test_context_and_decision_fail_closed(tmp_path):
         SecretRef("file", str(secret)).resolve()
 
 
+def test_missing_restricted_credential_fails_before_network(monkeypatch):
+    monkeypatch.delenv("IICP_TEST_MISSING_RESTRICTED_MEMBER", raising=False)
+    with pytest.raises(IicpError, match="credential is unavailable"):
+        SecretRef("environment", "IICP_TEST_MISSING_RESTRICTED_MEMBER").resolve()
+
+
 @pytest.mark.asyncio
 async def test_restricted_discovery_sends_membership_and_requires_decision(monkeypatch):
     seen: dict[str, str] = {}
@@ -50,6 +56,36 @@ async def test_restricted_discovery_sends_membership_and_requires_decision(monke
     await client.discover_async("urn:iicp:intent:llm:chat:v1")
     assert seen["x-iicp-membership"] == "member-token"
     assert seen["x-iicp-subject-id"] == "client-a"
+
+
+@pytest.mark.asyncio
+async def test_restricted_directory_failure_does_not_fall_back(monkeypatch):
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        raise httpx.ConnectError("isolated directory unavailable", request=request)
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: original(
+            transport=httpx.MockTransport(handler),
+            **{key: value for key, value in kwargs.items() if key != "transport"},
+        ),
+    )
+    client = IicpClient(
+        ClientConfig(
+            directory_url="https://directory.test",
+            route_discovery_mode="ticketed",
+            restricted_directory=context(),
+        )
+    )
+    with pytest.raises(IicpError, match="Network error"):
+        await client.discover_async("urn:iicp:intent:llm:chat:v1")
+    assert len(calls) == 1
+    assert calls[0].startswith("https://directory.test/v1/discover?")
 
 
 def test_restricted_mode_refuses_legacy_fallback():

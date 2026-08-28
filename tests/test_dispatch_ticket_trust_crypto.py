@@ -32,6 +32,43 @@ def _decision(vector: dict, keys: dict[str, dict], signature_valid: bool) -> str
     return "accept_anchored"
 
 
+def _assert_fixture_decision(vector_id: str, expected: str) -> None:
+    fixture = json.loads(
+        (Path(__file__).parents[1] / "parity" / "dispatch-ticket-trust-v2-crypto.json").read_text()
+    )
+    domain = _decode(fixture["domain_separator_b64url"])
+    keys = {key["key_id"]: key for key in fixture["keys"]}
+    vector = next(value for value in fixture["vectors"] if value["id"] == vector_id)
+    public_key = Ed25519PublicKey.from_public_bytes(
+        _decode(keys[vector["claims"]["key_id"]]["public_key_b64url"])
+    )
+    try:
+        public_key.verify(
+            _decode(vector["signature_b64url"]),
+            domain + _canonical(vector["claims"]),
+        )
+        signature_valid = True
+    except InvalidSignature:
+        signature_valid = False
+    assert _decision(vector, keys, signature_valid) == expected
+
+
+def test_expired_dispatch_ticket_key_fails_closed() -> None:
+    _assert_fixture_decision("expired_key_refused", "reject_key_expired")
+
+
+def test_replayed_dispatch_ticket_fails_closed() -> None:
+    _assert_fixture_decision("local_replay_refused", "reject_local_replay")
+
+
+def test_revoked_dispatch_ticket_key_fails_closed_after_rotation() -> None:
+    _assert_fixture_decision("revoked_key_refused", "reject_key_revoked")
+
+
+def test_tampered_dispatch_ticket_signature_fails_closed() -> None:
+    _assert_fixture_decision("tampered_claim_refused", "reject_signature")
+
+
 def test_dispatch_ticket_v2_signed_vectors_are_portable() -> None:
     fixture = json.loads((Path(__file__).parents[1] / "parity" / "dispatch-ticket-trust-v2-crypto.json").read_text())
     domain = _decode(fixture["domain_separator_b64url"])
