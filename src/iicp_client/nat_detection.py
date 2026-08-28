@@ -136,8 +136,8 @@ async def detect_nat(
         external_ip_probe_url: opt-in WAN-IP probe URL (e.g. api.ipify.org).
             Used as a fallback when UPnP AddPortMapping succeeds but the IGD
             refuses GetExternalIPAddress (FRITZ!Box auth-restricted case).
-        transport_port: optional native IICP TCP port (default 9484 per
-            spec/iicp-dir.md v0.7.0). When set AND distinct from `bind_port`,
+        transport_port: optional experimental native IICP TCP port. The stable
+            default is disabled. When set AND distinct from `bind_port`,
             the detector asks UPnP to map BOTH ports and returns a
             transport_endpoint URL alongside the HTTP public_endpoint.
     """

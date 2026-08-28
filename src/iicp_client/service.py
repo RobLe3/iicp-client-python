@@ -151,6 +151,15 @@ def _supervisor_tunnel_environment() -> dict[str, str]:
         result["IICP_CLOUDFLARED_PATH"] = binary
     if normalized is not None:
         result["IICP_TUNNEL"] = normalized
+    native = os.environ.get("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP")
+    if native is not None:
+        value = native.strip().lower()
+        if value in {"1", "true", "yes"}:
+            result["IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP"] = "1"
+        elif value in {"0", "false", "no"}:
+            result["IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP"] = "0"
+        else:
+            raise ValueError("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP must be one of 1/true/yes or 0/false/no")
     return result
 
 

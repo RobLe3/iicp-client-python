@@ -50,9 +50,9 @@ Documentation = "https://iicp.network/docs"
 metrics = [
     "prometheus-client>=0.20",
 ]
-# Native IICP binary transport (port 9484, spec/iicp-framing.md). Optional
-# because cbor2 has a C-extension build that can fail on some musl-based
-# minimal containers — HTTP-only nodes don't need it.
+# Experimental plaintext native IICP draft (provisional port 9484). Installing
+# this extra does not mount or advertise it; provider nodes also require
+# IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP=1. It is excluded from stable/production.
 iicp-tcp = [
     "cbor2>=5.4",
 ]

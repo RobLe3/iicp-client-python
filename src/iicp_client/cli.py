@@ -91,6 +91,18 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes"}
 
 
+def _explicit_bool_env(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes"}:
+        return True
+    if normalized in {"0", "false", "no"}:
+        return False
+    raise ValueError(f"{name} must be one of 1/true/yes or 0/false/no")
+
+
 def _managed_operator_decision(args, tunnel_preference, operator) -> tuple[bool, str]:
     """Evaluate the local managed profile before exposure or registration."""
     from iicp_client.operator_profile import ManagedOperatorInput, evaluate_managed_operator
@@ -426,6 +438,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "before relay. --tunnel forces it on; --no-tunnel disables tunnel fallback. "
         "Dead-state policy: IICP_TUNNEL_DEAD_POLICY=auto|retry|exit|log-only; "
         "generated services set IICP_SUPERVISED=1. env: IICP_TUNNEL=1/0",
+    )
+    serve.epilog = (
+        "Experimental native TCP is disabled by default and excluded from stable/production claims. "
+        "For a direct development endpoint only: IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP=1."
     )
     serve.add_argument(
         "--relay-capable",
@@ -1818,7 +1834,7 @@ async def _serve(args: argparse.Namespace) -> int:
         return 2
 
     # Resolve the actual listen port before NAT detection: start at the
-    # requested port (default 9484, the official IICP port) and auto-increment
+    # requested port (default 9484, the unassigned project convention) and auto-increment
     # to the next free port. This keeps one port per node (multiple models on
     # one node share it) while N nodes on one host each get a distinct port →
     # distinct pinhole. Skipped when the operator supplies an explicit
@@ -2131,17 +2147,23 @@ async def _serve(args: argparse.Namespace) -> int:
         logger.error(str(exc))
         return 2
 
-    # #457 / ADR-040 — advertise the native IICP binary transport. serve() multiplexes it
-    # onto the SAME socket as HTTP (first-byte detection), so transport_endpoint shares the
-    # endpoint's host:port with the iicp:// scheme. Derived from the FINAL endpoint (after NAT
-    # profile application); register() only sends it when registering (skip_registration gates
-    # the non-routable case) → advertise-when-reachable. Opt out: IICP_DISABLE_NATIVE_TRANSPORT=1.
-    if not args.skip_registration and os.environ.get("IICP_DISABLE_NATIVE_TRANSPORT") != "1":
+    # Native TCP remains a development-only draft outside the coordinated
+    # stable support baseline. It must be explicitly enabled, and HTTPS must
+    # never be rewritten to iicpsec because this server has no native TLS path.
+    if _explicit_bool_env("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP") is True:
         from iicp_client.node import derive_native_endpoint
 
         _native_ep = derive_native_endpoint(node._cfg.endpoint)
         if _native_ep:
             node._cfg.transport_endpoint = _native_ep
+            logger.warning(
+                "Experimental plaintext native TCP enabled; it is excluded from stable and production claims."
+            )
+        else:
+            logger.warning(
+                "Experimental native TCP was requested but no direct HTTP endpoint can be derived; "
+                "HTTPS/tunnel endpoints are not native TLS routes, so the listener remains disabled."
+            )
 
     # #404 — register with bounded backoff retry. On persistent failure, pass an
     # empty token (NOT None) so the heartbeat loop still starts and re-registers on
@@ -2621,7 +2643,7 @@ def _check_dependencies(backend_url: str) -> list[_DepIssue]:
 
     # 2) Optional Python deps mapped to pip extras
     optional = [
-        ("cbor2", "iicp-tcp", "native IICP TCP transport (port 9484)"),
+        ("cbor2", "iicp-tcp", "experimental native IICP TCP draft (disabled by default; not stable/production)"),
         ("upnpclient", "nat", "UPnP NAT detection + IPv6 firewall pinhole"),
         ("ifaddr", "nat", "interface enumeration for NAT detection"),
         ("prometheus_client", "metrics", "/metrics endpoint"),

@@ -8,6 +8,7 @@ def test_launchd_unit_runs_foreground_serve_with_hourly_auto_update(monkeypatch,
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("IICP_AUTO_UPDATE", raising=False)
     monkeypatch.delenv("IICP_AUTO_UPDATE_INTERVAL_S", raising=False)
+    monkeypatch.delenv("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP", raising=False)
     unit = render_launchd("mynode")
 
     assert unit.platform == "launchd"
@@ -20,6 +21,7 @@ def test_launchd_unit_runs_foreground_serve_with_hourly_auto_update(monkeypatch,
     assert "<key>IICP_SUPERVISED</key><string>1</string>" in unit.content
     assert "<key>IICP_TUNNEL_DEAD_POLICY</key><string>auto</string>" in unit.content
     assert "<key>KeepAlive</key><true/>" in unit.content
+    assert "<key>IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP</key>" not in unit.content
     assert "--daemon" not in unit.content
 
 
@@ -27,6 +29,7 @@ def test_systemd_unit_runs_foreground_serve_with_hourly_auto_update(monkeypatch,
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("IICP_AUTO_UPDATE", raising=False)
     monkeypatch.delenv("IICP_AUTO_UPDATE_INTERVAL_S", raising=False)
+    monkeypatch.delenv("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP", raising=False)
     unit = render_systemd("mynode")
 
     assert unit.platform == "systemd"
@@ -37,6 +40,7 @@ def test_systemd_unit_runs_foreground_serve_with_hourly_auto_update(monkeypatch,
     assert "Environment=IICP_SUPERVISED=1" in unit.content
     assert "Environment=IICP_TUNNEL_DEAD_POLICY=auto" in unit.content
     assert "Restart=on-failure" in unit.content
+    assert "Environment=IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP=" not in unit.content
     assert "--daemon" not in unit.content
 
 
@@ -86,6 +90,7 @@ def test_service_preserves_only_explicit_tunnel_policy_and_resolved_binary(monke
     binary.chmod(0o700)
     monkeypatch.setenv("IICP_CLOUDFLARED_PATH", str(binary))
     monkeypatch.setenv("IICP_TUNNEL", "yes")
+    monkeypatch.setenv("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP", "yes")
 
     launchd = render_launchd("mynode")
     systemd = render_systemd("mynode")
@@ -94,6 +99,8 @@ def test_service_preserves_only_explicit_tunnel_policy_and_resolved_binary(monke
     assert "<key>IICP_TUNNEL</key><string>1</string>" in launchd.content
     assert f"Environment=IICP_CLOUDFLARED_PATH={resolved}" in systemd.content
     assert "Environment=IICP_TUNNEL=1" in systemd.content
+    assert "<key>IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP</key><string>1</string>" in launchd.content
+    assert "Environment=IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP=1" in systemd.content
 
     monkeypatch.delenv("IICP_TUNNEL")
     automatic = render_launchd("mynode")
@@ -113,3 +120,12 @@ def test_service_refuses_invalid_or_unavailable_forced_tunnel(monkeypatch, tmp_p
     monkeypatch.setenv("IICP_TUNNEL", "1")
     with pytest.raises(ValueError, match="requires cloudflared"):
         render_systemd("mynode")
+
+
+def test_service_refuses_invalid_experimental_native_setting(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP", "sometimes")
+    with pytest.raises(ValueError, match="must be one of"):
+        render_launchd("mynode")
