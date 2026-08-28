@@ -280,6 +280,29 @@ async def test_server_rejects_oversized_length_before_body_read(server_port):
         await writer.wait_closed()
 
 
+async def test_server_rejects_conflicted_type_before_body_read(server_port):
+    reader, writer = await asyncio.open_connection("127.0.0.1", server_port)
+    try:
+        writer.write(_frame(MsgType.INIT, cbor2.dumps({1: FRAMING_VERSION}, canonical=True)))
+        await writer.drain()
+        await _read_frame(reader)
+        writer.write(
+            _HEADER.pack(
+                IICP_MAGIC,
+                FRAMING_VERSION,
+                0x0B,
+                0,
+                0,
+                MAX_FRAME_PAYLOAD,
+            )
+        )
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(1), timeout=TIMEOUT) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_payload_bearing_frame_does_not_close_session(server_port):
     """Regression guard for the iter-1410 adapter bug — pre-fix the session loop
     closed on every frame with a non-empty CBOR payload because IicpFrame.decode
@@ -342,6 +365,33 @@ async def test_client_rejects_oversized_response_header_before_body_read():
     try:
         async with IicpTcpClient("127.0.0.1", port) as client:
             with pytest.raises(IicpTcpClientError, match="response frame payload too large"):
+                await client.handshake()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_client_rejects_conflicted_response_type_before_body_read():
+    async def conflicted_ack(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_frame(reader)
+        writer.write(
+            _HEADER.pack(
+                IICP_MAGIC,
+                FRAMING_VERSION,
+                0x0B,
+                0,
+                0,
+                MAX_FRAME_PAYLOAD,
+            )
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(conflicted_ack, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with IicpTcpClient("127.0.0.1", port) as client:
+            with pytest.raises(IicpTcpClientError, match="conflicted_type"):
                 await client.handshake()
     finally:
         server.close()

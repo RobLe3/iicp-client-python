@@ -50,6 +50,26 @@ _HEADER_STRUCT = struct.Struct("!4sBBBBI")
 _READ_CHUNK = 4096
 MAX_FRAME_PAYLOAD = 16 * 1024 * 1024  # Length-field payload bytes; header excluded.
 
+_STABLE_TASK_MESSAGE_TYPES = frozenset((*range(0x01, 0x0B), 0x0D, 0x0E))
+
+
+def stable_task_message_type_error(msg_type: int) -> str | None:
+    """Return the fail-closed stable-task disposition for one type byte.
+
+    Relay experiments retain 0x0B/0x0C on their dedicated transport. Those
+    bytes conflict with the inherited CONTROL/ADVERTISE registry and therefore
+    cannot enter a stable native task session.
+    """
+    if msg_type in _STABLE_TASK_MESSAGE_TYPES:
+        return None
+    if msg_type in {0x00, 0xFF}:
+        return "invalid_type"
+    if msg_type in {0x0B, 0x0C}:
+        return "conflicted_type"
+    if 0xF0 <= msg_type <= 0xFE:
+        return "unsupported_extension"
+    return "unknown_type"
+
 
 class MsgType(IntEnum):
     """spec/iicp-framing.md §3 — core message types 0x01–0x0E.
@@ -403,6 +423,10 @@ class IicpTcpServer:
                 return
             if version != FRAMING_VERSION:
                 logger.warning("Unsupported IICP framing version — closing")
+                return
+            type_error = stable_task_message_type_error(msg_type)
+            if type_error is not None:
+                logger.warning("Rejected native task frame type 0x%02x: %s", msg_type, type_error)
                 return
             if payload_len > MAX_FRAME_PAYLOAD:
                 logger.warning("IICP frame payload exceeds limit — closing")
@@ -936,6 +960,9 @@ class IicpTcpClient:
             raise IicpTcpClientError(f"bad magic in response: {magic!r}")
         if version != FRAMING_VERSION:
             raise IicpTcpClientError(f"unsupported framing version {version} in response")
+        type_error = stable_task_message_type_error(mt)
+        if type_error is not None:
+            raise IicpTcpClientError(f"rejected native task frame type 0x{mt:02x}: {type_error}")
         if payload_len > MAX_FRAME_PAYLOAD:
             raise IicpTcpClientError(f"response frame payload too large: {payload_len} > {MAX_FRAME_PAYLOAD}")
         payload = await asyncio.wait_for(self._reader.readexactly(payload_len), timeout=t) if payload_len else b""
