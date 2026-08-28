@@ -9,6 +9,16 @@ in the main repo).
 
 ## [Unreleased]
 
+## [0.7.110] — 2026-08-28
+
+### Changed — explicit qualification boundary
+
+- Bound package metadata to the fully declared CPython 3.11 through 3.14
+  qualification range. This does not change runtime or wire behavior.
+- Add a component-owned candidate builder that proves locked build, exact
+  online installation, empty-environment offline installation and CLI version
+  truth before emitting content-free artifact evidence.
+
 ## [0.7.109] — 2026-08-25
 
 ### Added — shell completion

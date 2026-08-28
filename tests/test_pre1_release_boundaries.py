@@ -13,7 +13,7 @@ RELEASE_WORKFLOW = (ROOT / ".github" / "workflows" / "release.yml").read_text(en
 
 
 def test_minimum_python_version_is_declared_and_candidate_remains_pre1() -> None:
-    assert PROJECT["requires-python"] == ">=3.11"
+    assert PROJECT["requires-python"] == ">=3.11,<3.15"
     assert sys.version_info >= (3, 11)
     assert PROJECT["version"].split(".", 1)[0] == "0"
 

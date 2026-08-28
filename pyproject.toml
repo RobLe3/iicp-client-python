@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iicp-client"
-version = "0.7.109"
+version = "0.7.110"
 description = "Use the open IICP AI mesh from Python without running a node"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 authors = [
     {name = "IICP Contributors"},
 ]
@@ -20,6 +20,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
