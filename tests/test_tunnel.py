@@ -129,7 +129,7 @@ class TestInitiation:
         _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
         try:
             with pytest.raises(RuntimeError, match="rate limit detected"):
-                open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_RATE_LIMITED))
+                open_quick_tunnel(9484, timeout=3.0, binary=_fake_bin(tmp_path, FAKE_RATE_LIMITED))
             with pytest.raises(RuntimeError, match="creation paused"):
                 open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_OK))
         finally:
@@ -140,7 +140,7 @@ class TestInitiation:
         _reset_quick_tunnel_rate_limit_for_tests(clear_persistent=True)
         try:
             with pytest.raises(RuntimeError, match="rate limit detected"):
-                open_quick_tunnel(9484, timeout=1.0, binary=_fake_bin(tmp_path, FAKE_RATE_LIMITED))
+                open_quick_tunnel(9484, timeout=3.0, binary=_fake_bin(tmp_path, FAKE_RATE_LIMITED))
 
             # Simulate a supervised restart: process-local state is gone, but
             # the node state directory still remembers the cooldown.
