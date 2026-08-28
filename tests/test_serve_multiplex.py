@@ -90,6 +90,7 @@ async def test_http_and_native_call_share_one_port() -> None:
 
         # Native IICP CALL answers on the SAME port (pre-#457 this hit the HTTP parser).
         async with IicpTcpClient("127.0.0.1", port) as client:
+            await client.handshake()
             result = await client.call(CHAT, {"messages": [{"role": "user", "content": "hi"}]})
         assert isinstance(result, dict), "native CALL returned a RESPONSE result over the shared port"
     finally:

@@ -22,6 +22,7 @@ from iicp_client.iicp_tcp import (
     FRAME_HEADER_LEN,
     FRAMING_VERSION,
     IICP_MAGIC,
+    MAX_FRAME_PAYLOAD,
     IicpTcpClient,
     IicpTcpClientError,
     IicpTcpServer,
@@ -145,9 +146,7 @@ async def test_discover_invokes_lookup_returns_nodes(server_port):
         await _read_frame(reader)
 
         intent = "urn:iicp:intent:llm:chat:v1"
-        writer.write(
-            _frame(MsgType.DISCOVER, cbor2.dumps({2: "sess-1", 3: intent}, canonical=True))
-        )
+        writer.write(_frame(MsgType.DISCOVER, cbor2.dumps({2: "sess-1", 3: intent}, canonical=True)))
         await writer.drain()
         mt, payload = await _read_frame(reader)
         assert mt == MsgType.RESPONSE
@@ -224,6 +223,63 @@ async def test_bad_magic_closes_connection(server_port):
         await writer.wait_closed()
 
 
+async def test_server_rejects_application_frame_before_init(server_port):
+    reader, writer = await asyncio.open_connection("127.0.0.1", server_port)
+    try:
+        writer.write(_frame(MsgType.PING))
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(1), timeout=TIMEOUT) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_server_rejects_duplicate_init(server_port):
+    reader, writer = await asyncio.open_connection("127.0.0.1", server_port)
+    init = _frame(MsgType.INIT, cbor2.dumps({1: FRAMING_VERSION}, canonical=True))
+    try:
+        writer.write(init)
+        await writer.drain()
+        await _read_frame(reader)
+        writer.write(init)
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(1), timeout=TIMEOUT) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_server_rejects_init_with_unsupported_negotiated_version(server_port):
+    reader, writer = await asyncio.open_connection("127.0.0.1", server_port)
+    try:
+        writer.write(_frame(MsgType.INIT, cbor2.dumps({1: 2}, canonical=True)))
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(1), timeout=TIMEOUT) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_server_rejects_oversized_length_before_body_read(server_port):
+    reader, writer = await asyncio.open_connection("127.0.0.1", server_port)
+    try:
+        writer.write(
+            _HEADER.pack(
+                IICP_MAGIC,
+                FRAMING_VERSION,
+                MsgType.INIT,
+                0,
+                0,
+                MAX_FRAME_PAYLOAD + 1,
+            )
+        )
+        await writer.drain()
+        assert await asyncio.wait_for(reader.read(1), timeout=TIMEOUT) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_payload_bearing_frame_does_not_close_session(server_port):
     """Regression guard for the iter-1410 adapter bug — pre-fix the session loop
     closed on every frame with a non-empty CBOR payload because IicpFrame.decode
@@ -257,6 +313,57 @@ async def test_client_context_manager_handshake_and_close(server_port):
         await client.handshake()
         assert client.framing_version == FRAMING_VERSION
         assert client.peer_node_id == "test-node-id"
+
+
+async def test_client_requires_handshake_before_application_frames(server_port):
+    async with IicpTcpClient("127.0.0.1", server_port) as client:
+        with pytest.raises(IicpTcpClientError, match="handshake is not complete"):
+            await client.ping()
+
+
+async def test_client_rejects_oversized_response_header_before_body_read():
+    async def oversized_ack(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_frame(reader)
+        writer.write(
+            _HEADER.pack(
+                IICP_MAGIC,
+                FRAMING_VERSION,
+                MsgType.ACK,
+                0,
+                0,
+                MAX_FRAME_PAYLOAD + 1,
+            )
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(oversized_ack, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with IicpTcpClient("127.0.0.1", port) as client:
+            with pytest.raises(IicpTcpClientError, match="response frame payload too large"):
+                await client.handshake()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_client_rejects_ack_with_wrong_negotiated_version():
+    async def wrong_ack(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await _read_frame(reader)
+        writer.write(_frame(MsgType.ACK, cbor2.dumps({1: 2}, canonical=True)))
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(wrong_ack, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with IicpTcpClient("127.0.0.1", port) as client:
+            with pytest.raises(IicpTcpClientError, match="ACK negotiated unsupported"):
+                await client.handshake()
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 async def test_client_ping_with_echo(server_port):
@@ -335,6 +442,7 @@ async def test_client_stream_call_yields_validated_partial_and_terminal(monkeypa
             return None
 
     client = IicpTcpClient("127.0.0.1")
+    client.framing_version = FRAMING_VERSION
     writer = Writer()
     client._writer = writer
     responses = iter(
@@ -387,9 +495,7 @@ async def test_stream_call_roundtrip_uses_negotiated_server_handler():
         yield {"status": "partial", "result": b"hel", "tokens_used": 1}
         yield {"status": "success", "result": b"lo", "tokens_used": 2}
 
-    server = IicpTcpServer(
-        host="127.0.0.1", port=port, node_id="stream-node", streaming_handler=stream_handler
-    )
+    server = IicpTcpServer(host="127.0.0.1", port=port, node_id="stream-node", streaming_handler=stream_handler)
     await server.start()
     try:
         async with IicpTcpClient("127.0.0.1", port) as client:
@@ -419,9 +525,7 @@ async def test_stream_handler_exception_after_partial_emits_terminal_error():
         yield {"status": "partial", "result": b"some"}
         raise RuntimeError("sensitive backend detail")
 
-    server = IicpTcpServer(
-        host="127.0.0.1", port=port, node_id="stream-node", streaming_handler=stream_handler
-    )
+    server = IicpTcpServer(host="127.0.0.1", port=port, node_id="stream-node", streaming_handler=stream_handler)
     await server.start()
     try:
         async with IicpTcpClient("127.0.0.1", port) as client:
@@ -455,6 +559,7 @@ async def test_client_stream_call_rejects_sequence_drift(monkeypatch):
             return None
 
     client = IicpTcpClient("127.0.0.1")
+    client.framing_version = FRAMING_VERSION
     client._writer = Writer()
 
     async def read_frame(timeout_s=None):

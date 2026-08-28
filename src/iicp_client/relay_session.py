@@ -40,7 +40,7 @@ from typing import Any
 
 from iicp_client.relay_ticket import consume_relay_bind_ticket, verify_relay_bind_ticket
 
-from .iicp_tcp import _decode_lifecycle_response
+from .iicp_tcp import MAX_FRAME_PAYLOAD, _decode_lifecycle_response
 from .native_response_sequence import NativeResponseSequence, NativeResponseSequenceError
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,8 @@ _MT_RELAY_ACK = 0x0C
 
 
 def _make_frame(msg_type: int, payload: bytes) -> bytes:
+    if len(payload) > MAX_FRAME_PAYLOAD:
+        raise ValueError(f"relay frame payload too large: {len(payload)} > {MAX_FRAME_PAYLOAD}")
     header = _HEADER_STRUCT.pack(_IICP_MAGIC, _FRAMING_VERSION, msg_type, 0, 0, len(payload))
     return header + payload
 
@@ -73,8 +75,7 @@ def _cbor2() -> Any:
         import cbor2  # type: ignore[import-untyped]
     except ImportError as exc:
         raise ImportError(
-            "cbor2 is required for relay sessions. "
-            "Install with: pip install 'iicp-client[iicp-tcp]'"
+            "cbor2 is required for relay sessions. Install with: pip install 'iicp-client[iicp-tcp]'"
         ) from exc
     return cbor2
 
@@ -131,9 +132,7 @@ class RelayWorkerSession:
         if fut is not None and not fut.done():
             fut.set_result(result)
 
-    async def forward_stream(
-        self, task: dict, timeout: float = 120.0
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def forward_stream(self, task: dict, timeout: float = 120.0) -> AsyncIterator[dict[str, Any]]:
         """Push a negotiated streaming CALL and yield validated lifecycle events."""
         call_id = str(uuid.uuid4())
         task_id = str(task.get("task_id") or call_id)
@@ -253,9 +252,7 @@ class HttpPollWorkerSession:
         if fut is not None and not fut.done():
             fut.set_result(result)
 
-    async def forward_stream(
-        self, task: dict, timeout: float = 120.0
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def forward_stream(self, task: dict, timeout: float = 120.0) -> AsyncIterator[dict[str, Any]]:
         call_id = str(uuid.uuid4())
         task_id = str(task.get("task_id") or call_id)
         session_id = str(task.get("session_id") or call_id)
@@ -326,7 +323,9 @@ class RelaySessionRegistry:
         self._lock = threading.Lock()
         self._max = max_sessions
         try:
-            self._bind_rate_limit = max(0, int(os.getenv("IICP_RELAY_BIND_RATE_LIMIT", str(DEFAULT_RELAY_BIND_RATE_LIMIT))))
+            self._bind_rate_limit = max(
+                0, int(os.getenv("IICP_RELAY_BIND_RATE_LIMIT", str(DEFAULT_RELAY_BIND_RATE_LIMIT)))
+            )
         except ValueError:
             self._bind_rate_limit = DEFAULT_RELAY_BIND_RATE_LIMIT
         self._bind_rate_buckets: dict[str, tuple[float, int]] = {}
@@ -422,9 +421,7 @@ class RelayAcceptServer:
         # so workers can register the correct {relay}/v1/relay-for/<wid> endpoint.
         self.http_port = http_port
         self.require_bind_ticket = (
-            os.getenv("IICP_RELAY_REQUIRE_BIND_TICKET") == "1"
-            if require_bind_ticket is None
-            else require_bind_ticket
+            os.getenv("IICP_RELAY_REQUIRE_BIND_TICKET") == "1" if require_bind_ticket is None else require_bind_ticket
         )
         self.bind_ticket_public_key_hex = bind_ticket_public_key_hex or os.getenv("IICP_RELAY_BIND_TICKET_PUBLIC_KEY")
         self.relay_node_id = relay_node_id or os.getenv("IICP_NODE_ID", "*")
@@ -432,9 +429,7 @@ class RelayAcceptServer:
 
     async def start(self) -> None:
         _cbor2()  # validate import early
-        self._server = await asyncio.start_server(
-            self._handle_connection, host=self.host, port=self.port
-        )
+        self._server = await asyncio.start_server(self._handle_connection, host=self.host, port=self.port)
         logger.info("Relay accept server listening on %s:%d", self.host, self.port)
 
     async def stop(self) -> None:
@@ -449,9 +444,7 @@ class RelayAcceptServer:
         async with self._server:
             await self._server.serve_forever()
 
-    async def _handle_connection(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         logger.debug("Relay accept: connection from %s", peer)
         try:
@@ -467,9 +460,7 @@ class RelayAcceptServer:
             except Exception:  # noqa: BLE001
                 pass
 
-    async def _session(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def _session(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Handshake + relay-worker frame loop."""
         # ── Step 1: INIT/ACK ──────────────────────────────────────────────────
         magic = await reader.readexactly(4)
@@ -479,6 +470,9 @@ class RelayAcceptServer:
         rest = await reader.readexactly(_FRAME_HEADER_LEN - 4)
         header_bytes = magic + rest
         _, ver, msg_type, flags, _res, payload_len = _HEADER_STRUCT.unpack(header_bytes)
+        if ver != _FRAMING_VERSION or payload_len > MAX_FRAME_PAYLOAD:
+            logger.warning("Relay accept: unsupported version or oversized INIT")
+            return
         if msg_type != _MT_INIT:
             logger.warning("Relay accept: expected INIT, got 0x%02x", msg_type)
             return
@@ -640,6 +634,7 @@ class RelayAcceptServer:
                         call_id = str(rb.get(15, ""))
                         raw5 = rb.get(5, b"")
                         import json as _json
+
                         if isinstance(raw5, (bytes, bytearray)):
                             result = _json.loads(raw5)
                         elif isinstance(raw5, str):
@@ -662,8 +657,8 @@ class RelayAcceptServer:
             header = await reader.readexactly(_FRAME_HEADER_LEN)
         except (asyncio.IncompleteReadError, EOFError, ConnectionResetError):
             return None
-        _, _, _, _, _, payload_len = _HEADER_STRUCT.unpack(header)
-        if payload_len > 16 * 1024 * 1024:
+        magic, version, _, _, _, payload_len = _HEADER_STRUCT.unpack(header)
+        if magic != _IICP_MAGIC or version != _FRAMING_VERSION or payload_len > MAX_FRAME_PAYLOAD:
             return None
         try:
             payload = await reader.readexactly(payload_len) if payload_len else b""
