@@ -3,184 +3,267 @@
   "evidence_policy": "digest-only",
   "network_policy": "isolated-fixtures-only",
   "non_authorizing": true,
-  "scenario_commands": {
-    "ciphertext-tamper": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_confidentiality.py"
-    ],
-    "confidentiality-downgrade": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_confidentiality.py"
-    ],
-    "confidentiality-key-missing": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_confidentiality.py"
-    ],
-    "config-malformed": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_cli_ux.py"
-    ],
-    "config-missing": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_cli_ux.py"
-    ],
-    "config-permission-denied": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_operator_identity.py"
-    ],
-    "credential-expired": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_dispatch_ticket_trust_runtime.py"
-    ],
-    "credential-missing": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_current_node_token.py"
-    ],
-    "credential-replayed": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_dispatch_ticket_trust_store.py"
-    ],
-    "credential-rotated": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_dispatch_ticket_trust_store.py"
-    ],
-    "cross-flavor-equivalence": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_conformance.py"
-    ],
-    "directory-unavailable": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_restricted_directory.py"
-    ],
-    "dns-failure": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_endpoint_security.py"
-    ],
-    "duplicate-registration": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_register_operator_wiring.py"
-    ],
-    "minimum-version": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_cli_ux.py"
-    ],
-    "offline-locked-install": [
-      "@python",
-      "scripts/run_sdk_quality.py"
-    ],
-    "package-version-self-report": [
-      "@python",
-      "scripts/run_sdk_quality.py"
-    ],
-    "partial-response": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_conformance.py"
-    ],
-    "process-crash-restart": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_service_lifecycle_identity.py"
-    ],
-    "rate-limit": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_tunnel.py"
-    ],
-    "request-timeout": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_client.py"
-    ],
-    "rollback-last-supported": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_updater.py"
-    ],
-    "signature-mismatch": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_dispatch_ticket_trust_crypto.py"
-    ],
-    "tls-failure": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_endpoint_security.py"
-    ],
-    "unsupported-version": [
-      "@python",
-      "-m",
-      "pytest",
-      "-q",
-      "tests/test_updater.py"
-    ]
+  "scenarios": {
+    "ciphertext-tamper": {
+      "assertion": "test_tampered_ciphertext_fails",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_confidentiality.py::test_tampered_ciphertext_fails"
+      ]
+    },
+    "confidentiality-downgrade": {
+      "assertion": "test_p0a_no_key_is_refused_by_default",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_client.py::test_p0a_no_key_is_refused_by_default"
+      ]
+    },
+    "confidentiality-key-missing": {
+      "assertion": "test_p0a_skips_keyless_node_and_uses_keyed_candidate",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_client.py::test_p0a_skips_keyless_node_and_uses_keyed_candidate"
+      ]
+    },
+    "config-malformed": {
+      "assertion": "test_malformed_node_configuration_fails_closed",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_pre1_runtime_boundaries.py::test_malformed_node_configuration_fails_closed"
+      ]
+    },
+    "config-missing": {
+      "assertion": "test_missing_node_configuration_is_explicitly_absent",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_pre1_runtime_boundaries.py::test_missing_node_configuration_is_explicitly_absent"
+      ]
+    },
+    "config-permission-denied": {
+      "assertion": "test_permission_denied_config_write_leaves_no_file",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_pre1_runtime_boundaries.py::test_permission_denied_config_write_leaves_no_file"
+      ]
+    },
+    "credential-expired": {
+      "assertion": "test_expired_dispatch_ticket_key_fails_closed",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_dispatch_ticket_trust_crypto.py::test_expired_dispatch_ticket_key_fails_closed"
+      ]
+    },
+    "credential-missing": {
+      "assertion": "test_missing_restricted_credential_fails_before_network",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_restricted_directory.py::test_missing_restricted_credential_fails_before_network"
+      ]
+    },
+    "credential-replayed": {
+      "assertion": "test_replayed_dispatch_ticket_fails_closed",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_dispatch_ticket_trust_crypto.py::test_replayed_dispatch_ticket_fails_closed"
+      ]
+    },
+    "credential-rotated": {
+      "assertion": "test_revoked_dispatch_ticket_key_fails_closed_after_rotation",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_dispatch_ticket_trust_crypto.py::test_revoked_dispatch_ticket_key_fails_closed_after_rotation"
+      ]
+    },
+    "cross-flavor-equivalence": {
+      "assertion": "test_profile_fixture_native_policy_scenarios_use_real_routing_gate",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_policy_manifest.py::test_profile_fixture_native_policy_scenarios_use_real_routing_gate"
+      ]
+    },
+    "directory-unavailable": {
+      "assertion": "test_restricted_directory_failure_does_not_fall_back",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_restricted_directory.py::test_restricted_directory_failure_does_not_fall_back"
+      ]
+    },
+    "dns-failure": {
+      "assertion": "test_dns_error_detection_covers_macos_resolver_wording",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_tunnel.py::TestSetup::test_dns_error_detection_covers_macos_resolver_wording"
+      ]
+    },
+    "duplicate-registration": {
+      "assertion": "test_e050_client_credential_lifecycle_fixture",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_current_node_token.py::test_e050_client_credential_lifecycle_fixture"
+      ]
+    },
+    "minimum-version": {
+      "assertion": "test_minimum_python_version_is_declared_and_candidate_remains_pre1",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_pre1_release_boundaries.py::test_minimum_python_version_is_declared_and_candidate_remains_pre1"
+      ]
+    },
+    "offline-locked-install": {
+      "assertion": "test_offline_candidate_contract_pins_locked_release_inputs",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_pre1_release_boundaries.py::test_offline_candidate_contract_pins_locked_release_inputs"
+      ]
+    },
+    "package-version-self-report": {
+      "assertion": "test_package_version_self_report_matches_candidate_contract",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_pre1_release_boundaries.py::test_package_version_self_report_matches_candidate_contract"
+      ]
+    },
+    "partial-response": {
+      "assertion": "test_returns_fail_when_required_field_missing",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_conformance.py::TestConfHealth01::test_returns_fail_when_required_field_missing"
+      ]
+    },
+    "process-crash-restart": {
+      "assertion": "test_sqlite_two_process_crash_recovery_and_single_terminal_winner",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_service_lifecycle.py::test_sqlite_two_process_crash_recovery_and_single_terminal_winner"
+      ]
+    },
+    "rate-limit": {
+      "assertion": "test_relay_bind_rate_limit_is_per_source_and_recovers",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_relay_session.py::test_relay_bind_rate_limit_is_per_source_and_recovers"
+      ]
+    },
+    "request-timeout": {
+      "assertion": "test_timeout_is_classified_deterministically",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_backends.py::test_timeout_is_classified_deterministically"
+      ]
+    },
+    "rollback-last-supported": {
+      "assertion": "test_auto_update_tick_failed_upgrade_does_not_reexec",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_updater.py::test_auto_update_tick_failed_upgrade_does_not_reexec"
+      ]
+    },
+    "signature-mismatch": {
+      "assertion": "test_tampered_dispatch_ticket_signature_fails_closed",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_dispatch_ticket_trust_crypto.py::test_tampered_dispatch_ticket_signature_fails_closed"
+      ]
+    },
+    "tls-failure": {
+      "assertion": "test_tls_handshake_failure_is_transient_and_bounded",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_endpoint_security.py::test_tls_handshake_failure_is_transient_and_bounded"
+      ]
+    },
+    "unsupported-version": {
+      "assertion": "test_parse_version_rejects_non_stable_candidates",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_updater.py::TestVersionCompare::test_parse_version_rejects_non_stable_candidates"
+      ]
+    }
   },
-  "schema": "iicp.pre1-component-case-map.v1",
-  "support_command": [
-    "@python",
-    "-m",
-    "pytest",
-    "-q",
-    "tests/test_client.py",
-    "tests/test_conformance.py"
-  ]
+  "schema": "iicp.pre1-component-case-map.v2",
+  "support": {
+    "assertion": "test_candidate_ranker_runs_after_policy_eligibility_and_records_exploration",
+    "command": [
+      "@python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_client.py::test_candidate_ranker_runs_after_policy_eligibility_and_records_exploration"
+    ]
+  }
 }

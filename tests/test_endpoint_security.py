@@ -82,6 +82,27 @@ async def test_private_provider_requires_opt_in_and_uses_pinned_transport(monkey
         thread.join(timeout=2)
 
 
+@pytest.mark.asyncio
+async def test_tls_handshake_failure_is_transient_and_bounded() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ProviderHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(IicpError) as failure:
+            await post_json(
+                f"https://127.0.0.1:{server.server_port}/task",
+                {},
+                timeout_ms=2_000,
+                tls_verify=True,
+            )
+        assert failure.value.code == "IICP-E004"
+        assert failure.value.retryable is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_shared_fixture_matches_python_policy() -> None:
     fixture = json.loads((Path(__file__).parent / "fixtures" / "endpoint-security-v1.json").read_text())
     for vector in fixture["address_vectors"]:
