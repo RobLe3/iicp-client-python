@@ -121,17 +121,15 @@ async def _post_cip_receipt(
 
 
 def derive_native_endpoint(endpoint: str) -> str | None:
-    """#457 / ADR-040 — derive the native binary transport_endpoint from the HTTP `endpoint`.
+    """Derive the experimental plaintext native endpoint from direct HTTP.
 
-    They share one host:port (serve() multiplexes both planes on one socket via first-byte
-    detection), so the native URI is the same authority with the ``iicp`` scheme (``iicpsec``
-    for TLS). Returns None if `endpoint` is not a parseable http(s) URL.
+    The maintained server has no native TLS terminator. An HTTPS reverse proxy
+    or tunnel therefore cannot be assumed to carry the binary protocol and is
+    never rewritten to ``iicpsec://`` automatically.
     """
     parts = urlsplit(endpoint)
     if parts.scheme == "http" and parts.netloc:
         return f"iicp://{parts.netloc}"
-    if parts.scheme == "https" and parts.netloc:
-        return f"iicpsec://{parts.netloc}"
     return None
 
 
@@ -280,10 +278,10 @@ class NodeConfig:
     max_concurrent: int = 4
     tokens_per_min: int = 10000
     max_tokens: int = 8192
-    # spec/iicp-dir.md v0.7.0 — optional native IICP binary endpoint (ADR-040).
-    # Scheme MUST be iicp:// (plaintext) or iicpsec:// (TLS); default port 9484.
-    # When set, the directory persists it and clients SHOULD prefer it over
-    # `endpoint` for task CALLs. Leave None for HTTP-only operation.
+    # Experimental native IICP binary endpoint (ADR-040), disabled by default.
+    # iicp:// is plaintext development use; iicpsec:// requires a real native
+    # TLS terminator. Port 9484 is an unassigned project convention. When set,
+    # the directory persists it for explicitly enabled experimental peers.
     transport_endpoint: str | None = None
     # #331 Phase A.1 / ADR-041 — NAT-traversal observability fields surfaced
     # to the directory in the register payload. Populated automatically by
@@ -1856,15 +1854,15 @@ class IicpNode:
                 self.end_headers()
                 self.wfile.write(body)
 
-        # #457 / ADR-040 — single-port multiplexer: the HTTP control plane and the native
-        # IICP binary transport share ONE socket. Each accepted connection's first 4 bytes
-        # are peeked (MSG_PEEK, non-consuming): the IICP frame magic "IICP" routes to the
-        # native handler (the SAME backend task handler as HTTP), anything else (an HTTP
-        # request line) to the BaseHTTPRequestHandler above. One socket ⇒ one pinhole ⇒
-        # native is reachable exactly when HTTP is (advertise-when-reachable); a CGNAT node
-        # needs no second hole. bind_and_activate=False: we own the listening socket.
+        # The experimental native multiplexer is mounted only when the
+        # operator explicitly configured transport_endpoint. Ordinary nodes
+        # remain HTTP-only; compiling or importing the draft is not consent to
+        # expose it on the public listener.
+        native_enabled = bool(self._cfg.transport_endpoint)
         server = ThreadingHTTPServer((host, port), _Handler, bind_and_activate=False)
-        native_server = IicpTcpServer(host=host, port=port, node_id=self._cfg.node_id, handler=handler)
+        native_server = (
+            IicpTcpServer(host=host, port=port, node_id=self._cfg.node_id, handler=handler) if native_enabled else None
+        )
         # Bind to the address family implied by `host` — the CLI defaults host to
         # "::" (IPv6), which a hardcoded AF_INET socket cannot bind (gaierror).
         family = _listen_family(host, port)
@@ -1887,6 +1885,9 @@ class IicpNode:
         mux_stop = threading.Event()
 
         async def _handle_native_conn(conn: socket.socket) -> None:
+            if native_server is None:
+                conn.close()
+                return
             try:
                 conn.setblocking(False)
                 reader, writer = await asyncio.open_connection(sock=conn)
@@ -1911,7 +1912,7 @@ class IicpNode:
                     pass
                 return
             conn.settimeout(None)
-            if prefix == IICP_MAGIC:
+            if native_enabled and prefix == IICP_MAGIC:
                 asyncio.run_coroutine_threadsafe(_handle_native_conn(conn), loop)
             else:
                 # ThreadingHTTPServer.process_request threads the request; _Handler reads the
@@ -1929,12 +1930,16 @@ class IicpNode:
                 # Peek+route off the accept thread so a slow client can't block new connections.
                 threading.Thread(target=_route_conn, args=(conn, addr), daemon=True).start()
 
-        logger.info(
-            "IICP node %s listening on %s:%d (HTTP + native IICP, single port)",
-            self._cfg.node_id,
-            host,
-            port,
-        )
+        if native_enabled:
+            logger.warning(
+                "IICP node %s enabled experimental plaintext native TCP on %s:%d; "
+                "it is excluded from stable and production claims",
+                self._cfg.node_id,
+                host,
+                port,
+            )
+        else:
+            logger.info("IICP node %s listening on %s:%d (HTTP)", self._cfg.node_id, host, port)
         self._runtime_health.mark_running()
 
         bg_tasks: list[asyncio.Task] = []

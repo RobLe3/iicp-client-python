@@ -405,7 +405,8 @@ asyncio.run(main())
 
 ### Listen port — default 9484, auto-increment (v0.7.5+)
 
-The official IICP port **9484** is the default listen port (`IICP_PORT`, `--port`).
+The unassigned project-default port **9484** is the default listen port
+(`IICP_PORT`, `--port`); it is not an IANA-assigned IICP service port.
 The `iicp-node` CLI auto-increments to the next free port when 9484 is already in
 use, so you can run several nodes on one host without picking ports by hand — the
 first binds 9484, the second 9485, the third 9486, and so on. Each node gets its
@@ -413,6 +414,26 @@ own port, hence its own NAT pinhole; multiple models served by one node share th
 single port. Auto-increment is skipped when you pass an explicit `--public-endpoint`
 (you own the port mapping in that case). `IicpNode.serve(port=…)` uses the port you
 give it as-is (no auto-increment at the library level).
+
+---
+
+### Experimental native TCP boundary
+
+Provider nodes serve the supported HTTP task path by default. Installing the
+`iicp-tcp` extra does not mount or advertise the native TCP draft, which is
+outside the coordinated stable and production support baseline. A direct
+development endpoint requires both the extra and an explicit runtime opt-in:
+
+```bash
+python -m pip install 'iicp-client[iicp-tcp]'
+IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP=1 iicp-node serve --node my-node
+```
+
+Automatic derivation accepts only direct `http://` endpoints and produces
+plaintext `iicp://`. It never rewrites an `https://` endpoint to `iicpsec://`,
+because an HTTPS reverse proxy or Quick Tunnel does not prove a native TLS
+route. Generated launchd and systemd units omit the setting by default and
+preserve it only when explicitly configured.
 
 ---
 

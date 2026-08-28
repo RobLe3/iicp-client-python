@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Native IICP binary transport (port 9484) — server + framing + cbor payloads.
+"""Experimental native IICP binary transport — server + framing + CBOR payloads.
+
+Provider nodes require the separate ``IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP=1``
+runtime opt-in before mounting or advertising this plaintext development
+binding. It is excluded from stable and production support claims.
 
 Implements the wire side of spec/iicp-framing.md so a hybrid-client SDK node
 can answer task CALLs over the native binary transport instead of (or in
@@ -58,7 +62,7 @@ def stable_task_message_type_error(msg_type: int) -> str | None:
 
     Relay experiments retain 0x0B/0x0C on their dedicated transport. Those
     bytes conflict with the inherited CONTROL/ADVERTISE registry and therefore
-    cannot enter a stable native task session.
+    cannot enter the bounded experimental native task profile.
     """
     if msg_type in _STABLE_TASK_MESSAGE_TYPES:
         return None

@@ -16,9 +16,11 @@ Cross-references:
     - ADR-008 — directory score ordering is authoritative; the proxy preserves it
     - spec/iicp-core.md §10 — retry/idempotency semantics for client implementations
 """
+
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 from uuid import UUID
 
@@ -27,6 +29,23 @@ from iicp_client.proxy.routing.circuit_breaker import CircuitBreaker, CircuitOpe
 from iicp_client.proxy.routing.retry import RetryManager
 
 logger = logging.getLogger(__name__)
+
+
+def _experimental_native_enabled() -> bool:
+    """Return whether directory native routes may enter this proxy path.
+
+    The stable proxy ignores ``transport_endpoint`` by default. Direct callers
+    can still construct ``NodeClient`` with an endpoint for bounded experiments.
+    """
+    raw = os.environ.get("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP")
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes"}:
+        return True
+    if value not in {"0", "false", "no"}:
+        logger.warning("Ignoring invalid IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP value in proxy routing")
+    return False
 
 
 class TaskRouter:
@@ -72,7 +91,7 @@ class TaskRouter:
         """
         node_id = node["node_id"]
         endpoint = node["endpoint"]
-        transport_endpoint = node.get("transport_endpoint")  # spec v0.7.0 dual-endpoint fallback
+        transport_endpoint = node.get("transport_endpoint") if _experimental_native_enabled() else None
 
         if not _is_ssrf_safe(endpoint):
             logger.warning(
@@ -80,9 +99,7 @@ class TaskRouter:
                 node_id[:8] if len(node_id) > 8 else node_id,
                 endpoint,
             )
-            raise ValueError(
-                f"Node endpoint '{endpoint}' is not publicly routable (SSRF guard)"
-            )
+            raise ValueError(f"Node endpoint '{endpoint}' is not publicly routable (SSRF guard)")
 
         self._circuit.check(node_id)
 
@@ -90,7 +107,10 @@ class TaskRouter:
 
         async def attempt() -> dict[str, Any]:
             return await client.submit_task(
-                task_id, intent, payload, timeout_ms,
+                task_id,
+                intent,
+                payload,
+                timeout_ms,
                 cip_envelope=cip_envelope,
                 source_node_id=source_node_id,
             )

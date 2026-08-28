@@ -1,4 +1,5 @@
 """Unit tests for TaskRouter — circuit breaker integration + retry wiring."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -38,6 +39,7 @@ def _make_router(
 # Happy path
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_route_returns_result_on_success():
     """PROXY-ROUTE-01: Router discovers nodes via directory and routes; returns backend result on success."""
@@ -74,6 +76,7 @@ async def test_route_records_success_on_circuit_breaker():
 # Circuit breaker integration
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_route_raises_circuit_open_when_breaker_tripped():
     """Router raises CircuitOpenError immediately when circuit is open."""
@@ -104,6 +107,7 @@ async def test_route_records_failure_on_exception():
 # ---------------------------------------------------------------------------
 # Retry integration
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_route_retries_on_transient_error():
@@ -143,6 +147,7 @@ async def test_route_raises_after_all_retries_exhausted():
 # Token forwarding
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_route_uses_configured_node_token():
     """Router creates NodeClient with the configured node_token."""
@@ -162,9 +167,50 @@ async def test_route_uses_configured_node_token():
     assert captured_token == ["my-secret-token"]
 
 
+@pytest.mark.asyncio
+async def test_route_ignores_experimental_transport_endpoint_by_default(monkeypatch):
+    """Stable proxy routing must not opt itself into the native draft."""
+    monkeypatch.delenv("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP", raising=False)
+    captured_transport: list[str | None] = []
+
+    class CapturingClient:
+        def __init__(self, endpoint: str, token: str, transport_endpoint: str | None = None):
+            captured_transport.append(transport_endpoint)
+
+        async def submit_task(self, *args, **kwargs) -> dict:
+            return {"status": "success"}
+
+    node = {**NODE, "transport_endpoint": "iicp://1.2.3.4:9484"}
+    with patch("iicp_client.proxy.routing.router.NodeClient", CapturingClient):
+        await _make_router().route(node, TASK_ID, INTENT, PAYLOAD, TIMEOUT_MS)
+
+    assert captured_transport == [None]
+
+
+@pytest.mark.asyncio
+async def test_route_preserves_explicit_experimental_transport_opt_in(monkeypatch):
+    monkeypatch.setenv("IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP", "1")
+    captured_transport: list[str | None] = []
+
+    class CapturingClient:
+        def __init__(self, endpoint: str, token: str, transport_endpoint: str | None = None):
+            captured_transport.append(transport_endpoint)
+
+        async def submit_task(self, *args, **kwargs) -> dict:
+            return {"status": "success"}
+
+    native = "iicp://1.2.3.4:9484"
+    node = {**NODE, "transport_endpoint": native}
+    with patch("iicp_client.proxy.routing.router.NodeClient", CapturingClient):
+        await _make_router().route(node, TASK_ID, INTENT, PAYLOAD, TIMEOUT_MS)
+
+    assert captured_transport == [native]
+
+
 # ---------------------------------------------------------------------------
 # CIP-CALL-01: cip envelope passthrough (S.12 §4.1, §10.4)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_route_passes_cip_envelope_to_submit_task():

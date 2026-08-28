@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""#457 / ADR-040 — `iicp-node serve` multiplexes the HTTP control plane and the native
-IICP binary transport on ONE port (first-byte detection). Proves BOTH planes answer on the
-same socket, and that transport_endpoint derives from the HTTP endpoint.
-
-Fails without the fix: pre-#457 serve() bound only an HTTP server on the port, so a native
-IICP CALL would hit the HTTP parser and never get a RESPONSE.
-"""
+"""The native TCP draft is mounted only after an explicit endpoint opt-in."""
 
 from __future__ import annotations
 
@@ -15,9 +9,11 @@ import socket
 from http.client import HTTPConnection
 from typing import Any
 
+import pytest
+
 from iicp_client import IicpNode, NodeConfig
 from iicp_client._confidentiality import decrypt_response, encrypt_payload_with_context
-from iicp_client.iicp_tcp import IicpTcpClient
+from iicp_client.iicp_tcp import IicpTcpClient, IicpTcpClientError
 from iicp_client.node import derive_native_endpoint
 
 CHAT = "urn:iicp:intent:llm:chat:v1"
@@ -58,9 +54,7 @@ async def _wait_port(port: int) -> None:
     loop = asyncio.get_event_loop()
     for _ in range(50):
         try:
-            await loop.run_in_executor(
-                None, lambda: socket.create_connection(("127.0.0.1", port), timeout=0.1).close()
-            )
+            await loop.run_in_executor(None, lambda: socket.create_connection(("127.0.0.1", port), timeout=0.1).close())
             return
         except OSError:
             await asyncio.sleep(0.05)
@@ -75,12 +69,11 @@ async def test_http_and_native_call_share_one_port() -> None:
         region="test-region",
         model="test-model",
         max_concurrent=4,
+        transport_endpoint="iicp://127.0.0.1:9484",
     )
     node = IicpNode(cfg)
     port = _free_port()
-    serve_task = asyncio.create_task(
-        node.serve(_echo, host="127.0.0.1", port=port, node_token=None)
-    )
+    serve_task = asyncio.create_task(node.serve(_echo, host="127.0.0.1", port=port, node_token=None))
     try:
         await _wait_port(port)
 
@@ -103,8 +96,32 @@ async def test_http_and_native_call_share_one_port() -> None:
 
 def test_derive_native_endpoint() -> None:
     assert derive_native_endpoint("http://203.0.113.5:9484") == "iicp://203.0.113.5:9484"
-    assert derive_native_endpoint("https://node.example:9484") == "iicpsec://node.example:9484"
+    assert derive_native_endpoint("https://node.example:9484") is None
     assert derive_native_endpoint("not-a-url") is None
+
+
+async def test_native_call_is_not_mounted_without_explicit_endpoint() -> None:
+    cfg = NodeConfig(
+        node_id="http-only-node",
+        endpoint="http://test-node.local",
+        intent=CHAT,
+        region="test-region",
+        model="test-model",
+        max_concurrent=4,
+    )
+    assert cfg.transport_endpoint is None
+    node = IicpNode(cfg)
+    port = _free_port()
+    serve_task = asyncio.create_task(node.serve(_echo, host="127.0.0.1", port=port, node_token=None))
+    try:
+        await _wait_port(port)
+        async with IicpTcpClient("127.0.0.1", port) as client:
+            with pytest.raises((asyncio.IncompleteReadError, TimeoutError, IicpTcpClientError)):
+                await asyncio.wait_for(client.handshake(), timeout=2.0)
+    finally:
+        serve_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await serve_task
 
 
 async def test_http_task_decrypts_iicp_conf(monkeypatch, tmp_path) -> None:
@@ -166,12 +183,15 @@ async def test_http_rejects_required_encrypted_response_without_encrypted_reques
         await _wait_port(port)
         status, body = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: _http_task(port, {
-                "task_id": "cx-plain-required",
-                "intent": CHAT,
-                "payload": {"secret": True},
-                "cx_response_encryption": "required",
-            }),
+            lambda: _http_task(
+                port,
+                {
+                    "task_id": "cx-plain-required",
+                    "intent": CHAT,
+                    "payload": {"secret": True},
+                    "cx_response_encryption": "required",
+                },
+            ),
         )
         assert status == 400
         assert body["error"]["code"] == "IICP-CX-03"
