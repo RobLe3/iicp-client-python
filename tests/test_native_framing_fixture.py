@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from iicp_client.iicp_tcp import FRAME_HEADER_LEN, MAX_FRAME_PAYLOAD, IicpFrame, MsgType
+from iicp_client.iicp_tcp import (
+    FRAME_HEADER_LEN,
+    MAX_FRAME_PAYLOAD,
+    IicpFrame,
+    MsgType,
+    stable_task_message_type_error,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "native-framing-v1.json"
 
@@ -56,3 +62,11 @@ def test_native_frame_encoder_rejects_payload_above_the_declared_limit() -> None
         assert "frame payload too large" in str(error)
     else:
         raise AssertionError("oversized payload must be rejected")
+
+
+def test_stable_task_type_boundary_matches_canonical_vectors() -> None:
+    data = json.loads(FIXTURE.read_text())
+    for scenario in data["stable_task_type_scenarios"]:
+        expected = scenario["expected"]
+        actual = stable_task_message_type_error(scenario["message_type"])
+        assert actual == expected.get("reason"), scenario["name"]
