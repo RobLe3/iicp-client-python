@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pre1_artifact_common as common
 
-
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = "client-python"
 TARGETS = {
@@ -195,9 +194,7 @@ def build(destination: Path, requested_target: str | None) -> dict:
                 common.artifact("wheel", "any", copied_wheel),
                 common.artifact("sdist", "any", copied_sdist),
             ],
-            lock_inputs_sha256=common.files_sha256(
-                ROOT, [ROOT / "pyproject.toml", ROOT / "uv.lock"]
-            ),
+            lock_inputs_sha256=common.files_sha256(ROOT, [ROOT / "pyproject.toml", ROOT / "uv.lock"]),
             dependency_cache_sha256=common.tree_sha256(wheelhouse),
             toolchains={
                 "python": common.output([sys.executable, "--version"], ROOT),

@@ -6,20 +6,15 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/build_pre1_candidate_artifacts.py"
 
 
 class Pre1CandidateArtifactBuilderTest(unittest.TestCase):
     def test_description_is_content_free_and_complete(self) -> None:
-        value = json.loads(
-            subprocess.check_output([sys.executable, str(SCRIPT), "--describe"], text=True)
-        )
+        value = json.loads(subprocess.check_output([sys.executable, str(SCRIPT), "--describe"], text=True))
         self.assertEqual(value["component"], "client-python")
-        self.assertEqual(
-            value["artifact_identities"], [["wheel", "any"], ["sdist", "any"]]
-        )
+        self.assertEqual(value["artifact_identities"], [["wheel", "any"], ["sdist", "any"]])
         self.assertTrue(value["requires_clean_source"])
         self.assertTrue(value["non_authorizing"])
 
