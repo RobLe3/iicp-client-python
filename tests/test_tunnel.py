@@ -52,6 +52,22 @@ sys.exit(1)
 """
 
 
+def test_cloudflared_override_is_absolute_executable_and_authoritative(monkeypatch, tmp_path):
+    binary = tmp_path / "cloudflared"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+
+    monkeypatch.setenv("IICP_CLOUDFLARED_PATH", str(binary))
+    assert cloudflared_path() == str(binary.resolve())
+
+    monkeypatch.setenv("IICP_CLOUDFLARED_PATH", "relative/cloudflared")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert cloudflared_path() is None
+
+    monkeypatch.delenv("IICP_CLOUDFLARED_PATH")
+    assert cloudflared_path() == str(binary.resolve())
+
+
 def _fake_bin(tmp_path, template: str, name: str = "fake-fox-1234", lifetime: float = 60.0) -> str:
     p = tmp_path / "cloudflared"
     p.write_text(template.format(python=sys.executable, name=name, lifetime=lifetime))

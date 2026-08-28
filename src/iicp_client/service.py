@@ -123,6 +123,37 @@ def _env_value(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
+def _supervisor_tunnel_environment() -> dict[str, str]:
+    from iicp_client.tunnel import cloudflared_path
+
+    configured_path = os.environ.get("IICP_CLOUDFLARED_PATH")
+    binary = cloudflared_path()
+    if configured_path is not None and binary is None:
+        raise ValueError("IICP_CLOUDFLARED_PATH must be an absolute path to an executable file")
+
+    explicit = os.environ.get("IICP_TUNNEL")
+    normalized: str | None = None
+    if explicit is not None:
+        value = explicit.strip().lower()
+        if value in {"1", "true", "yes"}:
+            normalized = "1"
+        elif value in {"0", "false", "no"}:
+            normalized = "0"
+        else:
+            raise ValueError("IICP_TUNNEL must be one of 1/true/yes or 0/false/no")
+    if normalized == "1" and binary is None:
+        raise ValueError(
+            "IICP_TUNNEL=1 requires cloudflared; set IICP_CLOUDFLARED_PATH to its absolute executable path"
+        )
+
+    result: dict[str, str] = {}
+    if binary is not None:
+        result["IICP_CLOUDFLARED_PATH"] = binary
+    if normalized is not None:
+        result["IICP_TUNNEL"] = normalized
+    return result
+
+
 def detect_platform(requested: str = "auto") -> str:
     if requested != "auto":
         if requested not in {"launchd", "systemd"}:
@@ -146,6 +177,7 @@ def render_launchd(node: str, *, name: str | None = None, executable: str = "iic
         "IICP_TUNNEL_DEAD_POLICY": _env_value("IICP_TUNNEL_DEAD_POLICY", "auto"),
         "IICP_LOG_DIR": str(log_dir),
     }
+    env.update(_supervisor_tunnel_environment())
     env_xml = "\n".join(f"    <key>{escape(k)}</key><string>{escape(v)}</string>" for k, v in env.items())
     content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -200,6 +232,7 @@ def render_systemd(node: str, *, name: str | None = None, executable: str = "iic
         "IICP_TUNNEL_DEAD_POLICY": _env_value("IICP_TUNNEL_DEAD_POLICY", "auto"),
         "IICP_LOG_DIR": str(log_dir),
     }
+    env.update(_supervisor_tunnel_environment())
     env_lines = "\n".join(f"Environment={k}={shlex.quote(v)}" for k, v in env.items())
     content = f"""[Unit]
 Description=IICP node {node}

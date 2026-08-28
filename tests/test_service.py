@@ -77,3 +77,39 @@ def test_no_start_omits_start(monkeypatch, tmp_path):
     unit = render_systemd("mynode")
     commands = [a.argv for a in manager_actions(unit, "install", no_start=True)]
     assert not any(command[:3] == ("systemctl", "--user", "start") for command in commands)
+
+
+def test_service_preserves_only_explicit_tunnel_policy_and_resolved_binary(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    binary = tmp_path / "cloudflared"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    monkeypatch.setenv("IICP_CLOUDFLARED_PATH", str(binary))
+    monkeypatch.setenv("IICP_TUNNEL", "yes")
+
+    launchd = render_launchd("mynode")
+    systemd = render_systemd("mynode")
+    resolved = str(binary.resolve())
+    assert f"<key>IICP_CLOUDFLARED_PATH</key><string>{resolved}</string>" in launchd.content
+    assert "<key>IICP_TUNNEL</key><string>1</string>" in launchd.content
+    assert f"Environment=IICP_CLOUDFLARED_PATH={resolved}" in systemd.content
+    assert "Environment=IICP_TUNNEL=1" in systemd.content
+
+    monkeypatch.delenv("IICP_TUNNEL")
+    automatic = render_launchd("mynode")
+    assert "<key>IICP_TUNNEL</key>" not in automatic.content
+
+
+def test_service_refuses_invalid_or_unavailable_forced_tunnel(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("IICP_CLOUDFLARED_PATH", "relative/cloudflared")
+    with pytest.raises(ValueError, match="absolute path"):
+        render_launchd("mynode")
+
+    monkeypatch.delenv("IICP_CLOUDFLARED_PATH")
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("IICP_TUNNEL", "1")
+    with pytest.raises(ValueError, match="requires cloudflared"):
+        render_systemd("mynode")

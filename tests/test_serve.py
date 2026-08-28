@@ -551,10 +551,20 @@ def test_heartbeat_self_heals_from_empty_initial_token(monkeypatch):
 
     monkeypatch.setattr(n, "heartbeat", fake_hb)
     monkeypatch.setattr(n, "register", fake_reg)
+    recovered_heartbeat = asyncio.Event()
+
+    original_fake_hb = fake_hb
+
+    async def observed_hb(tok):
+        await original_fake_hb(tok)
+        if tok == "recovered-token":
+            recovered_heartbeat.set()
+
+    monkeypatch.setattr(n, "heartbeat", observed_hb)
 
     async def _run():
         task = asyncio.create_task(n._heartbeat_loop(""))  # started with empty token
-        await asyncio.sleep(0.06)
+        await asyncio.wait_for(recovered_heartbeat.wait(), timeout=1.0)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task

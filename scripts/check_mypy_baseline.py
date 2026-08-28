@@ -6,6 +6,7 @@ import collections
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 ERROR = re.compile(r"^([^:]+):\d+: error: .*\[([^]]+)\]$")
@@ -26,7 +27,11 @@ def main() -> int:
     args = parser.parse_args()
     baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
     result = subprocess.run(
-        ["mypy", "src"], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
+        [sys.executable, "-m", "mypy", "src"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
     )
     observed = observed_errors(result.stdout)
     allowed = collections.Counter(baseline["errors"])

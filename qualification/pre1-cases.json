@@ -144,6 +144,16 @@
         "tests/test_current_node_token.py::test_e050_client_credential_lifecycle_fixture"
       ]
     },
+    "dynamic-public-route-readiness": {
+      "assertion": "test_heartbeat_self_heals_from_empty_initial_token",
+      "command": [
+        "@python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_serve.py::test_heartbeat_self_heals_from_empty_initial_token"
+      ]
+    },
     "minimum-version": {
       "assertion": "test_minimum_python_version_is_declared_and_candidate_remains_pre1",
       "command": [

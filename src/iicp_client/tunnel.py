@@ -439,8 +439,27 @@ INSTALL_HINT = (
 
 
 def cloudflared_path() -> str | None:
-    """Locate the cloudflared binary, or None (we never auto-install it)."""
-    return shutil.which("cloudflared")
+    """Resolve cloudflared for interactive and supervisor-managed execution.
+
+    An explicit ``IICP_CLOUDFLARED_PATH`` is authoritative and must be an
+    absolute executable file. Invalid explicit configuration fails closed
+    instead of selecting another binary from ``PATH``.
+    """
+
+    configured = os.environ.get("IICP_CLOUDFLARED_PATH")
+    candidate = configured if configured is not None else shutil.which("cloudflared")
+    if not candidate:
+        return None
+    path = Path(candidate)
+    if configured is not None and not path.is_absolute():
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        return None
+    return str(resolved)
 
 
 class QuickTunnel:
