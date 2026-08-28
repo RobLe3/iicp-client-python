@@ -1,10 +1,11 @@
 """Implementation-backed vectors for the established 12-byte native frame."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from iicp_client.iicp_tcp import FRAME_HEADER_LEN, IicpFrame, MsgType
+from iicp_client.iicp_tcp import FRAME_HEADER_LEN, MAX_FRAME_PAYLOAD, IicpFrame, MsgType
 
 FIXTURE = Path(__file__).parent / "fixtures" / "native-framing-v1.json"
 
@@ -12,11 +13,14 @@ FIXTURE = Path(__file__).parent / "fixtures" / "native-framing-v1.json"
 def test_native_frame_decoder_matches_canonical_implementation_backed_vectors() -> None:
     data = json.loads(FIXTURE.read_text())
     assert data["frame"]["header_bytes"] == FRAME_HEADER_LEN == 12
+    assert data["frame"]["max_payload_bytes"] == MAX_FRAME_PAYLOAD == 16 * 1024 * 1024
 
     expected_errors = {
         "invalid_magic": "Invalid IICP magic",
         "truncated_header": "frame too short",
         "truncated_payload": "payload truncated",
+        "unsupported_version": "Unsupported IICP framing version",
+        "payload_too_large": "frame payload too large",
     }
     for scenario in data["scenarios"]:
         name = scenario["name"]
@@ -42,3 +46,13 @@ def test_native_frame_encoder_emits_the_canonical_empty_ping_vector() -> None:
     data = json.loads(FIXTURE.read_text())
     ping = next(scenario for scenario in data["scenarios"] if scenario["name"] == "ping_empty")
     assert IicpFrame.make(MsgType.PING, b"").encode() == bytes.fromhex(ping["wire_hex"])
+
+
+def test_native_frame_encoder_rejects_payload_above_the_declared_limit() -> None:
+    payload = b"x" * (MAX_FRAME_PAYLOAD + 1)
+    try:
+        IicpFrame.make(MsgType.CALL, payload).encode()
+    except ValueError as error:
+        assert "frame payload too large" in str(error)
+    else:
+        raise AssertionError("oversized payload must be rejected")

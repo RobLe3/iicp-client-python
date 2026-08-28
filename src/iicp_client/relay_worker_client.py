@@ -35,6 +35,7 @@ import struct
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from iicp_client.iicp_tcp import MAX_FRAME_PAYLOAD
 from iicp_client.relay_ticket import fetch_relay_bind_ticket
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,8 @@ def _dec(data: bytes) -> dict:
 
 
 def _make_frame(msg_type: int, payload: bytes) -> bytes:
+    if len(payload) > MAX_FRAME_PAYLOAD:
+        raise ValueError(f"relay frame payload too large: {len(payload)} > {MAX_FRAME_PAYLOAD}")
     header = _HEADER_STRUCT.pack(_IICP_MAGIC, _FRAMING_VERSION, msg_type, 0, 0, len(payload))
     return header + payload
 
@@ -94,13 +97,11 @@ async def _read_frame(
         header = await reader.readexactly(_HEADER_LEN)
     except (asyncio.IncompleteReadError, ConnectionResetError, EOFError):
         return None
-    magic = header[:4]
+    magic, version, msg_type, _flags, _reserved, payload_len = _HEADER_STRUCT.unpack(header)
     if magic != _IICP_MAGIC:
         logger.warning("Relay worker: bad magic %r", magic)
         return None
-    msg_type = header[5]
-    payload_len = _HEADER_STRUCT.unpack(header)[5]
-    if payload_len > 16 * 1024 * 1024:
+    if version != _FRAMING_VERSION or payload_len > MAX_FRAME_PAYLOAD:
         return None
     try:
         payload = await reader.readexactly(payload_len) if payload_len else b""

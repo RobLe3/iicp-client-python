@@ -48,7 +48,7 @@ FRAME_HEADER_LEN: int = 12  # magic(4) + ver(1) + type(1) + flags(1) + reserved(
 
 _HEADER_STRUCT = struct.Struct("!4sBBBBI")
 _READ_CHUNK = 4096
-_MAX_PAYLOAD = 16 * 1024 * 1024  # 16 MiB
+MAX_FRAME_PAYLOAD = 16 * 1024 * 1024  # Length-field payload bytes; header excluded.
 
 
 class MsgType(IntEnum):
@@ -83,6 +83,10 @@ class IicpFrame:
     payload: bytes
 
     def encode(self) -> bytes:
+        if self.version != FRAMING_VERSION:
+            raise ValueError(f"Unsupported IICP framing version: {self.version}; expected {FRAMING_VERSION}")
+        if len(self.payload) > MAX_FRAME_PAYLOAD:
+            raise ValueError(f"IICP frame payload too large: {len(self.payload)} > {MAX_FRAME_PAYLOAD}")
         header = _HEADER_STRUCT.pack(
             IICP_MAGIC,
             self.version,
@@ -100,6 +104,10 @@ class IicpFrame:
         magic, version, msg_type, flags, _res, payload_len = _HEADER_STRUCT.unpack_from(data)
         if magic != IICP_MAGIC:
             raise ValueError(f"Invalid IICP magic: {magic!r}")
+        if version != FRAMING_VERSION:
+            raise ValueError(f"Unsupported IICP framing version: {version}; expected {FRAMING_VERSION}")
+        if payload_len > MAX_FRAME_PAYLOAD:
+            raise ValueError(f"IICP frame payload too large: {payload_len} > {MAX_FRAME_PAYLOAD}")
         total = FRAME_HEADER_LEN + payload_len
         if len(data) < total:
             raise ValueError(f"IICP payload truncated: need {total}, have {len(data)}")
@@ -120,8 +128,7 @@ def _cbor2() -> Any:
         import cbor2  # type: ignore[import-untyped]
     except ImportError as exc:
         raise ImportError(
-            "cbor2 is required for the native IICP transport. "
-            "Install with: pip install 'iicp-client[iicp-tcp]'"
+            "cbor2 is required for the native IICP transport. Install with: pip install 'iicp-client[iicp-tcp]'"
         ) from exc
     return cbor2
 
@@ -327,9 +334,7 @@ class IicpTcpServer:
     async def start(self) -> None:
         # Validate cbor2 is importable before opening the socket so we fail fast.
         _cbor2()
-        self._server = await asyncio.start_server(
-            self._handle_connection, host=self.host, port=self.port
-        )
+        self._server = await asyncio.start_server(self._handle_connection, host=self.host, port=self.port)
         logger.info("IICP TCP server listening on %s:%d", self.host, self.port)
 
     async def stop(self) -> None:
@@ -348,9 +353,7 @@ class IicpTcpServer:
 
     # ── connection handling ──────────────────────────────────────────────────
 
-    async def _handle_connection(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         logger.debug("IICP TCP connection from %s", peer)
         buf = bytearray()
@@ -380,6 +383,7 @@ class IicpTcpServer:
             return
         rest = await reader.readexactly(FRAME_HEADER_LEN - 4)
         buf += magic + rest
+        initialized = False
 
         while True:
             # Stage 1: ensure header is complete
@@ -393,11 +397,14 @@ class IicpTcpServer:
             # This was the iter-1410 adapter fix — pre-fix the session loop
             # closed on every frame with a non-empty CBOR payload because
             # decode requires header + payload and only the header had arrived.
-            magic_bytes, _ver, _mt, _flags, _res, payload_len = _HEADER_STRUCT.unpack_from(buf)
+            magic_bytes, version, msg_type, _flags, _res, payload_len = _HEADER_STRUCT.unpack_from(buf)
             if magic_bytes != IICP_MAGIC:
                 logger.warning("Mid-stream magic drift — closing")
                 return
-            if payload_len + FRAME_HEADER_LEN > _MAX_PAYLOAD:
+            if version != FRAMING_VERSION:
+                logger.warning("Unsupported IICP framing version — closing")
+                return
+            if payload_len > MAX_FRAME_PAYLOAD:
                 logger.warning("IICP frame payload exceeds limit — closing")
                 return
             total_len = FRAME_HEADER_LEN + payload_len
@@ -414,7 +421,13 @@ class IicpTcpServer:
                 return
             del buf[:consumed]
 
+            if (not initialized and msg_type != MsgType.INIT) or (initialized and msg_type == MsgType.INIT):
+                logger.warning("Invalid IICP handshake state — closing")
+                return
+
             keep_open = await self._dispatch(frame, writer)
+            if not initialized:
+                initialized = True
             if not keep_open:
                 return
 
@@ -426,7 +439,7 @@ class IicpTcpServer:
             return True
 
         if mt == MsgType.INIT:
-            return await self._on_init(writer)
+            return await self._on_init(frame, writer)
         if mt == MsgType.PING:
             return await self._on_ping(frame, writer)
         if mt == MsgType.DISCOVER:
@@ -444,10 +457,15 @@ class IicpTcpServer:
 
     # ── handlers ─────────────────────────────────────────────────────────────
 
-    async def _on_init(self, writer: asyncio.StreamWriter) -> bool:
-        ack = IicpFrame.make(
-            MsgType.ACK, encode_ack(framing_version=FRAMING_VERSION, node_id=self.node_id)
-        )
+    async def _on_init(self, frame: IicpFrame, writer: asyncio.StreamWriter) -> bool:
+        try:
+            body = decode_cbor(frame.payload)
+        except Exception:  # noqa: BLE001
+            return False
+        if not isinstance(body, dict) or body.get(1) != FRAMING_VERSION:
+            logger.warning("INIT requested an unsupported framing version — closing")
+            return False
+        ack = IicpFrame.make(MsgType.ACK, encode_ack(framing_version=FRAMING_VERSION, node_id=self.node_id))
         writer.write(ack.encode())
         await writer.drain()
         return True
@@ -512,11 +530,7 @@ class IicpTcpServer:
                 if isinstance(raw5, dict):
                     payload_obj = raw5
                 else:
-                    raw5_str = (
-                        raw5.decode("utf-8", errors="replace")
-                        if isinstance(raw5, bytes)
-                        else str(raw5)
-                    )
+                    raw5_str = raw5.decode("utf-8", errors="replace") if isinstance(raw5, bytes) else str(raw5)
                     if raw5_str:
                         try:
                             decoded = json.loads(raw5_str)
@@ -557,11 +571,7 @@ class IicpTcpServer:
             # across HTTP and native IICP transports.
             from iicp_client.concurrency import CapacityExceededError, ConcurrencyGate
 
-            gate = (
-                self.concurrency_gate
-                if isinstance(self.concurrency_gate, ConcurrencyGate)
-                else None
-            )
+            gate = self.concurrency_gate if isinstance(self.concurrency_gate, ConcurrencyGate) else None
 
             async def _run_handler() -> None:
                 nonlocal result, error_code, error_message
@@ -570,9 +580,7 @@ class IicpTcpServer:
                     if isinstance(handler_result, dict):
                         if "error_code" in handler_result:
                             error_code = int(handler_result["error_code"])
-                            error_message = str(
-                                handler_result.get("error_message", "handler error")
-                            )
+                            error_message = str(handler_result.get("error_message", "handler error"))
                         else:
                             result = encode_cbor(handler_result.get("result", handler_result))
                     else:
@@ -661,11 +669,7 @@ class IicpTcpServer:
         try:
             from iicp_client.concurrency import ConcurrencyGate
 
-            gate = (
-                self.concurrency_gate
-                if isinstance(self.concurrency_gate, ConcurrencyGate)
-                else None
-            )
+            gate = self.concurrency_gate if isinstance(self.concurrency_gate, ConcurrencyGate) else None
             if gate is None:
                 await run_handler()
             else:
@@ -772,14 +776,21 @@ class IicpTcpClient:
         if mt != MsgType.ACK:
             raise IicpTcpClientError(f"expected ACK (0x02), got 0x{mt:02x}")
         body = decode_cbor(payload) if payload else {}
-        if isinstance(body, dict):
-            self.framing_version = body.get(1)
-            v = body.get(2)
-            self.peer_node_id = v if isinstance(v, str) else None
+        if not isinstance(body, dict) or body.get(1) != FRAMING_VERSION:
+            negotiated = body.get(1) if isinstance(body, dict) else None
+            raise IicpTcpClientError(f"ACK negotiated unsupported framing version {negotiated!r}")
+        self.framing_version = FRAMING_VERSION
+        v = body.get(2)
+        self.peer_node_id = v if isinstance(v, str) else None
+
+    def _require_handshake(self) -> None:
+        if self.framing_version != FRAMING_VERSION:
+            raise IicpTcpClientError("native session handshake is not complete")
 
     async def ping(self, echo: bytes | None = None) -> bytes | None:
         """Send PING; return the echoed bytes from the PONG (or None if not echoed)."""
         assert self._writer is not None
+        self._require_handshake()
         payload = encode_cbor({1: echo}) if echo else encode_cbor({})
         self._writer.write(IicpFrame.make(MsgType.PING, payload).encode())
         await self._writer.drain()
@@ -792,6 +803,7 @@ class IicpTcpClient:
     async def discover(self, intent: str, *, session_id: str = "discover-1") -> list[dict]:
         """Send DISCOVER for `intent`; return the nodes list from the RESPONSE."""
         assert self._writer is not None
+        self._require_handshake()
         payload = encode_cbor({2: session_id, 3: intent})
         self._writer.write(IicpFrame.make(MsgType.DISCOVER, payload).encode())
         await self._writer.drain()
@@ -817,6 +829,7 @@ class IicpTcpClient:
         Raises IicpTcpClientError if the server replies with an error code.
         """
         assert self._writer is not None
+        self._require_handshake()
         body: dict[int, object] = {
             2: session_id,
             3: intent,
@@ -859,6 +872,7 @@ class IicpTcpClient:
         contract and does not add lifecycle fields or wait for partial frames.
         """
         assert self._writer is not None
+        self._require_handshake()
         if not task_id:
             raise ValueError("task_id is required for lifecycle streaming")
         attempt_id = call_id or str(uuid.uuid4())
@@ -901,6 +915,9 @@ class IicpTcpClient:
         """Send CLOSE (graceful teardown). Server hangs up; caller should disconnect."""
         if self._writer is None or self._writer.is_closing():
             return
+        if self.framing_version != FRAMING_VERSION:
+            await self.disconnect()
+            return
         self._writer.write(IicpFrame.make(MsgType.CLOSE, b"").encode())
         try:
             await self._writer.drain()
@@ -914,14 +931,14 @@ class IicpTcpClient:
         assert self._reader is not None
         t = timeout_s if timeout_s is not None else self.timeout_s
         head = await asyncio.wait_for(self._reader.readexactly(FRAME_HEADER_LEN), timeout=t)
-        magic, _ver, mt, _flags, _res, payload_len = _HEADER_STRUCT.unpack_from(head)
+        magic, version, mt, _flags, _res, payload_len = _HEADER_STRUCT.unpack_from(head)
         if magic != IICP_MAGIC:
             raise IicpTcpClientError(f"bad magic in response: {magic!r}")
-        payload = (
-            await asyncio.wait_for(self._reader.readexactly(payload_len), timeout=t)
-            if payload_len
-            else b""
-        )
+        if version != FRAMING_VERSION:
+            raise IicpTcpClientError(f"unsupported framing version {version} in response")
+        if payload_len > MAX_FRAME_PAYLOAD:
+            raise IicpTcpClientError(f"response frame payload too large: {payload_len} > {MAX_FRAME_PAYLOAD}")
+        payload = await asyncio.wait_for(self._reader.readexactly(payload_len), timeout=t) if payload_len else b""
         return mt, payload
 
 
