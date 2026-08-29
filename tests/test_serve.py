@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from iicp_client import IicpNode, NodeConfig
+from iicp_client._http_resource import MAX_HTTP_TASK_BODY_BYTES
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -234,6 +235,32 @@ class TestTask:
     def test_unknown_post_path_404(self, srv: _ServerHandle):
         status, _, _ = srv.post("/bad-path", {})
         assert status == 404
+
+    def test_declared_oversize_is_rejected_before_task_execution(self, srv: _ServerHandle):
+        conn = HTTPConnection("127.0.0.1", srv.port, timeout=3)
+        conn.request(
+            "POST",
+            "/v1/task",
+            body=b"",
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(MAX_HTTP_TASK_BODY_BYTES + 1),
+            },
+        )
+        response = conn.getresponse()
+        body = json.loads(response.read())
+        conn.close()
+        assert response.status == 413
+        assert body["error"]["code"] == "request_too_large"
+
+    def test_unsupported_content_encoding_is_rejected(self, srv: _ServerHandle):
+        status, body, _ = srv.post(
+            "/v1/task",
+            {"task_id": "encoded", "intent": "x", "payload": {}},
+            {"Content-Encoding": "gzip"},
+        )
+        assert status == 415
+        assert body["error"]["code"] == "unsupported_content_encoding"
 
 
 # ── Concurrency gate (IICP-E021) ─────────────────────────────────────────────

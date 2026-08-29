@@ -34,8 +34,10 @@ _RETRYABLE_CODES = {"IICP-E003", "IICP-E004", "IICP-E005"}
 
 def from_http(status: int, body: dict, component: str) -> IicpError:
     """Build a typed IicpError from an HTTP response body."""
-    code = body.get("code", f"IICP-E{status:03d}")
-    message = body.get("message", body.get("error", "Unexpected error"))
+    raw_error = body.get("error")
+    nested: dict = raw_error if isinstance(raw_error, dict) else {}
+    code = body.get("code") or nested.get("code") or f"IICP-E{status:03d}"
+    message = body.get("message") or nested.get("message") or "Unexpected error"
     return IicpError(
         code=code,
         message=message,

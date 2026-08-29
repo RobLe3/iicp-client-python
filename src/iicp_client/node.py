@@ -1564,6 +1564,22 @@ class IicpNode:
             # ── POST /v1/task ─────────────────────────────────────────────
 
             def _task(self) -> None:
+                from iicp_client._http_resource import (
+                    HttpTaskBodyError,
+                    bounded_response_json,
+                    encode_task_json,
+                    read_task_request_body,
+                )
+
+                try:
+                    raw_body = read_task_request_body(self.headers, self.rfile)
+                except HttpTaskBodyError as exc:
+                    self.close_connection = self.close_connection or exc.close_connection
+                    self._json_response(
+                        exc.status,
+                        encode_task_json({"error": {"code": exc.code, "message": exc.message}}),
+                    )
+                    return
                 # F4 (#524) — rate-limit browser-origin task dispatch (the
                 # CORS confused-deputy vector) only. Non-browser callers send no
                 # Origin and are the operator's own authed traffic — never throttled.
@@ -1584,10 +1600,16 @@ class IicpNode:
                 # Read the body first so QoS-aware admission can see
                 # constraints.qos_class before deciding whether to wait for a slot.
                 try:
-                    length = int(self.headers.get("Content-Length", 0))
-                    body: dict[str, Any] = json.loads(self.rfile.read(length)) if length else {}
+                    body: dict[str, Any] = json.loads(raw_body) if raw_body else {}
+                    if not isinstance(body, dict):
+                        raise ValueError("task body must be an object")
                 except (ValueError, json.JSONDecodeError):
-                    self.send_error(400, "invalid JSON body")
+                    self._json_response(
+                        400,
+                        encode_task_json(
+                            {"error": {"code": "invalid_http_body", "message": "invalid JSON body"}}
+                        ),
+                    )
                     return
 
                 constraints = body.get("constraints") or {}
@@ -1780,11 +1802,6 @@ class IicpNode:
                         latency_ms = (time.monotonic() - t0) * 1000
                         usage = result.get("usage") or {}
                         tokens = usage.get("total_tokens", 0) if isinstance(usage, dict) else 0
-                        node._metrics.observe("completed", intent, qos, latency_ms, tokens)
-                        with node._task_counters_lock:
-                            node._tasks_success += 1
-                            if latency_ms > 0:
-                                node._tasks_latency_total_ms += latency_ms
                         response = {
                             "task_id": task_id,
                             "status": "completed",
@@ -1799,8 +1816,21 @@ class IicpNode:
                                 "status": "encrypted",
                                 "iicp_conf_resp": encrypt_response(response, cx_shared_secret, task_id),
                             }
-                        resp_body = json.dumps(response).encode()
-                        self._json_response(200, resp_body)
+                        response_status, resp_body = bounded_response_json(response)
+                        if response_status != 200:
+                            node._metrics.observe("error", intent, qos, latency_ms)
+                            with node._task_counters_lock:
+                                node._tasks_failed += 1
+                                if latency_ms > 0:
+                                    node._tasks_latency_total_ms += latency_ms
+                            self._json_response(response_status, resp_body)
+                            return
+                        node._metrics.observe("completed", intent, qos, latency_ms, tokens)
+                        with node._task_counters_lock:
+                            node._tasks_success += 1
+                            if latency_ms > 0:
+                                node._tasks_latency_total_ms += latency_ms
+                        self._json_response(response_status, resp_body)
                         # TC-9c: fire best-effort CIPWorkerReceipt to the directory.
                         # Server-side award path: provider reports completion so the
                         # directory credits the wallet without proxy forwarding.
@@ -1833,7 +1863,12 @@ class IicpNode:
                             if latency_ms > 0:
                                 node._tasks_latency_total_ms += latency_ms
                         logger.error("Handler error: %s", exc)
-                        self.send_error(500, str(exc))
+                        self._json_response(
+                            500,
+                            encode_task_json(
+                                {"error": {"code": "backend_error", "message": "task execution failed"}}
+                            ),
+                        )
                 finally:
                     node._sem.release()
                     with node._jobs_lock:
