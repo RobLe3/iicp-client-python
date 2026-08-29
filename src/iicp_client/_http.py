@@ -10,6 +10,12 @@ from urllib.parse import urljoin
 
 import httpx
 
+from iicp_client._http_resource import (
+    HttpTaskBodyError,
+    append_response_chunk,
+    bounded_request_json,
+    validate_response_headers,
+)
 from iicp_client.endpoint_security import PinnedAsyncHTTPTransport, resolve_endpoint
 from iicp_client.errors import IicpError, from_http
 
@@ -84,11 +90,26 @@ async def post_json(
     pin_provider_endpoint: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Returns (response_body, elapsed_ms)."""
+    try:
+        encoded = bounded_request_json(body)
+    except HttpTaskBodyError as exc:
+        raise IicpError(
+            code=exc.code,
+            message=exc.message,
+            component=component,
+            retryable=False,
+            http_status=exc.status,
+        ) from None
     timeout = (timeout_ms / 1000.0) + 2.0
-    headers: dict[str, str] = {"traceparent": traceparent or _traceparent()}
+    headers: dict[str, str] = {
+        "traceparent": traceparent or _traceparent(),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     if extra_headers:
         headers.update(extra_headers)
     t0 = time.monotonic()
+    response_client: httpx.AsyncClient | None = None
     try:
         if pin_provider_endpoint:
             current = url
@@ -96,15 +117,20 @@ async def post_json(
             for redirect_count in range(4):
                 endpoint = await resolve_endpoint(current)
                 transport = PinnedAsyncHTTPTransport(endpoint, verify=_tls_context(tls_verify))
-                async with httpx.AsyncClient(
+                client = httpx.AsyncClient(
                     timeout=timeout,
                     transport=transport,
                     follow_redirects=False,
-                ) as client:
-                    resp = await client.post(current, json=body, headers=headers)
+                )
+                response_client = client
+                request = client.build_request("POST", current, content=encoded, headers=headers)
+                resp = await client.send(request, stream=True)
                 if resp.status_code in {307, 308}:
                     location = resp.headers.get("location")
                     if redirect_count == 3 or not location:
+                        await resp.aclose()
+                        await client.aclose()
+                        response_client = None
                         raise IicpError(
                             code="IICP-ENDPOINT-REFUSED",
                             message="provider redirect limit exceeded or omitted Location",
@@ -116,27 +142,40 @@ async def post_json(
                     parsed_next = httpx.URL(next_url)
                     next_origin = (parsed_next.scheme, parsed_next.host, parsed_next.port)
                     if next_origin != current_origin:
+                        await resp.aclose()
+                        await client.aclose()
+                        response_client = None
                         raise IicpError(
                             code="IICP-ENDPOINT-REFUSED",
                             message="cross-origin provider redirect is not allowed",
                             component=component,
                             retryable=False,
                         )
+                    await resp.aclose()
+                    await client.aclose()
+                    response_client = None
                     current = next_url
                     continue
                 if 300 <= resp.status_code < 400:
+                    await resp.aclose()
+                    await client.aclose()
+                    response_client = None
                     raise IicpError(
                         code="IICP-ENDPOINT-REFUSED",
                         message="provider redirect method is not allowed",
                         component=component,
                         retryable=False,
                     )
+                response_client = client
                 break
             assert resp is not None
         else:
-            async with httpx.AsyncClient(timeout=timeout, verify=_tls_context(tls_verify)) as client:
-                resp = await client.post(url, json=body, headers=headers)
+            response_client = httpx.AsyncClient(timeout=timeout, verify=_tls_context(tls_verify))
+            request = response_client.build_request("POST", url, content=encoded, headers=headers)
+            resp = await response_client.send(request, stream=True)
     except httpx.TimeoutException:
+        if response_client is not None:
+            await response_client.aclose()
         raise IicpError(
             code="IICP-E003",
             message=f"Request to {url} timed out after {timeout_ms}ms",
@@ -144,16 +183,55 @@ async def post_json(
             retryable=True,
         ) from None
     except httpx.RequestError as exc:
+        if response_client is not None:
+            await response_client.aclose()
         raise IicpError(
             code="IICP-E004",
             message=f"Network error reaching {url}: {exc}",
             component=component,
             retryable=True,
         ) from exc
+    try:
+        validate_response_headers(resp.headers)
+        content = bytearray()
+        async for chunk in resp.aiter_raw():
+            append_response_chunk(content, chunk)
+    except HttpTaskBodyError as exc:
+        raise IicpError(
+            code=exc.code,
+            message=exc.message,
+            component=component,
+            retryable=False,
+            http_status=exc.status,
+        ) from None
+    finally:
+        await resp.aclose()
+        if response_client is not None:
+            await response_client.aclose()
     elapsed = int((time.monotonic() - t0) * 1000)
+    try:
+        decoded = httpx.Response(resp.status_code, content=bytes(content)).json()
+    except Exception:
+        decoded = {"error": {"code": "invalid_http_body", "message": "provider returned invalid JSON"}}
+        if resp.is_success:
+            raise IicpError(
+                code="invalid_http_body",
+                message="provider returned invalid JSON",
+                component=component,
+                retryable=False,
+                http_status=500,
+            ) from None
     if not resp.is_success:
-        raise from_http(resp.status_code, _safe_json(resp), component)
-    return resp.json(), elapsed
+        raise from_http(resp.status_code, decoded, component)
+    if not isinstance(decoded, dict):
+        raise IicpError(
+            code="invalid_http_body",
+            message="provider response must be a JSON object",
+            component=component,
+            retryable=False,
+            http_status=500,
+        )
+    return decoded, elapsed
 
 
 def _safe_json(resp: httpx.Response) -> dict:
