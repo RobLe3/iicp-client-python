@@ -18,6 +18,7 @@ import httpx
 
 from iicp_client._http import _traceparent, get_json, post_json
 from iicp_client.dispatch_ticket import policy_manifest_binding_matches, verify_dispatch_route_ticket
+from iicp_client.endpoint_security import private_endpoints_allowed
 from iicp_client.errors import IicpError
 from iicp_client.policy import ensure_intent_allowed
 from iicp_client.request_projection import project_execution_constraints, project_route_options
@@ -69,7 +70,15 @@ def _is_ssrf_safe(url: str) -> bool:
     if parsed.scheme not in ("http", "https"):
         return False
     host = (parsed.hostname or "").lower()
-    if not host or host in {"localhost", "0.0.0.0", "::1", "::"}:
+    if not host:
+        return False
+    # Keep route filtering aligned with the address-pinned transport. The
+    # explicit local-only opt-in is needed by hermetic tests and private
+    # deployments; without this check discovery discarded the route before the
+    # transport's independently guarded resolver could evaluate it.
+    if private_endpoints_allowed():
+        return True
+    if host in {"localhost", "0.0.0.0", "::1", "::"}:
         return False
     if any(host.endswith(s) for s in (".local", ".internal", ".lan", ".test", ".invalid", ".localhost")):
         return False
