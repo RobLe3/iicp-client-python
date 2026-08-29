@@ -148,6 +148,29 @@ def test_discover_health_fields_default_none_against_old_directory():
 
 
 @respx.mock
+def test_discover_loopback_route_requires_explicit_local_only_opt_in(monkeypatch):
+    loopback = {
+        "nodes": [
+            {
+                "node_id": "local-fixture",
+                "endpoint": "http://127.0.0.1:9484",
+                "score": 1.0,
+                "available": True,
+                "region": "test-local",
+            }
+        ]
+    }
+    respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json=loopback))
+    monkeypatch.delenv("IICP_PROXY_ALLOW_LOOPBACK_NODES", raising=False)
+    client = IicpClient(ClientConfig(directory_url=DIRECTORY, route_discovery_mode="legacy"))
+    assert client.discover("urn:iicp:intent:llm:chat:v1").nodes == []
+
+    monkeypatch.setenv("IICP_PROXY_ALLOW_LOOPBACK_NODES", "1")
+    allowed = client.discover("urn:iicp:intent:llm:chat:v1")
+    assert [node.node_id for node in allowed.nodes] == ["local-fixture"]
+
+
+@respx.mock
 def test_discover_browser_usable_only_filters_http_ipv6_nodes():
     respx.get(DISCOVER_URL).mock(return_value=httpx.Response(200, json={
         "nodes": [
