@@ -24,6 +24,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from tests.proxy.ticket_helpers import public_key_hex, signed_ticket
 
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def _free_port() -> int:
     s = socket.socket()
@@ -106,7 +108,7 @@ def _post(url: str, body: dict, timeout: float = 10.0):
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers={"content-type": "application/json"}, method="POST"
     )
-    return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
+    return _DIRECT_OPENER.open(req, timeout=timeout)  # noqa: S310
 
 
 @pytest.mark.timeout(40)
@@ -126,6 +128,11 @@ def test_e2e_all_surfaces_through_real_proxy_process():
         "IICP_NODE_TOKEN": "",
         "PATH": os.environ.get("PATH", ""),
     }
+    # Windows child processes require these machine-level values even though
+    # the test deliberately excludes ambient proxy and credential variables.
+    for name in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP"):
+        if value := os.environ.get(name):
+            env[name] = value
     proc = subprocess.Popen(
         [sys.executable, "-m", "iicp_client.cli", "proxy", "--port", str(proxy_port)],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -135,8 +142,10 @@ def test_e2e_all_surfaces_through_real_proxy_process():
         # readiness — poll /status
         ready = False
         for _ in range(80):
+            if proc.poll() is not None:
+                break
             try:
-                with urllib.request.urlopen(base + "/status", timeout=1) as r:  # noqa: S310
+                with _DIRECT_OPENER.open(base + "/status", timeout=1) as r:  # noqa: S310
                     if r.status == 200:
                         ready = True
                         break
