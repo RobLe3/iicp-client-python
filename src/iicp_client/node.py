@@ -1966,7 +1966,22 @@ class IicpNode:
                     conn, addr = await loop.sock_accept(listener)
                 except OSError:
                     break
-                # Peek+route off the accept thread so a slow client can't block new connections.
+                if not native_enabled:
+                    # The supported HTTP-only path has nothing to classify.  In
+                    # particular, do not make ordinary HTTP service depend on
+                    # MSG_WAITALL/MSG_PEEK behavior, which differs across socket
+                    # implementations and caused Windows clients to be reset
+                    # before BaseHTTPRequestHandler received the request.
+                    try:
+                        conn.setblocking(True)
+                    except OSError:
+                        conn.close()
+                        continue
+                    server.process_request(conn, addr)
+                    continue
+                # Prefix inspection belongs only to the explicitly enabled
+                # experimental native multiplexer.  Route it off the accept
+                # coroutine so a slow client cannot block new connections.
                 threading.Thread(target=_route_conn, args=(conn, addr), daemon=True).start()
 
         if native_enabled:

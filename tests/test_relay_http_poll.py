@@ -86,14 +86,18 @@ class _ServerHandle:
 
     def start(self) -> _ServerHandle:
         self._thread.start()
-        self._ready.wait(timeout=5)
+        if not self._ready.wait(timeout=5):
+            raise RuntimeError("relay HTTP test server did not initialize")
         for _ in range(40):
             try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=0.1):
-                    break
+                status, _body, _headers = self.request(
+                    "GET", "/iicp/health", timeout=0.5
+                )
+                if status == 200:
+                    return self
             except OSError:
                 time.sleep(0.05)
-        return self
+        raise RuntimeError("relay HTTP test server did not become ready")
 
     def stop(self) -> None:
         if self._loop is None or self._task is None:

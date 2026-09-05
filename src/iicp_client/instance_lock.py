@@ -16,15 +16,60 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+_WINDOWS = os.name == "nt"
+
 
 def _run_dir() -> Path:
     base = Path(os.environ.get("IICP_HOME") or (Path.home() / ".iicp"))
     return base / "run"
 
 
+def _pid_alive_windows(pid: int) -> bool:
+    """Query a Windows process without using ``os.kill(pid, 0)``.
+
+    Python maps every non-console-control ``os.kill`` signal on Windows,
+    including zero, to ``TerminateProcess``. A Unix-style liveness probe would
+    therefore kill the node it was checking.
+    """
+
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    error_invalid_parameter = 87
+    # These APIs exist only on Windows, while mypy is normally run against the
+    # host platform's ctypes stubs.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()  # type: ignore[attr-defined]
+        if error == error_invalid_parameter:
+            return False
+        # A protected process is still alive; unknown query failures fail
+        # closed so a second node cannot start a token-rotation fight.
+        return True
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
     """True if a process with ``pid`` exists. PermissionError means it exists
     (we just may not signal it) — treat as alive to be safe."""
+    if _WINDOWS:
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -56,7 +101,7 @@ class InstanceLock:
             return cls(None)  # fail open
         if not force and path.exists():
             try:
-                pid = int(path.read_text().strip())
+                pid = int(path.read_text(encoding="utf-8").strip())
             except (ValueError, OSError):
                 pid = None
             if pid is not None and pid != os.getpid() and _pid_alive(pid):
@@ -65,7 +110,7 @@ class InstanceLock:
                     f"Stop that process, choose a different --node, or pass --force to take over."
                 )
         try:
-            path.write_text(str(os.getpid()))
+            path.write_text(str(os.getpid()), encoding="utf-8")
         except OSError:
             return cls(None)
         return cls(path)

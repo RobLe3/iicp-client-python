@@ -125,7 +125,8 @@ def test_crash_boundaries_and_bounded_cleanup(tmp_path: Path) -> None:
         ).accepted
     assert store.cleanup(now=200, retention_s=100, limit=1) == 1
     assert store.cleanup(now=200, retention_s=100, limit=1) == 1
-    assert os.stat(path).st_mode & 0o077 == 0
+    if os.name == "posix":
+        assert os.stat(path).st_mode & 0o077 == 0
 
 
 def test_locked_and_corrupt_store_fail_closed(tmp_path: Path) -> None:

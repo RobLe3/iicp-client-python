@@ -254,7 +254,8 @@ def test_sqlite_persistence_is_opt_in_content_free_and_restart_safe(tmp_path: Pa
     restarted = SqliteLifecyclePersistence(path, max_events=3)
     assert restarted.status("durable").state == "streaming"
     assert [event.sequence for event in restarted.events_after("durable", 0)] == [1, 2]
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     with pytest.raises(LifecycleConflict):
         restarted.transition("durable", "completed", {"response": "must-not-persist"})
     database = path.read_bytes().lower()

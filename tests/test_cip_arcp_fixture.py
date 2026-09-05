@@ -102,7 +102,7 @@ def _coordinator_transcript(case):
 
 
 def test_cip_conformance_fixture():
-    fixture = json.loads((ROOT / "parity/cip-conformance-v0.json").read_text())
+    fixture = json.loads((ROOT / "parity/cip-conformance-v0.json").read_text(encoding="utf-8"))
     assert all(_cip(case["input"]) == case["expected"] for case in fixture["cases"])
     vector = fixture["canonical_receipt_vectors"][0]
     assert hashlib.sha256(vector["canonical_result_json"].encode()).hexdigest() == vector["response_hash"]
@@ -110,13 +110,15 @@ def test_cip_conformance_fixture():
 
 
 def test_arcp_evaluator_fixture():
-    fixture = json.loads((ROOT / "parity/arcp-evaluator-v0.json").read_text())
+    fixture = json.loads((ROOT / "parity/arcp-evaluator-v0.json").read_text(encoding="utf-8"))
     for case in fixture["cases"]:
         assert _evaluate(case) == case["expected"], case["name"]
 
 
 def test_arcp_coordinator_transcript_fixture():
-    fixture = json.loads((ROOT / "parity/arcp-coordinator-transcript-v0.json").read_text())
+    fixture = json.loads(
+        (ROOT / "parity/arcp-coordinator-transcript-v0.json").read_text(encoding="utf-8")
+    )
     assert fixture["status"] == "pre-normative"
     for case in fixture["cases"]:
         assert _coordinator_transcript(case) == case["expected"], case["name"]

@@ -4,6 +4,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -20,7 +21,9 @@ from iicp_client.dispatch_ticket_trust import (
 
 def _fixture() -> dict:
     return json.loads(
-        (Path(__file__).parents[1] / "parity" / "dispatch-ticket-trust-store-v1.json").read_text()
+        (Path(__file__).parents[1] / "parity" / "dispatch-ticket-trust-store-v1.json").read_text(
+            encoding="utf-8"
+        )
     )
 
 
@@ -63,6 +66,18 @@ def test_shared_store_sequence_and_explicit_recovery(tmp_path: Path) -> None:
     assert store.install(_bundle("v1")).status == "stale"
 
 
+def test_store_uses_owner_directory_on_platforms_without_posix_modes(tmp_path: Path) -> None:
+    path = tmp_path / "trust" / "bundle.state"
+    with mock.patch(
+        "iicp_client.dispatch_ticket_trust._POSIX_MODE_SEMANTICS", False
+    ):
+        installed = FileTrustBundleStore(path).install(_bundle("v1"))
+        loaded = FileTrustBundleStore(path).load()
+    assert installed.status == "installed"
+    assert loaded is not None
+    assert loaded.bundle.bundle_version == 1
+
+
 def test_corruption_permissions_and_orphan_temp_are_fail_closed(tmp_path: Path) -> None:
     path = tmp_path / "trust" / "bundle.state"
     store = FileTrustBundleStore(path)
@@ -72,16 +87,26 @@ def test_corruption_permissions_and_orphan_temp_are_fail_closed(tmp_path: Path) 
 
     path.write_text("{not-json", encoding="utf-8")
     os.chmod(path, 0o600)
-    with pytest.raises(TrustBundleStoreCorrupt):
-        store.load()
+    if os.name == "posix":
+        with pytest.raises(TrustBundleStoreCorrupt):
+            store.load()
+    else:
+        # Windows chmod cannot broaden an ACL; it only toggles the read-only
+        # attribute. The state remains protected by its owner-only directory.
+        assert store.load() is not None
 
     recovered = store.recover(
         _bundle("v1"), AdminRecoveryAuthorization("repair-corrupt-test", 1)
     )
     assert recovered.status == "recovered"
     os.chmod(path, 0o644)
-    with pytest.raises(TrustBundleStoreCorrupt):
-        store.load()
+    if os.name == "posix":
+        with pytest.raises(TrustBundleStoreCorrupt):
+            store.load()
+    else:
+        # Windows chmod does not create a POSIX 0644 mode: owner write stays
+        # enabled and access remains governed by the containing directory ACL.
+        assert store.load() is not None
 
 
 def test_concurrent_writers_never_finish_below_highest_version(tmp_path: Path) -> None:

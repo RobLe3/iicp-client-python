@@ -3,16 +3,33 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+from unittest import mock
 
 import pytest
 
 from iicp_client.instance_lock import InstanceLock, NodeAlreadyServingError
 
 
+def test_windows_liveness_probe_never_calls_os_kill():
+    with (
+        mock.patch("iicp_client.instance_lock._WINDOWS", True),
+        mock.patch(
+            "iicp_client.instance_lock._pid_alive_windows", return_value=True
+        ) as windows_probe,
+        mock.patch("iicp_client.instance_lock.os.kill") as kill,
+    ):
+        from iicp_client.instance_lock import _pid_alive
+
+        assert _pid_alive(1234) is True
+    windows_probe.assert_called_once_with(1234)
+    kill.assert_not_called()
+
+
 def test_live_foreign_pid_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("IICP_HOME", str(tmp_path))
     # a real, same-user, signalable live process holding the lock
-    child = subprocess.Popen(["sleep", "30"])
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         run = tmp_path / "run"
         run.mkdir(parents=True, exist_ok=True)

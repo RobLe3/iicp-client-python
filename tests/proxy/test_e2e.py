@@ -120,7 +120,8 @@ def test_e2e_all_surfaces_through_real_proxy_process():
     srv.node_endpoint = f"http://127.0.0.1:{mock_port}"  # type: ignore[attr-defined]
     srv.directory_issuer = f"http://127.0.0.1:{mock_port}"  # type: ignore[attr-defined]
     srv.ticket_private_key = Ed25519PrivateKey.generate()  # type: ignore[attr-defined]
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    server_thread.start()
 
     env = {
         "IICP_PROXY_DIRECTORY_URL": f"http://127.0.0.1:{mock_port}/api",
@@ -194,4 +195,8 @@ def test_e2e_all_surfaces_through_real_proxy_process():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait(timeout=5)
         srv.shutdown()
+        srv.server_close()
+        server_thread.join(timeout=5)
+        assert not server_thread.is_alive(), "mock directory/node server did not stop"

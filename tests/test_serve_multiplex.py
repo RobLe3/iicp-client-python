@@ -100,7 +100,7 @@ def test_derive_native_endpoint() -> None:
     assert derive_native_endpoint("not-a-url") is None
 
 
-async def test_native_call_is_not_mounted_without_explicit_endpoint() -> None:
+async def test_native_call_is_not_mounted_without_explicit_endpoint(monkeypatch) -> None:
     cfg = NodeConfig(
         node_id="http-only-node",
         endpoint="http://test-node.local",
@@ -112,9 +112,15 @@ async def test_native_call_is_not_mounted_without_explicit_endpoint() -> None:
     assert cfg.transport_endpoint is None
     node = IicpNode(cfg)
     port = _free_port()
+    # HTTP-only operation must not inspect native framing flags.  Removing the
+    # platform constant makes this a portable regression for the Windows reset
+    # seen when the old common path peeked at every accepted HTTP connection.
+    monkeypatch.delattr(socket, "MSG_WAITALL", raising=False)
     serve_task = asyncio.create_task(node.serve(_echo, host="127.0.0.1", port=port, node_token=None))
     try:
         await _wait_port(port)
+        status = await asyncio.get_event_loop().run_in_executor(None, _http_health, port)
+        assert status == 200
         async with IicpTcpClient("127.0.0.1", port) as client:
             with pytest.raises((asyncio.IncompleteReadError, TimeoutError, IicpTcpClientError)):
                 await asyncio.wait_for(client.handshake(), timeout=2.0)

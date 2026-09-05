@@ -7,7 +7,7 @@ FIXTURE = Path(__file__).parents[1] / "parity/cip-consumer-cosignature-transcrip
 
 
 def test_consumer_cosignature_transcript_is_content_free_and_fail_closed() -> None:
-    data = json.loads(FIXTURE.read_text())
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
     messages = [step["message"] for step in data["transcript"]]
     assert [message["type"] for message in messages] == [
         "receipt_offer", "receipt_acceptance", "settlement_request"
