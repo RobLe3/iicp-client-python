@@ -38,16 +38,9 @@ async def _echo_handler(task: dict) -> dict:
 class _ServerHandle:
     """Runs IicpNode.serve in a background asyncio loop + thread.
 
-    Shutdown discipline (iter-1447 fix): teardown CANCELS the serve task
-    instead of calling loop.stop(). loop.stop() exits run_until_complete
-    without unwinding the coroutine through its `finally:` block, so the
-    underlying http.server.serve_forever in run_in_executor never gets
-    server.shutdown() called → executor thread leaks. On macOS the daemon
-    thread is reaped at process exit so the fixture appears to work; on
-    Linux (github-hosted runners) pytest's exit-handler waits indefinitely.
-
-    Cancelling the task triggers the coroutine's finally block → calls
-    server.shutdown() → serve_forever exits cleanly → no thread leak.
+    Teardown cancels the serve task instead of stopping the event loop.  The
+    accept loop is asyncio-owned, so cancellation unwinds the coroutine and
+    closes the listener without leaving a default-executor worker behind.
     """
 
     def __init__(self, config: NodeConfig):
@@ -76,10 +69,10 @@ class _ServerHandle:
         loop = self._loop
         task = self._task
         # Cancel the serve coroutine on its own loop. This unwinds through
-        # node.serve()'s `finally: server.shutdown()` which exits serve_forever
-        # and lets the executor thread terminate cleanly.
+        # node.serve()'s cleanup and closes its asyncio-owned listener.
         loop.call_soon_threadsafe(task.cancel)
         self._thread.join(timeout=5)
+        assert not self._thread.is_alive(), "IicpNode.serve did not stop within five seconds"
 
     def _run(self) -> None:
         self._loop = asyncio.new_event_loop()
