@@ -130,6 +130,7 @@ def test_concurrent_writers_never_finish_below_highest_version(tmp_path: Path) -
     state = store.load()
     assert state is not None
     assert state.bundle.bundle_version == state.high_water == 3
+    assert len(statuses) == 2, "both concurrent writers must finish without hidden thread failures"
     assert set(statuses) <= {"installed", "stale"}
 
 
