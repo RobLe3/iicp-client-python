@@ -69,9 +69,17 @@ def test_cloudflared_override_is_absolute_executable_and_authoritative(monkeypat
 
 
 def _fake_bin(tmp_path, template: str, name: str = "fake-fox-1234", lifetime: float = 60.0) -> str:
-    p = tmp_path / "cloudflared"
-    p.write_text(template.format(python=sys.executable, name=name, lifetime=lifetime))
+    suffix = ".py" if sys.platform == "win32" else ""
+    p = tmp_path / f"cloudflared{suffix}"
+    p.write_text(
+        template.format(python=sys.executable, name=name, lifetime=lifetime),
+        encoding="utf-8",
+    )
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
+    if sys.platform == "win32":
+        wrapper = tmp_path / "cloudflared.cmd"
+        wrapper.write_text(f'@"{sys.executable}" "{p}" %*\n', encoding="utf-8")
+        return str(wrapper)
     return str(p)
 
 

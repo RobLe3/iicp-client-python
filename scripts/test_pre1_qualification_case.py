@@ -62,7 +62,7 @@ class DriverContractTests(unittest.TestCase):
             source = ROOT / node_id.split("::", 1)[0]
             marker = f"def {assertion}("
             self.assertTrue(source.is_file(), source)
-            self.assertIn(marker, source.read_text())
+            self.assertIn(marker, source.read_text(encoding="utf-8"))
 
     def test_every_scenario_has_one_unique_exact_assertion(self) -> None:
         self.assertEqual(set(module.SCENARIO_CASES), set(module.SCENARIO_COMMANDS))

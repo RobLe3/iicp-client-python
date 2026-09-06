@@ -9,6 +9,7 @@ the local operator.json display_name is updated on success. Fails without the wi
 
 import base64
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -114,7 +115,8 @@ def test_dsr_export_is_challenge_signed_and_saved_0600(tmp_path, monkeypatch):
     assert rc == 0
     assert out.exists()
     assert json.loads(out.read_text()) == json.loads(export)
-    assert (out.stat().st_mode & 0o777) == 0o600
+    if os.name == "posix":
+        assert (out.stat().st_mode & 0o777) == 0o600
     payload = _captured["payload"]
     assert payload["operator_pub"] == op.operator_id
     assert "operator_secret" not in payload

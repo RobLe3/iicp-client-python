@@ -99,7 +99,10 @@ async def test_openai_compat_streaming_handler_flushes_at_utf8_byte_bound():
 class _DelayedSseStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         yield b'data: {"choices":[{"delta":{"content":"timed"}}]}\n\n'
-        await asyncio.sleep(0.1)
+        # Keep the next transport chunk well beyond the assertion deadline so
+        # the test proves timer-driven flushing without depending on a 75 ms
+        # scheduler window on loaded Windows builders.
+        await asyncio.sleep(1.0)
         yield b"data: [DONE]\n\n"
 
 
@@ -116,7 +119,7 @@ async def test_openai_compat_streaming_handler_flushes_after_25_ms():
             "payload": {"messages": []},
         }
     )
-    first = await asyncio.wait_for(anext(events), timeout=0.075)
+    first = await asyncio.wait_for(anext(events), timeout=0.25)
     assert first == {"status": "partial", "result": "timed"}
     await events.aclose()
 

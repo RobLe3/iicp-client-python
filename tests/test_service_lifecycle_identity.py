@@ -3,7 +3,11 @@ from pathlib import Path
 
 from iicp_client.service_lifecycle_identity import evaluate_lifecycle_identity
 
-FIXTURE = json.loads((Path(__file__).parents[1] / "parity/service-lifecycle-identity-v1.json").read_text())
+FIXTURE = json.loads(
+    (Path(__file__).parents[1] / "parity/service-lifecycle-identity-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 def test_lifecycle_identity_fixture() -> None:

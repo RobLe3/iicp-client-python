@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 PROFILE = "dispatch_ticket_v2"
 DOMAIN = b"IICP-DISPATCH-TICKET-V2\0"
+_POSIX_MODE_SEMANTICS = os.name == "posix"
 
 
 def _decode(value: str) -> bytes:
@@ -150,9 +151,12 @@ class FileTrustBundleStore:
 
     def _prepare_directory(self) -> None:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        mode = stat.S_IMODE(self.path.parent.stat().st_mode)
-        if mode & 0o077:
-            raise TrustBundleStoreError("trust store directory must be owner-only")
+        if self.path.parent.is_symlink() or not self.path.parent.is_dir():
+            raise TrustBundleStoreError("trust store directory must be a directory, not a link")
+        if _POSIX_MODE_SEMANTICS:
+            mode = stat.S_IMODE(self.path.parent.stat().st_mode)
+            if mode & 0o077:
+                raise TrustBundleStoreError("trust store directory must be owner-only")
 
     def _acquire_lock(self) -> int:
         self._prepare_directory()
@@ -181,7 +185,7 @@ class FileTrustBundleStore:
         metadata = self.path.lstat()
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise TrustBundleStoreCorrupt("trust store must be a regular file, not a link")
-        if stat.S_IMODE(metadata.st_mode) & 0o077:
+        if _POSIX_MODE_SEMANTICS and stat.S_IMODE(metadata.st_mode) & 0o077:
             raise TrustBundleStoreCorrupt("trust store file must be owner-only")
         try:
             raw = self.path.read_bytes()
@@ -233,17 +237,19 @@ class FileTrustBundleStore:
         payload = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
         with NamedTemporaryFile(dir=self.path.parent, prefix=self.path.name + ".tmp-", delete=False) as tmp:
             tmp_path = Path(tmp.name)
-            os.fchmod(tmp.fileno(), 0o600)
+            if _POSIX_MODE_SEMANTICS:
+                os.fchmod(tmp.fileno(), 0o600)
             tmp.write(payload)
             tmp.flush()
             os.fsync(tmp.fileno())
         try:
             os.replace(tmp_path, self.path)
-            dir_fd = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+            if _POSIX_MODE_SEMANTICS:
+                dir_fd = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
         finally:
             try:
                 tmp_path.unlink()

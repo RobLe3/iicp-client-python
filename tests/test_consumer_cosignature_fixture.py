@@ -48,7 +48,7 @@ def evaluate(value: dict[str, str]) -> dict[str, str]:
 
 
 def test_consumer_cosignature_fixture() -> None:
-    fixture = json.loads(FIXTURE.read_text())
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     vector = fixture["canonical_vector"]
     encoded = canonicalize_jcs(vector["receipt"])
     assert encoded.decode() == vector["canonical_json_utf8"]
@@ -77,7 +77,7 @@ def test_consumer_cosignature_fixture() -> None:
 
 
 def test_full_jcs_vectors_and_invalid_number_domain() -> None:
-    fixture = json.loads(FIXTURE.read_text())
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     for vector in fixture["jcs_vectors"]:
         assert canonicalize_jcs(vector["input"]).decode() == vector["canonical_json_utf8"], vector["name"]
 

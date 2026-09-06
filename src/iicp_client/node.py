@@ -1916,7 +1916,13 @@ class IicpNode:
                 pass
         listener.bind((host, port))
         listener.listen(128)
-        listener.settimeout(0.5)  # so the accept loop notices shutdown promptly
+        # Let the active asyncio implementation own accept readiness.  The
+        # former run_in_executor loop left non-daemon executor workers blocked
+        # in socket.accept() during Windows interpreter shutdown, even after
+        # the serve task had been cancelled.  A non-blocking socket keeps the
+        # accept lifecycle attached to this coroutine and therefore makes
+        # cancellation deterministic on every supported event loop.
+        listener.setblocking(False)
         mux_stop = threading.Event()
 
         async def _handle_native_conn(conn: socket.socket) -> None:
@@ -1954,15 +1960,28 @@ class IicpNode:
                 # connection from the start (MSG_PEEK left the bytes in the kernel buffer).
                 server.process_request(conn, addr)
 
-        def _accept_loop() -> None:
+        async def _accept_loop() -> None:
             while not mux_stop.is_set():
                 try:
-                    conn, addr = listener.accept()
-                except TimeoutError:
-                    continue
+                    conn, addr = await loop.sock_accept(listener)
                 except OSError:
                     break
-                # Peek+route off the accept thread so a slow client can't block new connections.
+                if not native_enabled:
+                    # The supported HTTP-only path has nothing to classify.  In
+                    # particular, do not make ordinary HTTP service depend on
+                    # MSG_WAITALL/MSG_PEEK behavior, which differs across socket
+                    # implementations and caused Windows clients to be reset
+                    # before BaseHTTPRequestHandler received the request.
+                    try:
+                        conn.setblocking(True)
+                    except OSError:
+                        conn.close()
+                        continue
+                    server.process_request(conn, addr)
+                    continue
+                # Prefix inspection belongs only to the explicitly enabled
+                # experimental native multiplexer.  Route it off the accept
+                # coroutine so a slow client cannot block new connections.
                 threading.Thread(target=_route_conn, args=(conn, addr), daemon=True).start()
 
         if native_enabled:
@@ -2136,7 +2155,7 @@ class IicpNode:
         try:
             # #457 — run the single-port accept/route loop (replaces server.serve_forever;
             # the HTTP server never binds its own socket — we feed it routed connections).
-            await loop.run_in_executor(None, _accept_loop)
+            await _accept_loop()
         finally:
             self._runtime_health.mark_stopping()
             # BUG-3 fix: cancel background tasks BEFORE teardown so the gossip/heartbeat

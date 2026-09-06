@@ -691,6 +691,7 @@ class QuickTunnel:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait(timeout=5)
         logger.info("Quick Tunnel closed.")
 
 
