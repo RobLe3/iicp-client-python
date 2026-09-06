@@ -9,6 +9,14 @@ in the main repo).
 
 ## [Unreleased]
 
+### Security — Windows dispatch trust-store permissions
+
+- Verify real Windows owner/LocalSystem DACLs for the opt-in durable trust store.
+  Create restricted descriptors before writing, refuse broad access and reparse
+  paths, and fail closed when the bounded security adapter is unavailable.
+  Ordinary v1 dispatch and POSIX behavior are unchanged. See `WINDOWS_TRUST_STORE.md`
+  for the durability and local process-overhead boundaries.
+
 ### Fixed — Windows artifact validation
 
 - Keep proxy startup compatible with redirected cp1252 consoles.
