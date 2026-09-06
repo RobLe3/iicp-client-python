@@ -28,6 +28,7 @@ def test_healthcheck_cli_exit_semantics(tmp_path, monkeypatch, capsys):
     from iicp_client.cli import _cmd_healthcheck
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     health = RuntimeHealth()
     health.mark_running()
     health.advance_runtime()

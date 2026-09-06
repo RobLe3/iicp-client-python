@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shlex
+
 from iicp_client import cli
 from iicp_client.service import render_launchd, render_systemd
 
@@ -97,7 +99,7 @@ def test_service_preserves_only_explicit_tunnel_policy_and_resolved_binary(monke
     resolved = str(binary.resolve())
     assert f"<key>IICP_CLOUDFLARED_PATH</key><string>{resolved}</string>" in launchd.content
     assert "<key>IICP_TUNNEL</key><string>1</string>" in launchd.content
-    assert f"Environment=IICP_CLOUDFLARED_PATH={resolved}" in systemd.content
+    assert f"Environment=IICP_CLOUDFLARED_PATH={shlex.quote(resolved)}" in systemd.content
     assert "Environment=IICP_TUNNEL=1" in systemd.content
     assert "<key>IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP</key><string>1</string>" in launchd.content
     assert "Environment=IICP_ENABLE_EXPERIMENTAL_NATIVE_TCP=1" in systemd.content
