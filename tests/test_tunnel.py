@@ -53,7 +53,7 @@ sys.exit(1)
 
 
 def test_cloudflared_override_is_absolute_executable_and_authoritative(monkeypatch, tmp_path):
-    binary = tmp_path / "cloudflared"
+    binary = tmp_path / ("cloudflared.exe" if sys.platform == "win32" else "cloudflared")
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o700)
 

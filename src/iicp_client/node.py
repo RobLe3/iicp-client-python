@@ -40,6 +40,7 @@ from iicp_client.backend_stability import BackendStabilityObservation, observe_b
 from iicp_client.effective_capability import EffectiveCapability, effective_capability_to_dict
 from iicp_client.idempotency import IdempotencyGuard
 from iicp_client.iicp_tcp import IICP_MAGIC, IicpTcpServer  # #457 single-port multiplexer
+from iicp_client.native_preface import peek_protocol_prefix
 from iicp_client.peer_manager import PeerManager
 from iicp_client.scheduler import QUEUE_WAIT_S, is_queue_eligible
 
@@ -1942,10 +1943,9 @@ class IicpNode:
 
         def _route_conn(conn: socket.socket, addr: Any) -> None:
             try:
-                conn.settimeout(10.0)
-                # Wait for the full 4-byte prefix without consuming it; the chosen consumer
-                # then parses from the start. MSG_WAITALL avoids misrouting on a fragmented magic.
-                prefix = conn.recv(4, socket.MSG_PEEK | socket.MSG_WAITALL)
+                # Preserve fragmented magic without the non-portable
+                # MSG_PEEK|MSG_WAITALL combination (WSAEOPNOTSUPP on Windows).
+                prefix = peek_protocol_prefix(conn, IICP_MAGIC, timeout=10.0)
             except OSError:
                 try:
                     conn.close()

@@ -87,13 +87,9 @@ def test_corruption_permissions_and_orphan_temp_are_fail_closed(tmp_path: Path) 
 
     path.write_text("{not-json", encoding="utf-8")
     os.chmod(path, 0o600)
-    if os.name == "posix":
-        with pytest.raises(TrustBundleStoreCorrupt):
-            store.load()
-    else:
-        # Windows chmod cannot broaden an ACL; it only toggles the read-only
-        # attribute. The state remains protected by its owner-only directory.
-        assert store.load() is not None
+    # JSON corruption is invalid on every OS, independently of ACL semantics.
+    with pytest.raises(TrustBundleStoreCorrupt):
+        store.load()
 
     recovered = store.recover(
         _bundle("v1"), AdminRecoveryAuthorization("repair-corrupt-test", 1)

@@ -9,6 +9,16 @@ in the main repo).
 
 ## [Unreleased]
 
+### Fixed — Windows artifact validation
+
+- Keep proxy startup compatible with redirected cp1252 consoles.
+- Classify fragmented experimental native prefixes without the Windows-
+  incompatible combination of socket peek and wait-all flags; retain a bounded
+  deadline and leave HTTP-only service behavior unchanged.
+- Correct Windows test fixtures for executable discovery, home directories,
+  service-path quoting and corrupt trust-store rejection. Measure streaming
+  flush behavior after input delivery rather than including client setup.
+
 ### Security — bounded stable HTTP task path
 
 - Enforce the protocol's 1 MiB encoded request and response boundary for

@@ -97,8 +97,12 @@ async def test_openai_compat_streaming_handler_flushes_at_utf8_byte_bound():
 
 
 class _DelayedSseStream(httpx.AsyncByteStream):
+    def __init__(self, delivered):
+        self.delivered = delivered
+
     async def __aiter__(self):
         yield b'data: {"choices":[{"delta":{"content":"timed"}}]}\n\n'
+        self.delivered.set()
         # Keep the next transport chunk well beyond the assertion deadline so
         # the test proves timer-driven flushing without depending on a 75 ms
         # scheduler window on loaded Windows builders.
@@ -108,8 +112,9 @@ class _DelayedSseStream(httpx.AsyncByteStream):
 
 @respx.mock
 async def test_openai_compat_streaming_handler_flushes_after_25_ms():
+    delivered = asyncio.Event()
     respx.post("http://localhost:11434/v1/chat/completions").mock(
-        return_value=httpx.Response(200, stream=_DelayedSseStream())
+        return_value=httpx.Response(200, stream=_DelayedSseStream(delivered))
     )
     handler = openai_compat_streaming_handler(model="qwen")
     events = handler(
@@ -119,9 +124,16 @@ async def test_openai_compat_streaming_handler_flushes_after_25_ms():
             "payload": {"messages": []},
         }
     )
-    first = await asyncio.wait_for(anext(events), timeout=0.25)
-    assert first == {"status": "partial", "result": "timed"}
-    await events.aclose()
+    # Measure flushing after input delivery, not Windows TLS/client setup.
+    first_task = asyncio.create_task(anext(events))
+    try:
+        await asyncio.wait_for(delivered.wait(), timeout=5.0)
+        first = await asyncio.wait_for(first_task, timeout=0.25)
+        assert first == {"status": "partial", "result": "timed"}
+    finally:
+        first_task.cancel()
+        await asyncio.gather(first_task, return_exceptions=True)
+        await events.aclose()
 
 
 @respx.mock

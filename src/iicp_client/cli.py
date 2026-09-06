@@ -2783,7 +2783,7 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
     # Flag/env precedence: explicit --host/--port override the TOML/env-loaded config.
     cfg.host = args.host
     cfg.port = args.port
-    print(f"iicp-node proxy → http://{cfg.host}:{cfg.port} (OpenAI/Ollama/Anthropic compat; no directory registration)")
+    print(f"iicp-node proxy -> http://{cfg.host}:{cfg.port} (OpenAI/Ollama/Anthropic compat; no directory registration)")
     uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, server_header=False)
     return 0
 
