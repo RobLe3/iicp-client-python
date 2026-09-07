@@ -16,7 +16,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import IO, Any
+from uuid import uuid4
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -141,16 +142,40 @@ class AdminRecoveryAuthorization:
     minimum_high_water: int = 0
 
 
+def _windows_private_path(path: Path, operation: str) -> None:
+    from .windows_private_path import windows_private_path
+    try:
+        windows_private_path(path, operation)
+    except PermissionError as exc:
+        raise TrustBundleStoreError("Windows trust store path is unsafe") from exc
+
+
+def _flush_trust_payload(stream: IO[bytes], payload: bytes) -> None:
+    stream.write(payload)
+    stream.flush()
+    os.fsync(stream.fileno())
+
+
 class FileTrustBundleStore:
     """Owner-local atomic trust bundle store; never enabled by default dispatch."""
 
     def __init__(self, path: str | Path, *, lock_timeout_s: float = 2.0) -> None:
         self.path = Path(path).expanduser()
+        if os.name == "nt":
+            self.path = self.path.absolute()
         self.lock_path = self.path.with_name(self.path.name + ".lock")
         self.lock_timeout_s = max(0.0, lock_timeout_s)
 
     def _prepare_directory(self) -> None:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if os.name == "nt":
+            from .windows_private_path import windows_private_path
+            operation = "directory-check" if self.path.parent.exists() else "directory-create"
+            try:
+                windows_private_path(self.path.parent, operation)
+            except PermissionError as exc:
+                raise TrustBundleStoreError("Windows trust store directory is unsafe") from exc
+        else:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.path.parent.is_symlink() or not self.path.parent.is_dir():
             raise TrustBundleStoreError("trust store directory must be a directory, not a link")
         if _POSIX_MODE_SEMANTICS:
@@ -163,7 +188,11 @@ class FileTrustBundleStore:
         deadline = time.monotonic() + self.lock_timeout_s
         while True:
             try:
-                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                if os.name == "nt":
+                    _windows_private_path(self.lock_path, "file-create")
+                    fd = os.open(self.lock_path, os.O_WRONLY)
+                else:
+                    fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 os.write(fd, f"{os.getpid()}\n".encode())
                 os.fsync(fd)
                 return fd
@@ -182,6 +211,13 @@ class FileTrustBundleStore:
     def load(self) -> StoredTrustBundle | None:
         if not self.path.exists():
             return None
+        if os.name == "nt":
+            from .windows_private_path import windows_private_path
+            try:
+                windows_private_path(self.path.parent, "directory-check")
+                windows_private_path(self.path, "file-check")
+            except PermissionError as exc:
+                raise TrustBundleStoreCorrupt("Windows trust store path is unsafe") from exc
         metadata = self.path.lstat()
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise TrustBundleStoreCorrupt("trust store must be a regular file, not a link")
@@ -235,13 +271,17 @@ class FileTrustBundleStore:
             "high_water": high_water,
         }
         payload = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
-        with NamedTemporaryFile(dir=self.path.parent, prefix=self.path.name + ".tmp-", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-            if _POSIX_MODE_SEMANTICS:
-                os.fchmod(tmp.fileno(), 0o600)
-            tmp.write(payload)
-            tmp.flush()
-            os.fsync(tmp.fileno())
+        if os.name == "nt":
+            tmp_path = self.path.with_name(self.path.name + ".tmp-" + uuid4().hex)
+            _windows_private_path(tmp_path, "file-create")
+            with tmp_path.open("wb") as windows_tmp:
+                _flush_trust_payload(windows_tmp, payload)
+        else:
+            with NamedTemporaryFile(dir=self.path.parent, prefix=self.path.name + ".tmp-", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+                if _POSIX_MODE_SEMANTICS:
+                    os.fchmod(tmp.fileno(), 0o600)
+                _flush_trust_payload(tmp.file, payload)
         try:
             os.replace(tmp_path, self.path)
             if _POSIX_MODE_SEMANTICS:

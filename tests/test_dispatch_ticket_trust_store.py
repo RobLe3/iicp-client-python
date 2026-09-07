@@ -116,7 +116,9 @@ def test_concurrent_writers_never_finish_below_highest_version(tmp_path: Path) -
 
     def install(bundle: TrustBundle) -> None:
         barrier.wait()
-        statuses.append(FileTrustBundleStore(path).install(bundle).status)
+        # ACL subprocess overhead is measured separately from serialization.
+        timeout = 15.0 if os.name == "nt" else 2.0
+        statuses.append(FileTrustBundleStore(path, lock_timeout_s=timeout).install(bundle).status)
 
     threads = [threading.Thread(target=install, args=(bundle,)) for bundle in (v2, v3)]
     for thread in threads:
@@ -128,13 +130,14 @@ def test_concurrent_writers_never_finish_below_highest_version(tmp_path: Path) -
     state = store.load()
     assert state is not None
     assert state.bundle.bundle_version == state.high_water == 3
+    assert len(statuses) == 2, "both concurrent writers must finish without hidden thread failures"
     assert set(statuses) <= {"installed", "stale"}
 
 
 def test_held_lock_times_out_without_mutating_state(tmp_path: Path) -> None:
     path = tmp_path / "trust" / "bundle.state"
     store = FileTrustBundleStore(path, lock_timeout_s=0)
-    path.parent.mkdir(mode=0o700)
+    store._prepare_directory()
     store.lock_path.write_text("held", encoding="utf-8")
     os.chmod(store.lock_path, 0o600)
 
