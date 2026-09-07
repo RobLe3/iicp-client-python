@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -24,6 +25,8 @@ TARGETS = {
 }
 
 
+REQUIRED_STEPS = ['dependencies', 'locked-tests', 'package-cache', 'online-install', 'offline-install', 'publish-fragment']
+
 def describe() -> dict:
     return {
         "schema": "iicp.pre1-artifact-builder-description.v1",
@@ -31,6 +34,7 @@ def describe() -> dict:
         "targets": sorted(TARGETS),
         "artifact_identities": [["wheel", "any"], ["sdist", "any"]],
         "gates": sorted(common.GATES),
+        "required_steps": REQUIRED_STEPS,
         "requires_clean_source": True,
         "non_authorizing": True,
     }
@@ -57,152 +61,159 @@ def build(destination: Path, requested_target: str | None) -> dict:
     staging = run_root / "fragment"
     staging.mkdir()
     try:
-        common.run(["uv", "sync", "--locked", "--extra", "dev"], ROOT)
-        common.run(["uv", "run", "--locked", "--extra", "dev", "pytest", "-q"], ROOT)
-        dist = run_root / "dist"
-        dist.mkdir()
-        common.run(
-            [
-                "uv",
-                "run",
-                "--locked",
-                "--extra",
-                "dev",
-                "python",
-                "-m",
-                "build",
-                "--outdir",
-                str(dist),
-            ],
-            ROOT,
-        )
-        wheels = list(dist.glob("*.whl"))
-        sdists = list(dist.glob("*.tar.gz"))
-        if len(wheels) != 1 or len(sdists) != 1:
-            raise ValueError("Python build did not produce exactly one wheel and one sdist")
-        wheel, sdist = wheels[0], sdists[0]
+        steps = common.RequiredSteps(Path(os.environ.get("IICP_PRE1_REQUIRED_STEP_PATH", str(run_root / "required-steps.json"))), COMPONENT, commit, target, REQUIRED_STEPS)
+        with steps.step("dependencies"):
+            common.run(["uv", "sync", "--locked", "--extra", "dev"], ROOT)
+        with steps.step("locked-tests"):
+            common.run(["uv", "run", "--locked", "--extra", "dev", "pytest", "-q"], ROOT)
+        with steps.step("package-cache"):
+            dist = run_root / "dist"
+            dist.mkdir()
+            common.run(
+                [
+                    "uv",
+                    "run",
+                    "--locked",
+                    "--extra",
+                    "dev",
+                    "python",
+                    "-m",
+                    "build",
+                    "--outdir",
+                    str(dist),
+                ],
+                ROOT,
+            )
+            wheels = list(dist.glob("*.whl"))
+            sdists = list(dist.glob("*.tar.gz"))
+            if len(wheels) != 1 or len(sdists) != 1:
+                raise ValueError("Python build did not produce exactly one wheel and one sdist")
+            wheel, sdist = wheels[0], sdists[0]
 
-        requirements = run_root / "requirements.txt"
-        common.run(
-            [
-                "uv",
-                "export",
-                "--locked",
-                "--no-dev",
-                "--no-emit-project",
-                "--format",
-                "requirements-txt",
-                "--output-file",
-                str(requirements),
-            ],
-            ROOT,
-        )
-        wheelhouse = run_root / "wheelhouse"
-        wheelhouse.mkdir()
-        common.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "download",
-                "--disable-pip-version-check",
-                "--dest",
-                str(wheelhouse),
-                "--requirement",
-                str(requirements),
-            ],
-            ROOT,
-        )
+            requirements = run_root / "requirements.txt"
+            common.run(
+                [
+                    "uv",
+                    "export",
+                    "--locked",
+                    "--no-dev",
+                    "--no-emit-project",
+                    "--format",
+                    "requirements-txt",
+                    "--output-file",
+                    str(requirements),
+                ],
+                ROOT,
+            )
+            wheelhouse = run_root / "wheelhouse"
+            wheelhouse.mkdir()
+            common.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "download",
+                    "--disable-pip-version-check",
+                    "--dest",
+                    str(wheelhouse),
+                    "--requirement",
+                    str(requirements),
+                ],
+                ROOT,
+            )
 
-        online = run_root / "online"
-        common.run([sys.executable, "-m", "venv", str(online)], ROOT)
-        common.run(
-            [
-                str(venv_python(online)),
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--require-hashes",
-                "--requirement",
-                str(requirements),
-            ],
-            ROOT,
-        )
-        common.run(
-            [
-                str(venv_python(online)),
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--no-deps",
-                str(wheel),
-            ],
-            ROOT,
-        )
-        online_version = common.output([str(venv_cli(online)), "--version"], ROOT)
-        if version not in online_version:
-            raise ValueError("online Python package self-report differs")
+        with steps.step("online-install"):
+            online = run_root / "online"
+            common.run([sys.executable, "-m", "venv", str(online)], ROOT)
+            common.run(
+                [
+                    str(venv_python(online)),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--require-hashes",
+                    "--requirement",
+                    str(requirements),
+                ],
+                ROOT,
+            )
+            common.run(
+                [
+                    str(venv_python(online)),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--no-deps",
+                    str(wheel),
+                ],
+                ROOT,
+            )
+            online_version = common.output([str(venv_cli(online)), "--version"], ROOT)
+            if version not in online_version:
+                raise ValueError("online Python package self-report differs")
 
-        offline = run_root / "offline"
-        common.run([sys.executable, "-m", "venv", str(offline)], ROOT)
-        common.run(
-            [
-                str(venv_python(offline)),
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--no-index",
-                "--find-links",
-                str(wheelhouse),
-                "--require-hashes",
-                "--requirement",
-                str(requirements),
-            ],
-            ROOT,
-        )
-        common.run(
-            [
-                str(venv_python(offline)),
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--no-index",
-                "--no-deps",
-                str(wheel),
-            ],
-            ROOT,
-        )
-        offline_version = common.output([str(venv_cli(offline)), "--version"], ROOT)
-        if offline_version != online_version or version not in offline_version:
-            raise ValueError("offline Python package self-report differs")
+        with steps.step("offline-install"):
+            offline = run_root / "offline"
+            common.run([sys.executable, "-m", "venv", str(offline)], ROOT)
+            common.run(
+                [
+                    str(venv_python(offline)),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--no-index",
+                    "--find-links",
+                    str(wheelhouse),
+                    "--require-hashes",
+                    "--requirement",
+                    str(requirements),
+                ],
+                ROOT,
+            )
+            common.run(
+                [
+                    str(venv_python(offline)),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--no-index",
+                    "--no-deps",
+                    str(wheel),
+                ],
+                ROOT,
+            )
+            offline_version = common.output([str(venv_cli(offline)), "--version"], ROOT)
+            if offline_version != online_version or version not in offline_version:
+                raise ValueError("offline Python package self-report differs")
 
-        copied_wheel = staging / wheel.name
-        copied_sdist = staging / sdist.name
-        shutil.copyfile(wheel, copied_wheel)
-        shutil.copyfile(sdist, copied_sdist)
-        fragment = common.emit_fragment(
-            staging,
-            component=COMPONENT,
-            source_commit=commit,
-            source_version=version,
-            build_target=target,
-            artifacts=[
-                common.artifact("wheel", "any", copied_wheel),
-                common.artifact("sdist", "any", copied_sdist),
-            ],
-            lock_inputs_sha256=common.files_sha256(ROOT, [ROOT / "pyproject.toml", ROOT / "uv.lock"]),
-            dependency_cache_sha256=common.tree_sha256(wheelhouse),
-            toolchains={
-                "python": common.output([sys.executable, "--version"], ROOT),
-                "uv": common.output(["uv", "--version"], ROOT),
-            },
-        )
-        common.publish_staging(staging, destination)
-        return fragment
+        with steps.step("publish-fragment"):
+            copied_wheel = staging / wheel.name
+            copied_sdist = staging / sdist.name
+            shutil.copyfile(wheel, copied_wheel)
+            shutil.copyfile(sdist, copied_sdist)
+            fragment = common.emit_fragment(
+                staging,
+                component=COMPONENT,
+                source_commit=commit,
+                source_version=version,
+                build_target=target,
+                artifacts=[
+                    common.artifact("wheel", "any", copied_wheel),
+                    common.artifact("sdist", "any", copied_sdist),
+                ],
+                lock_inputs_sha256=common.files_sha256(ROOT, [ROOT / "pyproject.toml", ROOT / "uv.lock"]),
+                dependency_cache_sha256=common.tree_sha256(wheelhouse),
+                toolchains={
+                    "python": common.output([sys.executable, "--version"], ROOT),
+                    "uv": common.output(["uv", "--version"], ROOT),
+                },
+            )
+            common.publish_staging(staging, destination)
+            return fragment
     finally:
         common.clean_failed_staging(run_root)
 
