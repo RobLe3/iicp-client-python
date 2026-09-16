@@ -17,7 +17,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pre1_environment_contract import validate_modern_environment  # noqa: E402
 from pre1_harness_binding import harness_identity, validate_harness_source  # noqa: E402
-from pre1_package_execution import package_command, validate_binding  # noqa: E402
+from pre1_package_execution import package_command, validate_binding, make_case_proof, write_case_proof  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = 'client-python'
@@ -526,10 +526,11 @@ def main() -> int:
         )
         result = subprocess.run(argv, cwd=workspace, env=env, check=False)
         validate_binding(proof["value"], context, proof["artifact"], ROOT)
-        print(json.dumps({"schema": "iicp.pre1-packaged-case-proof.v1",
-                          "package_execution_sha256": proof["value"]["binding_sha256"],
-                          "cell_id": args.cell, "scenario_id": args.scenario or "support",
-                          "exit_code": result.returncode, "non_authorizing": True}, sort_keys=True))
+        case = SCENARIO_CASES[args.scenario] if args.scenario else SUPPORT_CASE
+        sidecar = make_case_proof(proof["value"], context, case["assertion"],
+                                  result.returncode, os.environ["IICP_PRE1_RUN_ID"])
+        write_case_proof(sidecar)
+
     except (KeyError, OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
         print(f"pre-1.0 {COMPONENT} case refused: {error}", file=sys.stderr)
         return 2
