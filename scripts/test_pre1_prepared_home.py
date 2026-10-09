@@ -2,10 +2,11 @@
 import ast
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
 import pre1_package_execution as adapter
 
 
@@ -35,6 +36,11 @@ class PreparedHomeTests(unittest.TestCase):
             adapter.validate_workspace_boundary(workspace, adapter.prepared_package_home(), installed, source)
             with self.assertRaises(ValueError):
                 adapter.validate_workspace_boundary(workspace, self.case, installed, source)
+
+    def test_explicit_preparation_owner_does_not_require_home(self):
+        env = {"IICP_PRE1_PREPARED_PACKAGE_HOME": str(self.prepared)}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(adapter.prepared_package_home(), self.prepared)
 
     def test_wrong_explicit_preparation_boundary_is_rejected(self):
         workspace = self.prepared / "workspace"
