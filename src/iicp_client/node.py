@@ -769,7 +769,7 @@ class IicpNode:
         data = resp.json()
         token = data.get("node_token") or data.get("token")
         if not token:
-            raise RuntimeError(f"Directory did not return node_token: {data}")
+            raise RuntimeError("Directory did not return node_token")
         # BUG-5: stash the token so deregister()/heartbeat work without the caller
         # re-passing it.
         self._node_token = str(token)
