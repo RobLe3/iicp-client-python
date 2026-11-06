@@ -38,6 +38,7 @@ class ClientConfig:
     region: str | None = None
     timeout_ms: int = 30_000
     max_retries: int = 3
+    # False is rejected by IicpClient with SDK-05.
     tls_verify: bool = True
     # DEPRECATED/no-op (#360): IICP-CX encryption is mandatory — the client always
     # encrypts when the node advertises a cx_public_key, regardless of this flag.

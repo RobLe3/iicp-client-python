@@ -123,6 +123,12 @@ class IicpClient:
 
     def __init__(self, config: ClientConfig | None = None) -> None:
         self._cfg = config or ClientConfig()
+        if self._cfg.tls_verify is False:
+            raise IicpError(
+                code="SDK-05",
+                message="tls_verify=False is not supported; TLS certificate verification is required",
+                component="sdk",
+            )
         if self._cfg.timeout_ms > _MAX_TIMEOUT_MS:
             # SDK-04: reject oversized timeouts at construction time
             raise ValueError(f"timeout_ms must be ≤ {_MAX_TIMEOUT_MS}; got {self._cfg.timeout_ms}")
