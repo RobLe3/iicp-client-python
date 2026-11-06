@@ -34,6 +34,8 @@ class RoutingPolicy:
 
 @dataclass
 class ClientConfig:
+    """Client options, shallow-copied by IicpClient at construction."""
+
     directory_url: str = "https://iicp.network/api"
     region: str | None = None
     timeout_ms: int = 30_000

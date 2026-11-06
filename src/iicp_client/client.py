@@ -11,6 +11,7 @@ import random
 import re
 import time
 import uuid
+from dataclasses import replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -122,7 +123,7 @@ class IicpClient:
     """
 
     def __init__(self, config: ClientConfig | None = None) -> None:
-        self._cfg = config or ClientConfig()
+        self._cfg = replace(config) if config is not None else ClientConfig()
         if self._cfg.tls_verify is False:
             raise IicpError(
                 code="SDK-05",

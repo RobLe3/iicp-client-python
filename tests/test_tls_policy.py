@@ -20,3 +20,10 @@ class TlsCertificatePolicyTests(TestCase):
         self.assertEqual(caught.exception.code, "SDK-05")
         self.assertEqual(caught.exception.component, "sdk")
         self.assertFalse(caught.exception.retryable)
+
+    def test_caller_configuration_mutation_cannot_disable_verification(self):
+        config = ClientConfig(tls_verify=True)
+        with mock.patch("httpx.AsyncClient", side_effect=AssertionError("unexpected HTTP client")):
+            client = IicpClient(config)
+        config.tls_verify = False
+        self.assertTrue(client._cfg.tls_verify)
