@@ -12,7 +12,8 @@ QUALITY_RUNNER = (ROOT / "scripts" / "run_sdk_quality.py").read_text(encoding="u
 RELEASE_WORKFLOW = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
 
-def test_package_and_lockfile_declare_supported_python_and_candidate_remains_pre1() -> None:
+def test_minimum_python_version_is_declared_and_candidate_remains_pre1() -> None:
+    # Keep the stable driver assertion ID while checking the entire support range.
     assert PROJECT["requires-python"] == ">=3.11,<3.15"
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     assert lock["requires-python"].replace(" ", "") == PROJECT["requires-python"]
