@@ -13,8 +13,11 @@ RELEASE_WORKFLOW = (ROOT / ".github" / "workflows" / "release.yml").read_text(en
 
 
 def test_minimum_python_version_is_declared_and_candidate_remains_pre1() -> None:
+    # Keep the stable driver assertion ID while checking the entire support range.
     assert PROJECT["requires-python"] == ">=3.11,<3.15"
-    assert sys.version_info >= (3, 11)
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    assert lock["requires-python"].replace(" ", "") == PROJECT["requires-python"]
+    assert (3, 11) <= sys.version_info[:2] < (3, 15)
     assert PROJECT["version"].split(".", 1)[0] == "0"
 
 
